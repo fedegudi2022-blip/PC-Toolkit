@@ -1,0 +1,2486 @@
+"""Pruebas de humo de PC Toolkit: núcleo de datos y construcción de la interfaz.
+
+Se ejecutan sin marco de pruebas externo:
+
+    .venv\\Scripts\\python.exe tests\\smoke_test.py
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+# Redirige los datos de la app a una carpeta temporal antes de importar nada.
+_TEMP_HOME = tempfile.mkdtemp(prefix="pctoolkit_test_")
+os.environ["APPDATA"] = _TEMP_HOME
+os.environ["LOCALAPPDATA"] = _TEMP_HOME
+# Por defecto se usa la plataforma real (métricas de fuente correctas);
+# PCTOOLKIT_OFFSCREEN=1 permite ejecutar las pruebas sin pantalla.
+if os.environ.get("PCTOOLKIT_OFFSCREEN") == "1":
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+try:  # la consola de Windows puede usar cp1252
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, ValueError):
+    pass
+
+from PySide6.QtWidgets import QApplication  # noqa: E402
+
+from pctoolkit.core import maintenance, memory, reports, scheduler, tools  # noqa: E402
+from pctoolkit.core.config import APP_VERSION, COLORS, SURFACES, format_bytes  # noqa: E402
+from pctoolkit.core.disk import list_drives, scan_directory  # noqa: E402
+from pctoolkit.core.memory import MemoryGuard, MemoryOptions  # noqa: E402
+from pctoolkit.core.metrics import PROFILE_ECO, PROFILE_FULL, MetricsService  # noqa: E402
+from pctoolkit.core.scheduler import MaintenanceSchedule  # noqa: E402
+from pctoolkit.core.tasks import TaskStore  # noqa: E402
+
+CHECKS: list[tuple[str, bool, str]] = []
+
+
+def check(name: str, condition: bool, detail: str = "") -> None:
+    CHECKS.append((name, bool(condition), detail))
+
+
+def build_sample_tree(base: Path) -> Path:
+    """Crea una carpeta con archivos de tamaños conocidos."""
+    (base / "videos").mkdir(parents=True)
+    (base / "docs").mkdir()
+    (base / "docs" / "sub").mkdir()
+    (base / "vacios").mkdir()
+    (base / "videos" / "pelicula.mp4").write_bytes(b"0" * 3_000_000)
+    (base / "docs" / "informe.pdf").write_bytes(b"0" * 500_000)
+    (base / "docs" / "sub" / "notas.txt").write_bytes(b"0" * 1000)
+    (base / "docs" / "sub" / "codigo.py").write_bytes(b"0" * 2_000)
+    (base / "raiz.zip").write_bytes(b"0" * 20_000)
+    return base
+
+
+def test_metrics() -> None:
+    service = MetricsService()
+    snap = service.poll()
+    check("CPU entre 0 y 100", 0.0 <= snap.cpu_percent <= 100.0, f"{snap.cpu_percent}")
+    check("RAM > 0", snap.ram_total > 0, format_bytes(snap.ram_total))
+    check("RAM usada <= total", 0 < snap.ram_used <= snap.ram_total)
+    check("Disco del sistema detectado", snap.disk_total > 0, f"{snap.disk_mount} {snap.disk_percent}%")
+    check("Procesos detectados", snap.process_count > 0, str(snap.process_count))
+    check("Núcleos detectados", snap.cpu_threads > 0, str(snap.cpu_threads))
+    check("Salud en rango", 0 <= snap.health_score <= 100, f"{snap.health_score:.1f}")
+    check("Lista de procesos", len(snap.top_processes) > 0, str(len(snap.top_processes)))
+    info = service.system_info()
+    check("Información del equipo", bool(info.get("sistema")) and bool(info.get("nombre_equipo")), info.get("sistema", ""))
+
+
+def test_disk() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        base = build_sample_tree(Path(tmp) / "muestra")
+        result = scan_directory(str(base))
+        check("Tamaño total del análisis", result.total_size == 3_523_000, format_bytes(result.total_size))
+        check("Archivos contados", result.total_files == 5, str(result.total_files))
+        check("Sin errores de lectura", result.errors == 0, str(result.errors))
+        names = [node.name for node in result.children]
+        check("Carpeta más pesada primero", names[0] == "videos", ", ".join(names[:3]))
+        check("Categorías detectadas", result.categories[0][0] == "Vídeo", str(result.categories[:2]))
+        check("Detección de archivos grandes", isinstance(result.largest_files, list))
+        drives = list_drives()
+        check("Unidades listadas", len(drives) >= 1, ", ".join(d.units if False else d.mount for d in drives))
+        check("Uso de unidad coherente", all(0 <= d.percent <= 100 for d in drives))
+        check(
+            "Nombre de unidad legible",
+            bool(drives[0].label) or drives[0].fstype != "",
+            f"{drives[0].mount} / {drives[0].label or drives[0].fstype}",
+        )
+
+
+def test_tasks() -> None:
+    store = TaskStore()
+    store.clear_completed()
+    for task in list(store.all()):
+        store.remove(task.id)
+    first = store.add("Limpiar ventiladores", "Hardware", "Con aire comprimido.", priority="Alta")
+    store.add("Ejecutar Windows Update", "Actualizaciones", due_date="2020-01-01")
+    check("Tarea añadida", len(store.all()) == 2)
+    store.toggle_done(first.id)
+    check("Tarea completada", store.get(first.id).is_done)
+    stats = store.stats()
+    check("Estadísticas coherentes", stats["completadas"] == 1 and stats["pendientes"] == 1, str(stats))
+    overdue = [task for task in store.pending() if task.is_overdue]
+    check("Tarea vencida detectada", len(overdue) == 1, overdue[0].title if overdue else "")
+    check("Archivo de tareas creado", store.path.exists(), str(store.path))
+    store.add_template("Vaciar la papelera", "Limpieza", "Notas")
+    reloaded = TaskStore()
+    check("Persistencia al recargar", len(reloaded.all()) == 3, str(len(reloaded.all())))
+    removed = reloaded.clear_completed()
+    check("Limpieza de completadas", removed == 1, str(removed))
+    check("Añadida desde plantilla", any(t.title == "Vaciar la papelera" for t in reloaded.all()))
+
+
+def test_tools() -> None:
+    catalog = tools.tools_by_category()
+    check("Catálogo de herramientas", sum(len(v) for v in catalog.values()) >= 20)
+    check("Categorías completas", all(catalog.get(name) for name in tools.CATEGORY_ORDER[:4]))
+    emulated = tools.ToolShortcut("x", "Prueba", "desc", "noexiste.exe", tools.CATEGORY_SISTEMA)
+    ok, message = tools.launch(emulated)
+    check("Lanzador informa de errores", ok is False and bool(message), message)
+    with tempfile.TemporaryDirectory() as tmp:
+        temp_dir = Path(tmp)
+        (temp_dir / "viejo.tmp").write_bytes(b"0" * 100_000)
+        old = (temp_dir / "nuevo.tmp")
+        old.write_bytes(b"0" * 50_000)
+        report = tools.scan_temp_folder(str(temp_dir), min_age_hours=0)
+        check("Análisis de temporales", report.file_count == 2, f"{report.file_count} archivos")
+        result = tools.clean_temp_folder(str(temp_dir), min_age_hours=0)
+        check("Limpieza de temporales", result.freed == 150_000 and result.deleted == 2, format_bytes(result.freed))
+        check("Carpeta temporal vacía", not any(temp_dir.iterdir()))
+
+
+def test_reports() -> None:
+    service = MetricsService()
+    snap = service.poll()
+    store = TaskStore()
+    store.add("Tarea de informe", "Limpieza", "Notas de prueba")
+    with tempfile.TemporaryDirectory() as tmp:
+        base = build_sample_tree(Path(tmp) / "muestra")
+        scan = scan_directory(str(base))
+        report = reports.build_report(
+            snapshot=snap,
+            system_info=service.system_info(),
+            drives=list_drives(),
+            tasks=store.to_dicts(),
+            task_stats=store.stats(),
+            disk_result=scan,
+        )
+        check("Informe con secciones", {"equipo", "resumen", "unidades", "tareas", "analisis_disco"} <= set(report))
+        check("Resumen con salud", 0 <= report["resumen"]["salud"] <= 100)
+        out = Path(tmp)
+        html = reports.export(report, out / "informe.html", reports.FORMAT_HTML)
+        csv_file = reports.export(report, out / "informe.csv", reports.FORMAT_CSV)
+        json_file = reports.export(report, out / "informe.json", reports.FORMAT_JSON)
+        html_text = html.read_text(encoding="utf-8")
+        check("HTML con datos del análisis", str(base) in html_text and "Registro de tareas" in html_text)
+        check("HTML con estilos", "<style>" in html_text and len(html_text) > 4000, f"{len(html_text)} bytes")
+        csv_text = csv_file.read_text(encoding="utf-8-sig")
+        check("CSV con secciones", all(section in csv_text for section in ("EQUIPO", "RESUMEN", "UNIDADES", "TAREAS")), "")
+        check("CSV con la tarea", "Tarea de informe" in csv_text)
+        check("JSON válido", json_file.read_text(encoding="utf-8").startswith("{"))
+        check("Nombres con extensión correcta", {html.suffix, csv_file.suffix, json_file.suffix} == {".html", ".csv", ".json"})
+        check("Resumen corto", len(list(reports.summary_lines(report))) >= 5)
+        target = reports.unique_path(out, "informe.html")
+        check("No sobrescribe archivos", target.name == "informe_1.html", target.name)
+
+        # Estructura del HTML: etiquetas equilibradas y datos escapados.
+        from html.parser import HTMLParser
+
+        class Balance(HTMLParser):
+            void = {"meta", "br", "hr", "img", "input", "link", "source"}
+
+            def __init__(self) -> None:
+                super().__init__(convert_charrefs=True)
+                self.stack: list[str] = []
+                self.errors: list[str] = []
+
+            def handle_starttag(self, tag, attrs):
+                if tag not in self.void:
+                    self.stack.append(tag)
+
+            def handle_endtag(self, tag):
+                if not self.stack or self.stack[-1] != tag:
+                    self.errors.append(tag)
+                else:
+                    self.stack.pop()
+
+        parser = Balance()
+        parser.feed(html_text)
+        check("HTML bien equilibrado", not parser.errors and not parser.stack, str(parser.errors[:3] or parser.stack[:3]))
+        check("HTML con apartados del análisis", "Archivos más grandes" in html_text and "Uso por categoría" in html_text)
+
+        store.add("Tarea con <b>etiquetas</b> & símbolos", "Otros", "notas")
+        escaped = reports._html(
+            reports.build_report(
+                snapshot=snap,
+                system_info=service.system_info(),
+                drives=[],
+                tasks=store.to_dicts(),
+                task_stats=store.stats(),
+            )
+        )
+        check(
+            "Contenido del usuario escapado",
+            "&lt;b&gt;etiquetas&lt;/b&gt; &amp; símbolos" in escaped and "<b>etiquetas</b>" not in escaped,
+        )
+
+
+def test_alerts() -> None:
+    from types import SimpleNamespace
+
+    from pctoolkit.core.alerts import METRIC_CPU, METRIC_DISK, METRIC_RAM, AlertConfig, AlertEngine
+
+    def snap(cpu: float, ram: float, disk: float = 20.0):
+        return SimpleNamespace(cpu_percent=cpu, ram_percent=ram, disk_percent=disk)
+
+    config = AlertConfig(enabled=True, sustained_samples=3, cooldown_minutes=15)
+    for metric in (METRIC_CPU, METRIC_RAM, METRIC_DISK):
+        config.set_threshold(metric, 80.0)
+    engine = AlertEngine(config)
+
+    check("Sin aviso por debajo del umbral", engine.evaluate(snap(20, 30)) == [])
+    check("Sin aviso con una sola muestra alta", engine.evaluate(snap(95, 30)) == [])
+    check("Sin aviso hasta alcanzar las muestras sostenidas", engine.evaluate(snap(95, 30)) == [])
+    events = engine.evaluate(snap(95, 30))
+    check("Aviso al sostenerse el umbral", len(events) == 1 and events[0].metric == METRIC_CPU, str(events))
+    check("Mensaje del aviso con detalle", events and "95" in events[0].title and "80" in events[0].message)
+    check("Sin repetir durante el enfriamiento", engine.evaluate(snap(97, 30)) == [])
+
+    engine._now = None  # noqa: SLF001  (vuelve al reloj real)
+    from datetime import datetime, timedelta
+
+    engine._cooldown_until[METRIC_CPU] = datetime.now() - timedelta(seconds=1)  # noqa: SLF001
+    repeat = engine.evaluate(snap(96, 30))
+    check("Nuevo aviso tras el enfriamiento", len(repeat) == 1, str(repeat))
+
+    engine.evaluate(snap(10, 30))
+    engine.evaluate(snap(10, 30))
+    check("La racha se reinicia al bajar", engine.status()[METRIC_CPU]["streak"] == 0, str(engine.status()))
+    check("Tras bajar vuelve a avisar", len(engine.evaluate(snap(90, 30))) == 0 and len(engine.evaluate(snap(90, 30))) == 0)
+    check("Aviso inmediato en el tercer ciclo", len(engine.evaluate(snap(90, 30))) == 1)
+
+    disabled = AlertEngine(AlertConfig(enabled=False))
+    check("Alertas desactivadas no avisan", disabled.evaluate(snap(99, 99, 99)) == [])
+
+    ram_event = AlertEngine(AlertConfig(sustained_samples=1)).evaluate(snap(10, 99))
+    check("Aviso de memoria con una muestra", len(ram_event) == 1 and ram_event[0].metric == METRIC_RAM)
+    config.set_threshold(METRIC_RAM, 500)
+    check("Umbral limitado a 100%", config.threshold_for(METRIC_RAM) == 100.0)
+    config.set_threshold(METRIC_RAM, 0)
+    check("Umbral mínimo del 1%", config.threshold_for(METRIC_RAM) == 1.0)
+    restored = AlertConfig.from_dict(config.to_dict())
+    check(
+        "Configuración de alertas persistida",
+        restored.thresholds["cpu"] == config.thresholds["cpu"] and restored.cooldown_minutes == 15,
+        str(restored.to_dict()),
+    )
+    corrupt = AlertConfig.from_dict({"thresholds": "nada", "sustained_samples": "x"})
+    check("Configuración corrupta tolerada", corrupt.sustained_samples == 3 and corrupt.enabled is True)
+
+
+def test_history() -> None:
+    import time as time_module
+
+    from pctoolkit.core.history import HistoryRecorder, HistoryStore, Sample
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "historial.jsonl"
+        store = HistoryStore(path)
+        now = time_module.time()
+        for hours, cpu in ((30, 10.0), (23, 20.0), (5, 30.0), (0.1, 40.0)):
+            store.append(Sample(timestamp=now - hours * 3600, cpu=cpu, ram=cpu + 5, disk=50.0))
+        # Línea corrupta que debe ignorarse
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write("{esto no es json}\n")
+
+        loaded = store.load(hours=24, now=now)
+        check("Historial filtrado a 24 h", [round(sample.cpu) for sample in loaded] == [20, 30, 40], str([s.cpu for s in loaded]))
+        check("Línea corrupta ignorada", len(loaded) == 3)
+        stats = store.stats(hours=24, now=now)
+        check("Estadísticas del historial", stats["muestras"] == 3 and stats["cpu"]["maximo"] == 40.0, str(stats["cpu"]))
+        check("Media calculada", stats["cpu"]["media"] == 30.0, str(stats["cpu"]["media"]))
+
+        kept = store.prune(now=now)
+        check("Recorte del historial", kept == 3 and store.count() == 3, f"conservadas {kept}")
+        store.clear()
+        check("Historial borrado", not path.exists() and store.count() == 0)
+
+        # Recorder: guarda como máximo una muestra por intervalo.
+        from PySide6.QtCore import QObject, Signal
+
+        class FakeMetrics(QObject):
+            sampled = Signal(object)
+
+        class FakeSnapshot:
+            cpu_percent = 12.0
+            ram_percent = 34.0
+            disk_percent = 56.0
+            net_down_rate = 1024.0
+            net_up_rate = 512.0
+
+        store = HistoryStore(path)
+        metrics = FakeMetrics()
+        recorder = HistoryRecorder(metrics, store=store, interval_seconds=30)
+        recorder.attach()
+        received = []
+        recorder.recorded.connect(received.append)
+        metrics.sampled.emit(FakeSnapshot())
+        metrics.sampled.emit(FakeSnapshot())
+        check("Una muestra por intervalo", store.count() == 1, str(store.count()))
+        check("Señal de muestra emitida", len(received) == 1)
+        recorder.record(FakeSnapshot(), now=time_module.time() + 60)
+        check("Muestra forzada guardada", store.count() == 2)
+        saved = store.load(hours=24, now=time_module.time() + 60)
+        check("Valores guardados correctos", saved[-1].ram == 34.0 and saved[-1].net_down == 1024.0, str(saved[-1]))
+        check("Archivo de historial en la carpeta de datos", HistoryStore().path.parent.name == "PCToolkit", str(HistoryStore().path))
+
+
+def test_theme() -> None:
+    """Las dos paletas (oscura y clara): contraste, acento esmeralda y coherencia.
+
+    El contraste se calcula con la fórmula de la WCAG sobre los pares de texto y
+    fondo que la interfaz usa de verdad, no sobre una lista inventada: si alguien
+    retoca un color y el texto deja de leerse, aquí salta.
+    """
+    from pctoolkit.core import appearance, config
+    from pctoolkit.ui import theme
+
+    def channels(color: str) -> tuple[int, int, int]:
+        return tuple(int(color[i : i + 2], 16) for i in (1, 3, 5))  # type: ignore[return-value]
+
+    def hue(color: str) -> float:
+        red, green, blue = channels(color)
+        high, low = max(red, green, blue), min(red, green, blue)
+        if high == low:
+            return 0.0
+        delta = high - low
+        if high == red:
+            value = ((green - blue) / delta) % 6
+        elif high == green:
+            value = (blue - red) / delta + 2
+        else:
+            value = (red - green) / delta + 4
+        return value * 60.0
+
+    def luminance(color: str) -> float:
+        def linear(channel: int) -> float:
+            value = channel / 255
+            return value / 12.92 if value <= 0.03928 else ((value + 0.055) / 1.055) ** 2.4
+
+        red, green, blue = channels(color)
+        return 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
+
+    def contrast(one: str, other: str) -> float:
+        first, second = luminance(one), luminance(other)
+        return (max(first, second) + 0.05) / (min(first, second) + 0.05)
+
+    check(
+        "Las dos paletas tienen las mismas claves",
+        set(config.DARK_COLORS) == set(config.LIGHT_COLORS)
+        and set(config.DARK_SURFACES) == set(config.LIGHT_SURFACES),
+        ", ".join(sorted(set(config.DARK_COLORS) ^ set(config.LIGHT_COLORS))),
+    )
+    check(
+        "Superficies del tema definidas",
+        {"hover", "pressed", "selected", "track", "track_hover"} <= set(SURFACES),
+        ", ".join(SURFACES),
+    )
+
+    for nombre, paleta, superficies in (
+        ("oscura", config.DARK_COLORS, config.DARK_SURFACES),
+        ("clara", config.LIGHT_COLORS, config.LIGHT_SURFACES),
+    ):
+        bluish = [
+            name
+            for name, value in paleta.items()
+            if 195.0 <= hue(value) <= 265.0 and max(channels(value)) - min(channels(value)) > 20
+        ]
+        check(f"Ningún color de la paleta {nombre} está en el rango azul", not bluish, ", ".join(bluish))
+        accent = channels(paleta["accent"])
+        check(
+            f"El acento de la paleta {nombre} es esmeralda (verde dominante)",
+            accent[1] > accent[0] and accent[1] > accent[2],
+            paleta["accent"],
+        )
+        for name, value in paleta.items():
+            check(f"Color válido ({nombre}): {name}", len(value) == 7 and value.startswith("#"), value)
+
+        flojos = [
+            f"{texto} sobre {fondo} ({contrast(paleta[texto], paleta[fondo]):.2f})"
+            for fondo in ("bg", "bg_alt", "panel", "panel_alt")
+            for texto in ("text", "text_muted", "text_dim")
+            if contrast(paleta[texto], paleta[fondo]) < 4.5
+        ]
+        check(f"Contraste suficiente en la paleta {nombre} (WCAG 4,5:1)", not flojos, ", ".join(flojos))
+        pares = {
+            "on_selected sobre seleccionado": (paleta["on_selected"], superficies["selected"]),
+            "on_accent sobre accent": (paleta["on_accent"], paleta["accent"]),
+            "on_accent sobre accent_glow": (paleta["on_accent"], paleta["accent_glow"]),
+            "text sobre hover": (paleta["text"], superficies["hover"]),
+            "text_dim sobre fila alterna": (paleta["text_dim"], superficies["row"]),
+        }
+        bajos = [f"{etiqueta} ({contrast(*par):.2f})" for etiqueta, par in pares.items() if contrast(*par) < 4.5]
+        check(f"Pares de textos y fondos legibles en la paleta {nombre}", not bajos, ", ".join(bajos))
+        # El texto de un control apagado se exime de 4,5:1 (WCAG, componentes
+        # inactivos), pero tiene que distinguirse del fondo para poder leerse.
+        apagado = contrast(paleta["primary_disabled_text"], paleta["primary_disabled_bg"])
+        check(
+            f"El texto apagado se lee sin parecer activo ({nombre})",
+            apagado >= 2.6,
+            f"{apagado:.2f}",
+        )
+
+    # Cambiar de paleta no puede reasignar los diccionarios: la interfaz ya los
+    # tiene importados por referencia. Aquí no hace falta ninguna ventana.
+    config.use_palette("dark")
+    referencias_ok = COLORS is config.COLORS and SURFACES is config.SURFACES
+    claro = config.use_palette("light")
+    check("Cambiar a la paleta clara", claro == "light" and COLORS["bg"] == config.LIGHT_COLORS["bg"], COLORS["bg"])
+    qss_claro = theme.stylesheet()
+    check("La hoja de estilos clara usa el fondo claro", config.LIGHT_COLORS["bg"] in qss_claro)
+    check("La paleta vuelve a la oscura", config.use_palette("dark") == "dark" and COLORS["bg"] == config.DARK_COLORS["bg"], COLORS["bg"])
+    qss = theme.stylesheet()
+    check("Los diccionarios de color no se reasignan", referencias_ok)
+    check(
+        "Una paleta desconocida cae en la oscura",
+        config.use_palette("turquesa") == "dark" and COLORS["bg"] == config.DARK_COLORS["bg"],
+        config.active_palette(),
+    )
+    check("La hoja de estilos usa el acento nuevo", COLORS["accent"] in qss and COLORS["accent_glow"] in qss)
+    check("La hoja de estilos estiliza las listas desplegables", "QDoubleSpinBox" in qss and "QTimeEdit" in qss)
+    # La plantilla del QSS se rellena con la paleta activa: si quedara una clave
+    # sin sustituir, Qt se saltaría esa regla en silencio.
+    restos = [
+        clave
+        for clave in list(config.DARK_COLORS) + list(config.DARK_SURFACES)
+        if "{" + clave + "}" in qss
+    ]
+    check("La plantilla del QSS se rellena con la paleta activa", not restos and "COLORS[" not in qss, ", ".join(restos))
+
+    # Modo de apariencia: `auto` sigue a Windows y el resto se respeta.
+    check("Modos de apariencia definidos", set(appearance.MODES) == {"auto", "dark", "light"}, str(appearance.MODES))
+    check(
+        "Cada modo tiene su etiqueta",
+        all(appearance.MODE_LABELS.get(modo) for modo in appearance.MODES),
+        str(appearance.MODE_LABELS),
+    )
+    check("La lectura del sistema da un modo válido", appearance.system_mode() in ("dark", "light"), appearance.system_mode())
+    check("El modo automático usa el del sistema", appearance.resolve_mode("auto") == appearance.system_mode())
+    check("El modo forzado se respeta", appearance.resolve_mode("light") == "light" and appearance.resolve_mode("dark") == "dark")
+    check(
+        "Un modo ilegible cae en automático",
+        all(appearance.normalize_mode(valor) == "auto" for valor in ("", "   ", None, "azul", 7)),
+        ", ".join(str(appearance.normalize_mode(valor)) for valor in ("", "azul", 7)),
+    )
+    check(
+        "Los nombres en español del modo también valen",
+        appearance.normalize_mode("CLARO") == "light" and appearance.normalize_mode("Oscuro") == "dark",
+    )
+    check("El diálogo explica el modo automático", "Windows" in appearance.describe_mode("auto"), appearance.describe_mode("auto"))
+    check("El diálogo explica el modo forzado", "Siempre" in appearance.describe_mode("light"), appearance.describe_mode("light"))
+
+    legacy = (
+        "#2F7DF6", "#0A0D14", "#0E131C", "#1F2735", "#5AA0FF", "#8B7BF7",
+        "#35D07F", "#F5B54A", "#F0654E", "#1E4FA8", "#121826", "#161D2C", "#8A94A8",
+    )
+    hits: list[str] = []
+    for path in sorted((ROOT / "pctoolkit").rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        hits += [f"{path.name}:{color}" for color in legacy if color in text]
+    check("Sin restos de la paleta azul anterior", not hits, ", ".join(hits[:4]))
+
+
+def test_memory() -> None:
+    """Filtrado de procesos, medidas y decisiones de la limpieza automática."""
+    own = os.getpid()
+    synthetic = [
+        (4, "System", 900 * 1024 * 1024),
+        (0, "System Idle Process", 10 * 1024 * 1024),
+        (777, "lsass.exe", 60 * 1024 * 1024),
+        (4242, "chrome.exe", 800 * 1024 * 1024),
+        (own, "python.exe", 500 * 1024 * 1024),
+        (555, "notepad.exe", 5 * 1024 * 1024),
+    ]
+    targets = memory.select_targets(synthetic, min_mb=20.0, own_pid=own)
+    names = [target.name for target in targets]
+    check("Se omiten los procesos críticos", "System" not in names and "lsass.exe" not in names, str(names))
+    check("Se omite el propio proceso", "python.exe" not in names, str(names))
+    check("Se respeta el consumo mínimo", "notepad.exe" not in names, str(names))
+    check("Ordenado por memoria usada", names == ["chrome.exe"], str(names))
+    check("Se puede incluir el propio proceso", any(
+        target.pid == own for target in memory.select_targets(synthetic, min_mb=20.0, include_own=True, own_pid=own)
+    ))
+    check("Identificación de procesos críticos", memory.is_critical(4, "System") and not memory.is_critical(4242, "chrome.exe"))
+
+    options = MemoryOptions(auto_enabled=True, threshold_percent=70.0, cooldown_minutes=5, min_process_mb=42.0)
+    restored = MemoryOptions.from_dict(options.to_dict())
+    check(
+        "Opciones de memoria persistentes",
+        restored.auto_enabled and restored.threshold_percent == 70.0 and restored.cooldown_minutes == 5
+        and restored.min_process_mb == 42.0,
+        str(restored.to_dict()),
+    )
+    clamped = MemoryOptions.from_dict({"umbral": 500, "espera_min": -3, "muestras": "x"})
+    check("Opciones fuera de rango saneadas", clamped.threshold_percent == 99.0 and clamped.cooldown_minutes == 1, str(clamped.to_dict()))
+    check("Opciones corruptas toleradas", MemoryOptions.from_dict({"umbral": "alto"}).threshold_percent == 85.0)
+
+    # Simulación: no toca nada del equipo real.
+    simulation = memory.release_memory(options, dry_run=True)
+    check("Simulación sin tocar procesos", simulation.dry_run and simulation.processes_trimmed > 0, simulation.summary())
+    check("Simulación identificada como tal", simulation.summary().startswith("Simulación"), simulation.summary())
+
+    # Recorte real del propio proceso de pruebas: comprueba la vía nativa completa.
+    import psutil
+
+    before = psutil.Process(own).memory_info().rss
+    trimmed = memory.trim_process(own)
+    after = psutil.Process(own).memory_info().rss
+    check("Recorte real de un conjunto de trabajo", trimmed and after <= before, f"{format_bytes(before)} -> {format_bytes(after)}")
+    check("Proceso inexistente no rompe el recorte", memory.trim_process(999_999) is False)
+
+    result = memory.release_memory(
+        MemoryOptions(min_process_mb=1e9, empty_system_cache=False, purge_standby=False),
+        targets=[memory.ProcessTarget(pid=own, name="prueba", rss=10_000_000)],
+    )
+    check("Resultado con medidas antes/después", result.total_bytes > 0 and result.after_percent > 0, result.summary())
+    check("Serialización del resultado", {"liberado_mb", "procesos", "lista_espera"} <= set(result.to_dict()))
+    privileged = memory.has_standby_privilege()
+    with_system = memory.release_memory(
+        MemoryOptions(min_process_mb=1e9, empty_system_cache=True, purge_standby=True),
+        targets=[memory.ProcessTarget(pid=own, name="prueba", rss=1)],
+    )
+    check(
+        "Operaciones de sistema: permiso o aviso claro",
+        (with_system.system_cache_empty and with_system.standby_purged)
+        if privileged
+        else any("administrador" in error for error in with_system.errors),
+        " | ".join(with_system.errors) or "con permisos",
+    )
+
+    # Guardia automática: umbral sostenido, enfriamiento y reinicio.
+    import time as time_module
+
+    guard = MemoryGuard(MemoryOptions(auto_enabled=True, threshold_percent=80.0, sustained_samples=3, cooldown_minutes=10))
+    check("Guardia desactivada no limpia", MemoryGuard(MemoryOptions()).observe(99.0) is False)
+    check("Guardia sin acción por debajo del umbral", guard.observe(40.0) is False)
+    check("Guardia espera a las muestras sostenidas", guard.observe(85.0) is False and guard.observe(86.0) is False)
+    check("Guardia dispara al sostenerse el umbral", guard.observe(87.0) is True)
+    guard.note_clean(memory.release_memory(MemoryOptions(), dry_run=True))
+    check("Guardia respeta el enfriamiento", [guard.observe(90.0) for _ in range(4)] == [False] * 4)
+    check("Enfriamiento calculado", guard.cooldown_remaining > 300, f"{guard.cooldown_remaining:.0f} s")
+    guard.note_clean(now=time_module.time() - 3600)  # como si la última limpieza fuera de hace una hora
+    check("Sin enfriamiento pendiente", guard.cooldown_remaining == 0.0)
+    check("Guardia vuelve a disparar tras el enfriamiento", guard.observe(90.0) is False and guard.observe(90.0) is False and guard.observe(90.0) is True)
+    check("La racha se reinicia al bajar", (guard.observe(10.0), guard.streak) == (False, 0))
+    check("Último resultado recordado", guard.last_result is not None)
+
+
+def _borrar_clave_registro(root, path: str) -> None:
+    """Borra una clave y todo lo que cuelga de ella (solo para las pruebas)."""
+    import winreg
+
+    try:
+        with winreg.OpenKey(root, path, 0, winreg.KEY_ALL_ACCESS) as clave:
+            while True:
+                try:
+                    subclave = winreg.EnumKey(clave, 0)
+                except OSError:
+                    break
+                _borrar_clave_registro(root, path + "\\" + subclave)
+        winreg.DeleteKeyEx(root, path, winreg.KEY_WOW64_64KEY)
+    except OSError:
+        return
+
+
+def _existe_clave_registro(root, path: str) -> bool:
+    import winreg
+
+    try:
+        with winreg.OpenKey(root, path):
+            return True
+    except OSError:
+        return False
+
+
+def test_startup() -> None:
+    """Programas de inicio: lectura, marcas de Windows, cambio reversible y deshacer."""
+    import winreg
+
+    from pctoolkit.core import startup, undo
+
+    # --- Lectura de la línea de comando ---------------------------------
+    check(
+        "Ruta del ejecutable entre comillas",
+        startup.command_target('"C:\\Program Files\\App\\app.exe" --minimizado')
+        == "C:\\Program Files\\App\\app.exe",
+        startup.command_target('"C:\\Program Files\\App\\app.exe" --minimizado'),
+    )
+    check(
+        "Ruta con espacios y sin comillas",
+        startup.command_target("C:\\Program Files\\Java\\bin\\javaw.exe -jar app.jar")
+        == "C:\\Program Files\\Java\\bin\\javaw.exe",
+        startup.command_target("C:\\Program Files\\Java\\bin\\javaw.exe -jar app.jar"),
+    )
+    check(
+        "Comando sin archivo propio (rundll32)",
+        startup.command_target("rundll32.exe foo.dll,Entrada") == "rundll32.exe",
+        startup.command_target("rundll32.exe foo.dll,Entrada"),
+    )
+    check("Comando vacío", startup.command_target("") == "")
+
+    # --- Marcas de activada/desactivada (las mismas que escribe Windows) --
+    activada = startup.approval_bytes(True)
+    desactivada = startup.approval_bytes(False)
+    check("Marca de activada", activada[0] == 2 and len(activada) == 9, activada.hex())
+    check("Marca de desactivada con su fecha", desactivada[0] == 3 and len(desactivada) == 9, desactivada.hex())
+    check("Se leen las marcas guardadas", startup.approval_enabled(activada) and not startup.approval_enabled(desactivada))
+    check("Sin marca, la entrada cuenta como activa", startup.approval_enabled(None))
+    check("Una marca desconocida no se interpreta como desactivada", startup.approval_enabled(b"\x09\x00"))
+
+    # --- Entradas reales del equipo -------------------------------------
+    ordenadas = startup.sort_entries(startup.read_entries())
+    check("Las entradas de arranque se leen", isinstance(ordenadas, list), f"{len(ordenadas)} entradas")
+    activaciones = [entrada.enabled for entrada in ordenadas]
+    check("Las activadas van primero", activaciones == sorted(activaciones, reverse=True), str(activaciones))
+    check(
+        "Cada entrada sabe de dónde sale",
+        all(entrada.source and entrada.location for entrada in ordenadas),
+        ordenadas[0].source if ordenadas else "",
+    )
+    check("Las claves de inicio de Windows se consultan", len(startup.registry_sources()) == 5, str(len(startup.registry_sources())))
+    check("Las carpetas de inicio se consultan", len(startup.folder_sources()) == 2)
+    check(
+        "El sistema se consulta en sus dos vistas",
+        len({fuente.view for fuente in startup.registry_sources()}) >= 2,
+        str(sorted({fuente.view for fuente in startup.registry_sources()})),
+    )
+    check("¿Hay permisos de administrador?", isinstance(startup.is_elevated(), bool), str(startup.is_elevated()))
+
+    # --- Cambio real y deshacer sobre una clave propia -------------------
+    base = r"Software\PCToolkit\PruebaArranque"
+    run_path = base + r"\Run"
+    approved_path = base + r"\StartupApproved"
+    carpeta = Path(_TEMP_HOME) / "inicio_prueba"
+    carpeta.mkdir(parents=True, exist_ok=True)
+    (carpeta / "Programa de prueba.lnk").write_bytes(b"acceso directo de prueba")
+    de_registro = startup.RegistrySource(
+        "prueba-run", "Prueba", "HKCU\\Prueba", run_path, winreg.HKEY_CURRENT_USER, approved_path
+    )
+    de_carpeta = startup.FolderSource(
+        "prueba-carpeta", "Prueba carpeta", str(carpeta), approved_path, winreg.HKEY_CURRENT_USER
+    )
+    almacen = undo.UndoStore(Path(_TEMP_HOME) / "deshacer_prueba.jsonl")
+    almacen.clear()
+    try:
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, run_path, 0, winreg.KEY_SET_VALUE) as clave:
+            winreg.SetValueEx(clave, "PruebaApp", 0, winreg.REG_SZ, f'"{sys.executable}" --version')
+
+        leidas = startup.read_registry_entries([de_registro])
+        check("Entrada de prueba leída", len(leidas) == 1, str([entrada.name for entrada in leidas]))
+        entrada = leidas[0]
+        check("Sin marca previa, arranca", entrada.enabled and entrada.can_toggle, entrada.status_label)
+        check("El programa existe", entrada.target_exists is True, entrada.target_path)
+        check(
+            "El coste estimado se explica",
+            entrada.cost[0] == startup.COST_LIGERO and bool(entrada.cost[1]),
+            entrada.cost[1],
+        )
+
+        de_carpetas = startup.read_folder_entries([de_carpeta])
+        check("Entrada de la carpeta de inicio leída", len(de_carpetas) == 1, str([e.name for e in de_carpetas]))
+        check(
+            "El acceso directo cuenta como carpeta de inicio",
+            de_carpetas[0].kind == startup.KIND_CARPETA and de_carpetas[0].enabled,
+            de_carpetas[0].source,
+        )
+
+        ok, mensaje = startup.move(entrada, False, almacen)
+        check("Desactivar sin borrar nada", ok, mensaje)
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, approved_path) as clave:
+            marca, _tipo = winreg.QueryValueEx(clave, "PruebaApp")
+        check("La marca escrita es la de Windows (3)", marca[0] == 3, marca.hex())
+        check("Se vuelve a leer como desactivada", not startup.read_registry_entries([de_registro])[0].enabled)
+        check("La entrada sigue existiendo", bool(startup.read_registry_entries([de_registro])), "la clave Run no se toca")
+
+        apunte = almacen.all()[0]
+        check(
+            "El cambio queda apuntado con su origen",
+            apunte.kind == undo.KIND_ARRANQUE and apunte.before == "Activada" and apunte.after == "Desactivada",
+            apunte.summary,
+        )
+        check("El apunte se puede deshacer", undo.can_revert(apunte.kind) and apunte.revertible)
+
+        ok, mensaje = undo.revert_action(almacen, apunte)
+        check("Deshacer devuelve la entrada a como estaba", ok, mensaje)
+        check("Vuelve a estar activa", startup.read_registry_entries([de_registro])[0].enabled)
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, approved_path) as clave:
+            marca, _tipo = winreg.QueryValueEx(clave, "PruebaApp")
+        check("La marca vuelve a ser la de activada (2)", marca[0] == 2, marca.hex())
+        check("El apunte queda marcado como deshecho", not almacen.pending() and almacen.count() == 1)
+        repetido, aviso = undo.revert_action(almacen, apunte)
+        check("Un cambio no se deshace dos veces", repetido is False and bool(aviso), aviso)
+
+        # La carpeta de inicio usa el mismo mecanismo, con otro nombre de valor.
+        ok, mensaje = startup.move(de_carpetas[0], False, almacen)
+        check("Desactivar una entrada de la carpeta de inicio", ok, mensaje)
+        check("La carpeta de inicio lo refleja", not startup.read_folder_entries([de_carpeta])[0].enabled)
+        de_carpetas = startup.read_folder_entries([de_carpeta])
+        check("Y se puede volver a activar", startup.move(de_carpetas[0], True, almacen)[0])
+        check("Queda activa otra vez", startup.read_folder_entries([de_carpeta])[0].enabled)
+
+        # --- Resumen y agrupación -----------------------------------------
+        resumen = startup.summary(startup.read_registry_entries([de_registro]) + startup.read_folder_entries([de_carpeta]))
+        check(
+            "El resumen cuadra",
+            resumen["total"] == 2 and resumen["activas"] == 2 and resumen["desactivadas"] == 0,
+            str(resumen),
+        )
+        grupos = startup.by_source(startup.read_registry_entries([de_registro]))
+        check("Las entradas se agrupan por origen", list(grupos) == ["Prueba"], str(list(grupos)))
+
+        # --- Tareas de inicio de sesión (salida simulada, sin PowerShell) ---
+        salida = json.dumps(
+            [
+                {"nombre": "Tarea lista", "ruta": "\\", "estado": "Ready", "programa": sys.executable, "argumentos": "-inicio"},
+                {"nombre": "Tarea apagada", "ruta": "\\Pruebas\\", "estado": "Disabled", "programa": r"C:\No\existe\otra.exe", "argumentos": ""},
+            ]
+        )
+        tareas = startup.task_entries_from_output(salida)
+        check("Las tareas de inicio se interpretan", len(tareas) == 2, str([t.name for t in tareas]))
+        check("Una tarea llevaría más trabajo (estimación Media)", tareas[0].cost[0] == startup.COST_MEDIO, tareas[0].cost[1])
+        check("El estado de la tarea se respeta", tareas[0].enabled and not tareas[1].enabled, tareas[1].status_label)
+        check("El comando de la tarea se une", tareas[0].command == f"{sys.executable} -inicio", tareas[0].command)
+        check(
+            "Una tarea que apunta a un programa que ya no está se avisa",
+            tareas[1].target_exists is False and tareas[1].cost[0] == startup.COST_NULO,
+            tareas[1].problem or tareas[1].cost[1],
+        )
+        check(
+            "Una sola tarea también se interpreta",
+            len(startup.task_entries_from_output(json.dumps({"nombre": "Sola", "ruta": "\\", "estado": "Ready"}))) == 1,
+        )
+        check("Una salida ilegible no rompe nada", startup.task_entries_from_output("vaya") == [])
+        check("Sin salida no hay tareas", startup.task_entries_from_output("") == [])
+
+        # --- Almacén de deshacer ------------------------------------------
+        check("El almacén guarda lo hecho", almacen.count() >= 3, str(almacen.count()))
+        check("Los cambios se listan del más nuevo al más viejo", almacen.all()[0].at >= almacen.all()[-1].at)
+        check("Los apuntes se releen del disco", undo.UndoStore(almacen.path).count() == almacen.count())
+        check("Los apuntes pendientes se distinguen", len(almacen.pending()) == almacen.count() - 1, str(len(almacen.pending())))
+        check(
+            "Un cambio sin datos no se ofrece para deshacer",
+            not undo.UndoAction(id="x", kind="otro", title="t", before="a", after="b", at=0.0).revertible,
+        )
+        desconocido = undo.UndoAction(id="y", kind="otro", title="t", before="a", after="b", at=0.0, data={"x": 1})
+        hecho, aviso = undo.revert_action(almacen, desconocido)
+        check("Un tipo desconocido no se deshace", hecho is False and bool(aviso), aviso)
+        almacen.clear()
+        check("El almacén se vacía", almacen.count() == 0 and almacen.pending() == [])
+    finally:
+        _borrar_clave_registro(winreg.HKEY_CURRENT_USER, base)
+    check("La clave de prueba del registro se elimina", not _existe_clave_registro(winreg.HKEY_CURRENT_USER, base))
+
+
+def test_scheduler() -> None:
+    """Tarea de Windows: XML, líneas de comandos y estado real (sin crear nada)."""
+    check("Frecuencias disponibles", len(scheduler.FREQUENCIES) == 3, ", ".join(scheduler.FREQUENCIES))
+    check("Horas saneadas", scheduler.normalize_time("99:99") == "23:59", scheduler.normalize_time("99:99"))
+    check("Hora con formato incorrecto", scheduler.normalize_time("vaya") == "12:00")
+    check("Hora con separador alternativo", scheduler.normalize_time("7.30") == "07:30")
+
+    daily = MaintenanceSchedule(frequency=scheduler.FREQ_DAILY, time="06:05", clean_temp=True, export_report=True)
+    weekly = MaintenanceSchedule(frequency=scheduler.FREQ_WEEKLY, weekday="Miércoles", time="23:00")
+    logon = MaintenanceSchedule(frequency=scheduler.FREQ_LOGON)
+
+    xml_daily = scheduler.task_xml(daily, moment=0.0)
+    check("XML de tarea diaria", "<ScheduleByDay>" in xml_daily and "<DaysInterval>1</DaysInterval>" in xml_daily)
+    check("XML con la hora elegida", "T06:05:00" in xml_daily, xml_daily.split("StartBoundary")[1][:30])
+    check("XML semanal con el día correcto", "<Wednesday/>" in scheduler.task_xml(weekly) and "<ScheduleByWeek>" in scheduler.task_xml(weekly))
+    check("XML de inicio de sesión", "<LogonTrigger>" in scheduler.task_xml(logon))
+    check(
+        "Sin privilegios elevados ni contraseña",
+        "<RunLevel>LeastPrivilege</RunLevel>" in xml_daily
+        and "<LogonType>InteractiveToken</LogonType>" in xml_daily,
+        "",
+    )
+    check("Recupera ejecuciones perdidas", "<StartWhenAvailable>true</StartWhenAvailable>" in xml_daily)
+    check("Nombre y carpeta de la tarea", scheduler.TASK_PATH == "\\PCToolkit\\Mantenimiento PC Toolkit", scheduler.TASK_PATH)
+
+    program, arguments = scheduler.launcher_command(daily)
+    check("Programa de la tarea", program.endswith(".exe"), program)
+    check("Argumentos del modo desatendido", "--mantenimiento" in arguments and "--antiguedad" in arguments, arguments)
+    check("Sin pasos desactivados", "--sin-limpieza" not in arguments and "--sin-informe" not in arguments)
+    without = scheduler.maintenance_arguments(MaintenanceSchedule(clean_temp=False, export_report=False))
+    check("Los pasos desactivados se omiten", "--sin-limpieza" in without and "--sin-informe" in without, " ".join(without))
+    check("Memoria opcional", "--liberar-memoria" in scheduler.maintenance_arguments(MaintenanceSchedule(release_memory=True)))
+    check("Comando entrecomillado", scheduler.command_line(daily).startswith('"') and '" --mantenimiento' in scheduler.command_line(daily), scheduler.command_line(daily))
+
+    check("Descripción legible (diaria)", "todos los días a las 06:05" in daily.describe(), daily.describe())
+    check("Descripción legible (semanal)", "los miércoles" in weekly.describe(), weekly.describe())
+    check("Descripción legible (sesión)", "al iniciar sesión" in logon.describe(), logon.describe())
+    check("Lista de pasos", daily.task_list() == ["limpiar temporales", "generar informe"], str(daily.task_list()))
+    restored = MaintenanceSchedule.from_dict(daily.to_dict())
+    check("Programación persistente", restored.frequency == scheduler.FREQ_DAILY and restored.time == "06:05", str(restored.to_dict()))
+    check("Programación corrupta tolerada", MaintenanceSchedule.from_dict({"hora": 12}).time == "12:00")
+    check("Códigos de resultado traducidos", scheduler.describe_result(0) == "Correcta" and "acceso denegado" in scheduler.describe_result(2147943785).lower())
+    check("Día fuera de la lista saneado", MaintenanceSchedule.from_dict({"dia": "Festivo"}).weekday == "Lunes")
+
+    check("Argumentos de schtasks", "/Create" in scheduler.schtasks_create_arguments("x.xml") and "/F" in scheduler.schtasks_create_arguments("x.xml"))
+    check("Consulta mediante schtasks sin crear nada", isinstance(scheduler.task_exists(), bool))
+    status = scheduler.task_status()
+    check("Estado coherente con la existencia", status.exists == scheduler.task_exists(), f"existe={status.exists}")
+    if not status.exists:
+        check("Sin tarea: mensaje informativo", bool(status.message), status.message)
+
+
+def test_maintenance() -> None:
+    """Mantenimiento desatendido: simulación, registro y tolerancia a fallos."""
+    schedule = MaintenanceSchedule(enabled=True, clean_temp=True, export_report=True, release_memory=False)
+    report = maintenance.run_maintenance(
+        schedule,
+        dry_run=True,
+        trigger="prueba",
+        min_age_hours=24.0,
+        register=False,
+    )
+    keys = [item.key for item in report.items]
+    check("Simulación con limpieza e informe", keys == ["limpieza", "informe"], str(keys))
+    check("Simulación correcta", report.ok and report.dry_run, report.summary())
+    check("Simulación sin escribir registro", not report.log_path or not Path(report.log_path).exists() or maintenance.recent_runs(1) == [])
+    # Simulación con una carpeta temporal controlada: los números deben cuadrar.
+    with tempfile.TemporaryDirectory() as tmp:
+        controllada = Path(tmp)
+        (controllada / "viejo.tmp").write_bytes(b"0" * 4_000_000)
+        (controllada / "otro.tmp").write_bytes(b"0" * 1_000_000)
+        sim = maintenance.run_maintenance(
+            MaintenanceSchedule(clean_temp=True, export_report=False),
+            dry_run=True,
+            register=False,
+            temp_folder=str(controllada),
+            min_age_hours=0.0,
+        )
+        check("Simulación con la carpeta indicada", sim.item("limpieza").data["archivos"] == 2, str(sim.item("limpieza").data))
+        check(
+            "Resumen de la simulación con los datos del paso",
+            "2 archivos" in sim.summary() and "MB" in sim.summary(),
+            sim.summary(),
+        )
+        check("La simulación no borra nada", (controllada / "viejo.tmp").exists())
+        real_clean = maintenance.run_maintenance(
+            MaintenanceSchedule(clean_temp=True, export_report=False),
+            dry_run=False,
+            register=False,
+            temp_folder=str(controllada),
+            min_age_hours=0.0,
+        )
+        check("Limpieza real de la carpeta indicada", real_clean.removed_files == 2, str(real_clean.removed_files))
+        check("Archivos eliminados de verdad", not any(controllada.iterdir()))
+    check("Simulación con los tres pasos", {item.key for item in maintenance.run_maintenance(
+        MaintenanceSchedule(release_memory=True), dry_run=True, register=False
+    ).items} == {"limpieza", "memoria", "informe"})
+
+    only_log = maintenance.run_maintenance(
+        MaintenanceSchedule(clean_temp=False, export_report=False), dry_run=True, register=False
+    )
+    check("Sin pasos activos no se hace nada", only_log.items and only_log.items[0].key == "nada", str([i.key for i in only_log.items]))
+
+    # El registro tolera líneas corruptas y se recorta.
+    path = maintenance.maintenance_log_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    backup = path.read_text(encoding="utf-8") if path.exists() else None
+    try:
+        path.write_text("{linea rota}\n" + "\n".join(json.dumps({"momento": str(i), "resumen": "x"}) for i in range(250)) + "\n", encoding="utf-8")
+        maintenance._trim_log(path, keep=200)  # noqa: SLF001
+        lines = path.read_text(encoding="utf-8").splitlines()
+        check("Registro recortado a 200 líneas", len(lines) == 200, str(len(lines)))
+        entries = maintenance.recent_runs(5)
+        check("Últimas ejecuciones leídas", len(entries) == 5 and entries[0]["momento"] == "249", str(entries[0]))
+        check("Líneas corruptas ignoradas", all("momento" in entry for entry in entries))
+    finally:
+        if backup is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_text(backup, encoding="utf-8")
+
+    metrics = MetricsService()
+    tasks = TaskStore()
+    real = maintenance.run_maintenance(
+        MaintenanceSchedule(clean_temp=False, release_memory=False, export_report=True),
+        metrics=metrics,
+        tasks=tasks,
+        dry_run=False,
+        trigger="prueba",
+        register=True,
+    )
+    check("Informe real generado", bool(real.report_path) and Path(real.report_path).exists(), real.report_path)
+    check("Informe con datos del equipo", real.item("informe").ok, real.item("informe").detail)
+    check("Ejecución anotada en el registro", bool(maintenance.recent_runs(1)), json.dumps(maintenance.recent_runs(1)[:1])[:80])
+    check("Tarea anotada en el registro de mantenimiento", any(
+        task.title == "Mantenimiento automático" for task in tasks.all()
+    ))
+    check("Informe dentro de la carpeta de informes", Path(real.report_path).parent.name in ("Informes", "PCToolkit"), real.report_path)
+
+
+def test_installer() -> None:
+    """Instalador: copia, accesos directos, registro, arranque automático y desinstalación.
+
+    Todo ocurre en carpetas temporales y con una clave de registro propia, así que
+    la prueba no toca ni el escritorio ni el menú Inicio del usuario.
+    """
+    import time as time_module
+
+    from installer import installer_core as core
+
+    check(
+        "Instalación por usuario (sin permisos)",
+        "Programs" in str(core.default_install_dir()) and core.APP_DISPLAY_NAME in str(core.default_install_dir()),
+        str(core.default_install_dir()),
+    )
+    check("Clave de registro de la aplicación", core.uninstall_key().endswith(r"Uninstall\PCToolkit"), core.uninstall_key())
+    check("Ruta del desinstalador", core.uninstaller_executable().name == "Desinstalar PC Toolkit.exe")
+    check(
+        "Accesos directos previstos",
+        [path.name for path in core.InstallOptions().shortcut_paths()] == ["PC Toolkit.lnk", "PC Toolkit.lnk"],
+        str(core.InstallOptions().shortcut_paths()),
+    )
+    check(
+        "Sin accesos directos si se desactivan",
+        core.InstallOptions(desktop_shortcut=False, start_menu_shortcut=False).shortcut_paths() == [],
+    )
+    # Las carpetas se preguntan a Windows: el escritorio puede estar redirigido
+    # (por ejemplo a OneDrive) y no ser `%USERPROFILE%\Desktop`.
+    check(
+        "Escritorio y menú Inicio reales",
+        core.desktop_dir().is_absolute() and core.desktop_dir().is_dir() and core.start_menu_dir().is_dir(),
+        f"{core.desktop_dir()} · {core.start_menu_dir()}",
+    )
+    check(
+        "Carpeta desconocida usa la ruta prevista",
+        core.known_folder("CarpetaQueNoExiste", Path("C:/respaldo")) == Path("C:/respaldo"),
+    )
+    check("Medida de carpetas", core.directory_size(ROOT / "pctoolkit")[0] > 10_000, str(core.directory_size(ROOT / "pctoolkit")))
+
+    faltante = core.install(core.InstallOptions(source=ROOT / "no_existe", key_name="PCToolkitPruebaTest"))
+    check("Instalación sin origen avisa", not faltante.ok and "build_exe" in faltante.message, faltante.message)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        origen = base / "origen" / "PC Toolkit"
+        origen.mkdir(parents=True)
+        # Para el icono se usa un ejecutable de Windows real y pequeño: el COM de
+        # Windows se niega a guardar un acceso directo cuyo icono sea un PE roto.
+        import shutil as _shutil
+
+        modelo = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "where.exe"
+        if modelo.exists():
+            _shutil.copyfile(modelo, origen / "PC Toolkit.exe")
+        else:  # pragma: no cover - reserva si no hay System32
+            (origen / "PC Toolkit.exe").write_bytes(b"MZ")
+        (origen / "Desinstalar PC Toolkit.exe").write_bytes(b"MZ")
+        (origen / "_internal").mkdir()
+        (origen / "_internal" / "base_library.zip").write_bytes(b"0" * 2048)
+        esperado_archivos = sum(1 for item in origen.rglob("*") if item.is_file())
+        esperado_bytes = sum(item.stat().st_size for item in origen.rglob("*") if item.is_file())
+        escritorio = base / "escritorio"
+        menu = base / "menu"
+        escritorio.mkdir()
+        menu.mkdir()
+        destino = base / "instalado"
+
+        opciones = core.InstallOptions(
+            target_dir=destino,
+            autostart=True,
+            source=origen,
+            key_name="PCToolkitPruebaTest",
+            run_value="PCToolkitPruebaTest",
+            desktop=escritorio,
+            start_menu=menu,
+            launch_after=False,
+        )
+        pasos: list[str] = []
+        resultado = core.install(opciones, progress=pasos.append)
+        check("Instalación correcta", resultado.ok, resultado.message)
+        check("Pasos informados", len(pasos) >= 3, " · ".join(pasos))
+        check(
+            "Archivos y tamaño calculados",
+            resultado.files == esperado_archivos and resultado.bytes == esperado_bytes,
+            f"{resultado.files} archivos, {resultado.bytes} bytes (esperado {esperado_archivos}/{esperado_bytes})",
+        )
+        check(
+            "Sin avisos sobre los accesos directos",
+            not [aviso for aviso in resultado.warnings if "acceso directo" in aviso.lower()],
+            " | ".join(resultado.warnings),
+        )
+        check(
+            "Accesos directos creados",
+            len(resultado.shortcuts) == 2 and all(Path(path).exists() for path in resultado.shortcuts),
+            str(resultado.shortcuts),
+        )
+        objetivo = core.read_shortcut_target(escritorio / "PC Toolkit.lnk")
+        check(
+            "El acceso directo apunta al programa instalado",
+            objetivo.lower() == str(core.app_executable(destino)).lower(),
+            objetivo,
+        )
+        entrada = core.read_uninstall_entry("PCToolkitPruebaTest") or {}
+        check("Registrado en «Aplicaciones instaladas»", entrada.get("DisplayName") == "PC Toolkit", str(entrada.get("DisplayName")))
+        check("Con la versión de la aplicación", entrada.get("DisplayVersion") == APP_VERSION, str(entrada.get("DisplayVersion")))
+        check(
+            "Desinstalador registrado",
+            entrada.get("UninstallString") == f'"{core.uninstaller_executable(destino)}"',
+            str(entrada.get("UninstallString")),
+        )
+        check("Comando silencioso registrado", "--silencioso" in str(entrada.get("QuietUninstallString", "")))
+        check("Tamaño estimado registrado", int(entrada.get("EstimatedSize", 0)) > 0, str(entrada.get("EstimatedSize")))
+        check("Ubicación registrada", entrada.get("InstallLocation") == str(destino), str(entrada.get("InstallLocation")))
+        arranque = core.autostart_command("PCToolkitPruebaTest")
+        check("Arranque automático con la bandeja", arranque.endswith("--bandeja") and "PC Toolkit.exe" in arranque, arranque)
+        check("Ruta del origen detectada", core.source_dir().name in ("PC Toolkit", "installer"), str(core.source_dir()))
+
+        borrado = core.uninstall(
+            target_dir=destino,
+            key_name="PCToolkitPruebaTest",
+            run_value="PCToolkitPruebaTest",
+            desktop=escritorio,
+            start_menu=menu,
+        )
+        check("Desinstalación correcta", borrado.ok, borrado.message)
+        check(
+            "Accesos directos eliminados",
+            not (escritorio / "PC Toolkit.lnk").exists() and not (menu / "PC Toolkit.lnk").exists(),
+        )
+        check("Entrada de registro eliminada", core.read_uninstall_entry("PCToolkitPruebaTest") is None)
+        check("Arranque automático quitado", core.autostart_command("PCToolkitPruebaTest") == "")
+        limite = time_module.time() + 30
+        while time_module.time() < limite and destino.exists():
+            time_module.sleep(0.5)
+        check("Carpeta de programa eliminada", not destino.exists(), str(destino))
+
+        # Con «borrar datos» se lleva también la carpeta de datos del usuario.
+        datos = Path(_TEMP_HOME) / "PCToolkit"
+        datos.mkdir(parents=True, exist_ok=True)
+        (datos / "historial.jsonl").write_text("ejemplo\n", encoding="utf-8")
+        if os.environ.get("APPDATA") == _TEMP_HOME:
+            borrado_datos = core.uninstall(
+                target_dir=base / "otra",
+                key_name="PCToolkitPruebaTest",
+                run_value="PCToolkitPruebaTest",
+                desktop=escritorio,
+                start_menu=menu,
+                remove_user_data=True,
+                keep_folder=True,
+            )
+            check("Desinstalación con datos del usuario", borrado_datos.ok and not datos.exists(), borrado_datos.message)
+
+
+def test_interface() -> None:
+    from PySide6.QtCore import QSettings, QTime, Qt
+
+    from pctoolkit.core.alerts import METRIC_CPU, METRIC_DISK, METRIC_RAM, AlertConfig
+    from pctoolkit.core.history import HistoryStore
+    from pctoolkit.core.settings import AppSettings
+    from pctoolkit.ui.shell import MainWindow
+    from pctoolkit.ui.theme import apply_theme
+
+    app = QApplication.instance() or QApplication(sys.argv[:1])
+    # El tema se fija a mano: con `auto` la suite dependería del modo en que esté
+    # Windows en cada equipo y las comprobaciones del render dejarían de ser ciertas.
+    apply_theme(app, "dark")
+    app_settings = AppSettings(QSettings(str(Path(_TEMP_HOME) / "ajustes_prueba.ini"), QSettings.IniFormat))
+    app_settings.notify_on_alert = False  # evita notificaciones reales durante las pruebas
+    app_settings.eco_mode = False  # el perfil se comprueba explícitamente más abajo
+    app_settings.eco_when_hidden = True
+    app_settings.memory_options = MemoryOptions(
+        auto_enabled=False, min_process_mb=50.0, empty_system_cache=False, purge_standby=False
+    )
+    # Los umbrales por defecto (90 %) se alcanzan de verdad mientras corre la
+    # prueba en un equipo cargado, y entonces el aviso aparece antes de tiempo.
+    # La ventana arranca con umbrales imposibles: las alertas se provocan a
+    # propósito más abajo, cuando toca comprobarlas.
+    app_settings.alert_config = AlertConfig(enabled=True, sustained_samples=30, cooldown_minutes=60)
+    for metrica in (METRIC_CPU, METRIC_RAM, METRIC_DISK):
+        app_settings.alert_config.set_threshold(metrica, 100.0)
+    history_store = HistoryStore(Path(_TEMP_HOME) / "historial_prueba.jsonl")
+    history_store.clear()
+    window = MainWindow(app_settings, history_store)
+    window.resize(1360, 860)
+    window.show()
+    _settle(app, 900)
+    snap = window.metrics.poll()
+    window._on_sample(snap)  # noqa: SLF001
+    check("Ventana creada", window.centralWidget() is not None)
+    check("Ocho páginas cargadas", window.stack.count() == 8, str(window.stack.count()))
+    # Arrancar no debe lanzar trabajo en segundo plano (una consulta del
+    # Programador de tareas son varios segundos de PowerShell): el estado real se
+    # lee al abrir esa página.
+    from pctoolkit.ui import workers as workers_ui
+
+    en_marcha_al_arrancar = workers_ui.pending_calls()
+    check(
+        "Sin consultas en segundo plano al arrancar",
+        not en_marcha_al_arrancar,
+        ", ".join(call.describe() for call in en_marcha_al_arrancar),
+    )
+    check(
+        "El estado del mantenimiento no se consulta hasta abrir la página",
+        not window.schedule_page.status_loaded and window.schedule_page.state_badge.text() == "Sin consultar",
+        window.schedule_page.state_badge.text(),
+    )
+    for key in ("home", "memory", "startup", "disk", "tools", "tasks", "reports", "schedule"):
+        window.navigate(key)
+        check(f"Navegación a {key}", window.stack.currentWidget() is window._pages[key])  # noqa: SLF001
+    check(
+        "Al abrir «Mantenimiento» se consulta el estado en Windows",
+        window.schedule_page.status_querying or window.schedule_page.status_loaded,
+        f"consulta={window.schedule_page.status_querying} leido={window.schedule_page.status_loaded}",
+    )
+
+    # --- Página de memoria ------------------------------------------------
+    window.navigate("memory")
+    _settle(app, 300)
+    check("Medidor de RAM con la última muestra", window.optimize_page.ram_value.text().endswith("%"), window.optimize_page.ram_value.text())
+    check("Lista de procesos con entradas", window.optimize_page.process_list.count() > 0, str(window.optimize_page.process_list.count()))
+    rows = list(window.optimize_page._rows.values())  # noqa: SLF001
+    check("Filas con botón de liberación", bool(rows) and all(row.trim_button.text() == "Liberar" for row in rows))
+    # La lista tiene que dejar ver los procesos con holgura: ninguna fila ni botón
+    # recortados por la derecha, sin barra horizontal y con varias filas enteras a
+    # la vista (era justo lo que fallaba cuando la lista era un QListWidget).
+    lista = window.optimize_page.process_list
+    viewport = lista.viewport()
+
+    def _sobresale(widget) -> bool:  # noqa: ANN001
+        esquina = widget.mapTo(viewport, widget.rect().topLeft())
+        return esquina.x() + widget.width() > viewport.width()
+
+    fuera = [row.target.name for row in rows if _sobresale(row) or _sobresale(row.trim_button)]
+    check("Ninguna fila de procesos se sale del ancho", not fuera, ", ".join(fuera[:3]))
+    check(
+        "Sin desplazamiento horizontal en la lista de procesos",
+        lista.horizontalScrollBar().maximum() == 0,
+        str(lista.horizontalScrollBar().maximum()),
+    )
+    enteras = sum(
+        1
+        for row in rows
+        if row.mapTo(viewport, row.rect().topLeft()).y() + row.height() <= viewport.height()
+    )
+    check("Varias filas de procesos enteras a la vista", enteras >= 5, f"{enteras} de {len(rows)}")
+    if rows:
+        victim = rows[0]
+        victim.trim_button.click()
+        _settle(app, 250)
+        check("Recorte individual desde la interfaz", not victim.trim_button.isEnabled(), victim.trim_button.text())
+    check("Aviso de permisos mostrado", bool(window.optimize_page.privilege_label.text()), window.optimize_page.privilege_label.text()[:40])
+    check("Opciones de memoria reflejadas", window.optimize_page.min_mb_spin.value() == 50.0, str(window.optimize_page.min_mb_spin.value()))
+
+    # Flujo real de liberación a través de la ventana (en segundo plano).
+    window.release_memory_now("manual")
+    for _ in range(60):
+        if not window._memory_busy:  # noqa: SLF001
+            break
+        _settle(app, 200)
+    result = window.optimize_page.last_result
+    check("Liberación completada desde la interfaz", result is not None and result.processes_trimmed > 0, result.summary() if result else "sin resultado")
+    check("Resultado mostrado en la tarjeta", "MB" in window.optimize_page.last_freed.text(), window.optimize_page.last_freed.text())
+    check("Historial de la sesión con la limpieza", window.optimize_page.history_list.count() == 1, str(window.optimize_page.history_list.count()))
+    check("Botón habilitado de nuevo", window.optimize_page.release_button.isEnabled())
+
+    # La guardia automática está conectada al bucle de muestreo.
+    import time as time_module
+
+    window.memory_guard.options = MemoryOptions(
+        auto_enabled=True, threshold_percent=30.0, sustained_samples=1, cooldown_minutes=60
+    )
+    # Con el enfriamiento activo la guardia mira la muestra pero no llega a limpiar,
+    # así la prueba comprueba el cableado sin alterar de nuevo los procesos reales.
+    window.memory_guard.note_clean(now=time_module.time())
+    high = window.metrics.poll()  # al tomar la muestra la ventana ya la evalúa
+    before_streak = window.memory_guard.streak
+    high.ram_percent = 99.0
+    window._on_sample(high)  # noqa: SLF001
+    check("La muestra periódica llega a la guardia", before_streak >= 1, str(before_streak))
+    check(
+        "La limpieza automática reacciona a la muestra",
+        window.memory_guard.streak == before_streak + 1,
+        f"{before_streak} -> {window.memory_guard.streak}",
+    )
+    check("El enfriamiento evita limpiezas encadenadas", not window._memory_busy)  # noqa: SLF001
+    window.memory_guard.options = app_settings.memory_options
+    window.metrics.poll()
+
+    # --- Página de programas de inicio --------------------------------------
+    from PySide6.QtWidgets import QPushButton, QScrollArea
+
+    from pctoolkit.core import startup as startup_core_ui
+    from pctoolkit.ui.startup_page import StartupRow
+
+    window.navigate("startup")
+    _settle(app, 400)
+    arranque = window.startup_page
+    check("La lista de arranque tiene entradas", len(arranque.entries) >= 1, f"{len(arranque.entries)} entradas")
+    check("Cuatro cifras en la cabecera", arranque.tiles_layout.count() == 4, str(arranque.tiles_layout.count()))
+    filas_arranque = arranque.findChildren(StartupRow)
+    check(
+        "Una fila por entrada",
+        len(filas_arranque) == len(arranque.entries),
+        f"{len(filas_arranque)} filas / {len(arranque.entries)} entradas",
+    )
+    check(
+        "Las entradas se agrupan por origen",
+        len(startup_core_ui.by_source(arranque.entries)) >= 1,
+        ", ".join(startup_core_ui.by_source(arranque.entries)),
+    )
+    check("Sin cambios al empezar", arranque.store.count() == 0, str(arranque.store.count()))
+    check("La tarjeta de deshacer avisa de que está vacía", arranque.undo_rows == 1, str(arranque.undo_rows))
+
+    vista = arranque.findChild(QScrollArea)
+    area = vista.viewport()
+
+    def _sale(widget) -> bool:  # noqa: ANN001
+        esquina = widget.mapTo(area, widget.rect().topLeft())
+        return esquina.x() + widget.width() > area.width()
+
+    fuera_ancho = [fila.entry.name for fila in filas_arranque if _sale(fila)]
+    check("Ninguna fila de arranque se sale del ancho", not fuera_ancho, ", ".join(fuera_ancho[:3]))
+    check(
+        "Sin desplazamiento horizontal en programas de inicio",
+        vista.horizontalScrollBar().maximum() == 0,
+        str(vista.horizontalScrollBar().maximum()),
+    )
+    botones_fuera = [fila.entry.name for fila in filas_arranque if _sale(fila.toggle_button)]
+    check("Los botones de activar/desactivar caben en su fila", not botones_fuera, ", ".join(botones_fuera[:3]))
+    con_boton = [fila for fila in filas_arranque if fila.entry.can_toggle]
+    check(
+        "Cada fila conmutable ofrece activar o desactivar",
+        all(fila.toggle_button.text() in ("Activar", "Desactivar") for fila in con_boton),
+        str([fila.toggle_button.text() for fila in con_boton[:4]]),
+    )
+    # Las filas que sí se pueden cambiar y las que no se comprueban con entradas
+    # propias: así la prueba no depende de lo que haya instalado en el equipo.
+    ejemplo = startup_core_ui.StartupEntry(
+        id="ejemplo",
+        name="Programa de ejemplo",
+        command='"C:\\App\\app.exe"',
+        source=startup_core_ui.SOURCE_USUARIO,
+        location="HKEY_CURRENT_USER\\...\\Run",
+        kind=startup_core_ui.KIND_REGISTRO,
+        enabled=True,
+    )
+    fila_ejemplo = StartupRow(ejemplo)
+    avisos: list[str] = []
+    fila_ejemplo.toggle_requested.connect(lambda entrada: avisos.append(entrada.name))
+    fila_ejemplo.toggle_button.click()
+    check("El botón de la fila avisa del cambio", avisos == ["Programa de ejemplo"], ", ".join(avisos))
+    check(
+        "La fila explica qué pasa al desactivar",
+        fila_ejemplo.toggle_button.text() == "Desactivar" and "borra" in fila_ejemplo.toggle_button.toolTip(),
+        fila_ejemplo.toggle_button.toolTip()[:70],
+    )
+    fila_apagada = StartupRow(startup_core_ui.StartupEntry(
+        id="apagada",
+        name="Entrada apagada",
+        command="",
+        source=startup_core_ui.SOURCE_USUARIO,
+        location="HKEY_CURRENT_USER\\...\\RunOnce",
+        kind=startup_core_ui.KIND_REGISTRO,
+        enabled=False,
+    ))
+    check("Una entrada desactivada ofrece activarla", fila_apagada.toggle_button.text() == "Activar")
+    solo_lectura = StartupRow(startup_core_ui.StartupEntry(
+        id="solo-lectura",
+        name="Se ejecuta una vez",
+        command="",
+        source=startup_core_ui.SOURCE_USUARIO,
+        location="HKEY_CURRENT_USER\\...\\RunOnce",
+        kind=startup_core_ui.KIND_REGISTRO,
+        enabled=True,
+        can_toggle=False,
+        note="Se ejecuta una sola vez.",
+    ))
+    check(
+        "Una entrada que no se puede cambiar lo dice",
+        solo_lectura.toggle_button.text() == "Solo lectura" and not solo_lectura.toggle_button.isEnabled(),
+        solo_lectura.toggle_button.text(),
+    )
+
+    # Cambio real y deshacer de punta a punta, sobre una clave propia de prueba.
+    import winreg as _winreg
+
+    base_ui = r"Software\PCToolkit\PruebaArranqueUI"
+    ruta_run = base_ui + r"\Run"
+    ruta_marca = base_ui + r"\StartupApproved"
+    fuente_ui = startup_core_ui.RegistrySource(
+        "prueba-ui", "Prueba", "HKCU\\Prueba", ruta_run, _winreg.HKEY_CURRENT_USER, ruta_marca
+    )
+    try:
+        with _winreg.CreateKeyEx(_winreg.HKEY_CURRENT_USER, ruta_run, 0, _winreg.KEY_SET_VALUE) as clave:
+            _winreg.SetValueEx(clave, "PruebaUI", 0, _winreg.REG_SZ, f'"{sys.executable}" --version')
+        entrada_ui = startup_core_ui.read_registry_entries([fuente_ui])[0]
+        aplicado, mensaje = startup_core_ui.move(entrada_ui, False, arranque.store)
+        check("El cambio se aplica y se anota", aplicado, mensaje)
+        arranque.refresh(with_tasks=False)
+        check("El cambio aparece en la tarjeta de deshacer", arranque.store.count() == 1, str(arranque.store.count()))
+        boton_deshacer = None
+        for indice in range(arranque.undo_box.count()):
+            fila_undo = arranque.undo_box.itemAt(indice).widget()
+            candidato = fila_undo.findChild(QPushButton) if fila_undo is not None else None
+            if candidato is not None and candidato.text() == "Deshacer":
+                boton_deshacer = candidato
+                break
+        check("La tarjeta de deshacer ofrece su botón", boton_deshacer is not None)
+        if boton_deshacer is not None:
+            boton_deshacer.click()
+            _settle(app, 300)
+            devuelta = startup_core_ui.read_registry_entries([fuente_ui])[0]
+            check("Deshacer desde la pantalla lo deja como estaba", devuelta.enabled, devuelta.status_label)
+            check("El apunte queda marcado como deshecho", arranque.store.pending() == [])
+    finally:
+        _borrar_clave_registro(_winreg.HKEY_CURRENT_USER, base_ui)
+    arranque.store.clear()
+    arranque.refresh(with_tasks=False)
+    check("La clave de prueba de la interfaz se elimina", not _existe_clave_registro(_winreg.HKEY_CURRENT_USER, base_ui))
+
+    # --- Página de mantenimiento programado --------------------------------
+    window.navigate("schedule")
+    _settle(app, 250)
+    page = window.schedule_page
+    check("Frecuencias en la interfaz", page.frequency_combo.count() == len(scheduler.FREQUENCIES), str(page.frequency_combo.count()))
+    page.frequency_combo.setCurrentText(scheduler.FREQ_WEEKLY)
+    page.weekday_combo.setCurrentText("Miércoles")
+    page.time_edit.setTime(QTime(6, 5))
+    page.clean_check.setChecked(True)
+    page.report_check.setChecked(False)
+    page.memory_check.setChecked(True)
+    collected = page._collect_schedule()  # noqa: SLF001
+    check(
+        "La interfaz recoge la programación",
+        collected.frequency == scheduler.FREQ_WEEKLY and collected.time == "06:05" and collected.weekday == "Miércoles",
+        collected.describe(),
+    )
+    check("El día se habilita solo en la vista semanal", page.weekday_combo.isEnabled())
+    page.frequency_combo.setCurrentText(scheduler.FREQ_LOGON)
+    check("Sin hora al iniciar sesión", not page.time_edit.isEnabled())
+    page.frequency_combo.setCurrentText(scheduler.FREQ_DAILY)
+    check("Comando previsto mostrado", "--mantenimiento" in scheduler.command_line(collected), scheduler.command_line(collected))
+
+    page._render_status(scheduler.TaskStatus())  # noqa: SLF001
+    check("Estado sin tarea", page.state_badge.text() == "Sin programar", page.state_badge.text())
+    check("Aviso para programarla", "Guardar y programar" in page.notice_label.text(), page.notice_label.text()[:60])
+    page._render_status(  # noqa: SLF001
+        scheduler.TaskStatus(
+            exists=True,
+            enabled=True,
+            state="Ready",
+            next_run="2026-10-11 06:05",
+            last_run="2026-10-10 06:05",
+            last_result=0,
+            command=scheduler.command_line(app_settings.schedule_config),
+        )
+    )
+    check("Estado con tarea programada", page.state_badge.text() == "Programada", page.state_badge.text())
+    check("Próxima ejecución mostrada", page.status_rows["proxima"].text() == "2026-10-11 06:05")
+    check("Resultado traducido", page.status_rows["resultado"].text() == "Correcta", page.status_rows["resultado"].text())
+    check("Botones operativos con tarea", page.run_button.isEnabled() and page.delete_button.isEnabled())
+    page._render_status(scheduler.TaskStatus(exists=True, enabled=False, state="Disabled"))  # noqa: SLF001
+    check("Estado de tarea desactivada", page.state_badge.text() == "Desactivada", page.state_badge.text())
+    check("Histórico de ejecuciones consultado", page.history_list.count() >= 1, str(page.history_list.count()))
+
+    # --- Bandeja y consumo -------------------------------------------------
+    if window.tray.available:
+        check("Menú de bandeja con limpieza de memoria", window.tray.memory_action.text() == "Liberar memoria ahora")
+        check("Menú de bandeja con mantenimiento", "mantenimiento" in window.tray.maintenance_action.text().lower())
+    else:
+        check(
+            "Sin bandeja: acciones igualmente definidas",
+            hasattr(window.tray, "memory_requested") and hasattr(window.tray, "maintenance_requested"),
+            "bandeja no disponible en este entorno",
+        )
+    check("Perfil completo con la ventana a la vista", window.metrics.profile == PROFILE_FULL, window.metrics.profile)
+    window.hide()
+    _settle(app, 200)
+    check("Perfil eco con la ventana oculta", window.metrics.profile == PROFILE_ECO, window.metrics.profile)
+    check("Muestreo más lento en modo eco", window.metrics.interval_ms > 2000, str(window.metrics.interval_ms))
+    window.show()
+    _settle(app, 200)
+    check("Vuelve al muestreo completo", window.metrics.profile == PROFILE_FULL and window.metrics.interval_ms <= 1200)
+    window.metrics.set_process_detail(False)
+    check("Sin lista de procesos cuando no se necesita", window.metrics.poll(with_processes=False).top_processes == [])
+    check("Lista de procesos bajo demanda", len(window.metrics.poll(with_processes=True).top_processes) > 0)
+    window.navigate("home")
+    tools_page = window.tools_page
+    check("Catálogo de accesos en la interfaz", len(tools_page._tiles) == len(tools.TOOLS), f"{len(tools_page._tiles)} fichas")  # noqa: SLF001
+    window.navigate("tools")
+    tools_page.search.setText("disco")
+    visible = [tile for tile in tools_page._tiles if tile.matches]  # noqa: SLF001
+    check("Filtro de herramientas", 0 < len(visible) < len(tools_page._tiles), f"{len(visible)} coincidencias")  # noqa: SLF001
+    tools_page.search.setText("")
+    window.navigate("tasks")
+    check("Estadísticas de tareas visibles", window.tasks_page.stats_layout.count() == 4)  # noqa: SLF001
+    window.navigate("reports")
+    check("Vista previa con filas", window.reports_page.preview_rows.count() >= 6)  # noqa: SLF001
+
+    # Flujo completo de exportación desde la interfaz (sin diálogos modales).
+    with tempfile.TemporaryDirectory() as tmp:
+        from PySide6.QtWidgets import QMessageBox
+
+        original_information = QMessageBox.information
+        original_question = QMessageBox.question
+        QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
+        QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
+        try:
+            page = window.reports_page
+            page.folder_edit.setText(tmp)
+            page.filename_edit.setText("informe_ui.html")
+            for fmt in ("HTML", "CSV", "JSON"):
+                page._formats[fmt].setChecked(True)  # noqa: SLF001
+                page.update_preview()
+                page.export_now()
+                produced = list(Path(tmp).glob(f"informe_ui*.{fmt.lower()}"))
+                check(f"Exportación {fmt} desde la interfaz", len(produced) == 1 and produced[0].stat().st_size > 500)
+            page._formats["HTML"].setChecked(True)  # noqa: SLF001
+            check("Historial de informes de la sesión", page.history_list.count() == 3, str(page.history_list.count()))
+            check("Informe HTML con contenido real", "PC Toolkit" in (Path(tmp) / "informe_ui.html").read_text(encoding="utf-8"))
+        finally:
+            QMessageBox.information = original_information
+            QMessageBox.question = original_question
+
+    # --- Historial en el inicio -----------------------------------------
+    from pctoolkit.core.history import Sample
+    import time as time_module
+
+    base = time_module.time()
+    demo_samples = [
+        Sample(
+            timestamp=base - (40 - index) * 600,
+            cpu=20 + index % 10,
+            ram=50 + index % 7,
+            disk=60.0,
+        )
+        for index in range(40)
+    ]
+    for sample in demo_samples:
+        history_store.append(sample)
+    window.dashboard.reload_history()
+    check(
+        "Historial cargado en la gráfica",
+        window.dashboard.chart.sample_count == len(history_store.load(24)),
+        f"{window.dashboard.chart.sample_count} muestras en la gráfica",
+    )
+    check("Se cargaron las 40 muestras de prueba", window.dashboard.chart.sample_count >= 40, str(window.dashboard.chart.sample_count))
+    check(
+        "Estadísticas de media y máximo",
+        "media" in window.dashboard.history_stats["cpu"].text()
+        and "máx" in window.dashboard.history_stats["disk"].text(),
+        window.dashboard.history_stats["cpu"].text(),
+    )
+    check("Etiqueta de rango temporal", "Datos de l" in window.dashboard.history_range.text(), window.dashboard.history_range.text())
+    window.dashboard._toggle_series("disk", False)  # noqa: SLF001
+    check("Serie oculta desde la leyenda", window.dashboard.chart.is_series_visible("disk") is False)
+    window.dashboard._toggle_series("disk", True)  # noqa: SLF001
+    check("Serie visible de nuevo", window.dashboard.chart.is_series_visible("disk") is True)
+    before = window.dashboard.chart.sample_count
+    window.dashboard.append_history_sample(Sample(timestamp=base, cpu=99.0, ram=50.0, disk=60.0))
+    check(
+        "Muestra nueva añadida en vivo",
+        window.dashboard.chart.sample_count == before + 1,
+        f"{before} -> {window.dashboard.chart.sample_count}",
+    )
+    chart_image = window.dashboard.chart.grab()
+    check("Gráfica dibujada", not chart_image.isNull() and chart_image.width() > 100, f"{chart_image.width()}x{chart_image.height()}")
+
+    # Cada serie debe aparecer en la posición que le corresponde.
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QColor, QImage, QPainter
+
+    from pctoolkit.core.config import COLORS
+    from pctoolkit.ui.chart import SERIES
+
+    chart = window.dashboard.chart
+    image = QImage(chart.size(), QImage.Format_ARGB32)
+    image.fill(QColor(COLORS["panel"]))
+    painter = QPainter(image)
+    chart.render(painter, QPoint(0, 0))
+    painter.end()
+    rect = chart._plot_rect()  # noqa: SLF001
+    hits = {key: 0 for key, _label, _color in SERIES}
+    for sample in demo_samples[-8:]:
+        x = int(chart._x_for(sample.timestamp, rect))  # noqa: SLF001
+        for key, _label, color in SERIES:
+            y0 = int(chart._y_for(getattr(sample, key), rect))  # noqa: SLF001
+            target = QColor(color)
+            best = None
+            for y in range(max(0, y0 - 3), min(image.height(), y0 + 4)):
+                pixel = image.pixelColor(x, y)
+                distance = (
+                    (pixel.red() - target.red()) ** 2
+                    + (pixel.green() - target.green()) ** 2
+                    + (pixel.blue() - target.blue()) ** 2
+                ) ** 0.5
+                best = distance if best is None else min(best, distance)
+            if best is not None and best <= 70:
+                hits[key] += 1
+    check("Las tres series se pintan en su posición", all(value >= 5 for value in hits.values()), str(hits))
+    empty_chart = window.dashboard.history
+    empty_chart.clear()
+    window.dashboard.reload_history()
+    check("Gráfica sin datos controlada", window.dashboard.chart.sample_count == 0 and not window.dashboard.chart.grab().isNull())
+    for index in range(40):
+        history_store.append(Sample(timestamp=base - (40 - index) * 600, cpu=20.0, ram=50.0, disk=60.0))
+    window.dashboard.reload_history()
+
+    # --- Bandeja del sistema, umbrales y avisos --------------------------
+    from pctoolkit.ui.tray import TrayController, status_pixmap, tray_available
+
+    check("Icono de bandeja dibujado", not status_pixmap(snap, 32).isNull() and status_pixmap(snap, 32).width() == 32)
+    check("Bandeja disponible en este sistema", tray_available() is True, "sin bandeja: se omite el icono")
+    if tray_available():
+        check("Controlador de bandeja activo", window.tray.active is True, str(window.tray.active))
+        statuses = {key: action.text() for key, action in window.tray.status_actions.items()}
+        check("Menú con el estado actual", statuses[METRIC_CPU].startswith("CPU: ") and "%" in statuses[METRIC_RAM], str(statuses))
+        check("Tooltip con métricas", "CPU" in window.tray.tray.toolTip() and "RAM" in window.tray.tray.toolTip(), window.tray.tray.toolTip().splitlines()[1] if window.tray.tray.toolTip() else "")
+
+    # Umbrales bajos (pero válidos para el diálogo) para provocar avisos reales
+    config = AlertConfig(enabled=True, sustained_samples=1, cooldown_minutes=30)
+    for metric, value in ((METRIC_CPU, 10.0), (METRIC_RAM, 10.0), ("disk", 10.0)):
+        config.set_threshold(metric, value)
+    window.alerts.config = config
+    window.settings.alert_config = config
+    window.settings.sync()
+    window.alerts.reset()
+    check("Sin avisos antes de evaluar", window.alert_history == [])
+    window._on_sample(window.metrics.poll())  # noqa: SLF001
+    alerts = window.alert_history
+    check("Aviso generado al superar el umbral", len(alerts) >= 1, str([(event.metric, round(event.value)) for event in alerts]))
+    check("Indicador de aviso visible", window.alert_indicator.isVisible() and "%" in window.alert_indicator.text(), window.alert_indicator.text())
+    first_count = len(alerts)
+    window._on_sample(window.metrics.poll())  # noqa: SLF001
+    check("Avisos limitados por enfriamiento", len(window.alert_history) == first_count, str(len(window.alert_history)))
+
+    # --- Diálogo de alertas ----------------------------------------------
+    from pctoolkit.ui.alert_settings import AlertSettingsDialog
+
+    dialog = AlertSettingsDialog(app_settings, history_store, tray_available())
+    check("Diálogo de alertas construido", dialog.spins[METRIC_CPU].value() == 10, str(dialog.spins[METRIC_CPU].value()))
+    check("Sin desbordes en el diálogo", dialog.sizeHint().width() <= 780, f"{dialog.sizeHint().width()} px")
+    dialog.spins[METRIC_CPU].setValue(77)
+    dialog.sustained_spin.setValue(2)
+    dialog.cooldown_spin.setValue(20)
+    dialog.history_spin.setValue(45)
+    dialog.tray_check.setChecked(True)
+    applied = dialog.apply()
+    check(
+        "Umbrales guardados desde el diálogo",
+        applied.threshold_for(METRIC_CPU) == 77.0 and app_settings.alert_config.threshold_for(METRIC_CPU) == 77.0,
+        str(applied.thresholds),
+    )
+    check(
+        "Muestras sostenidas y enfriamiento guardados",
+        app_settings.alert_config.sustained_samples == 2 and app_settings.alert_config.cooldown_minutes == 20,
+    )
+    check("Intervalo del historial guardado", app_settings.history_interval_seconds == 45, str(app_settings.history_interval_seconds))
+    window.alerts.config = app_settings.alert_config
+    check("Motor de alertas sincronizado", window.alerts.config.threshold_for(METRIC_CPU) == 77.0)
+    if window.tray.tray is not None:
+        window.tray.alert_action.setChecked(False)
+        check("El menú de la bandeja desactiva las alertas", app_settings.alert_config.enabled is False)
+        window.tray.alert_action.setChecked(True)
+        check("El menú de la bandeja las reactiva", app_settings.alert_config.enabled is True)
+    dialog.close()
+    app_settings.history_interval_seconds = 30
+
+    window.settings.alert_config = config
+    window.settings.tray_enabled = True
+    window.settings.close_to_tray = True
+    window.settings.sync()
+    reloaded = AppSettings(QSettings(str(Path(_TEMP_HOME) / "ajustes_prueba.ini"), QSettings.IniFormat))
+    check("Preferencias persistidas", reloaded.alert_config.sustained_samples == 1 and reloaded.tray_enabled is True)
+    check("Intervalo de historial persistido", reloaded.history_interval_seconds >= 5, str(reloaded.history_interval_seconds))
+    window.settings.history_interval_seconds = 15
+    check("Intervalo se acota al guardar", AppSettings(QSettings(str(Path(_TEMP_HOME) / "ajustes_prueba.ini"), QSettings.IniFormat)).history_interval_seconds == 15)
+    window.settings.history_interval_seconds = 30
+
+    # Cerrar con la bandeja activa mantiene la app en segundo plano.
+    if tray_available():
+        window.show()
+        _settle(app, 150)
+        window.close()
+        _settle(app, 150)
+        check("Cerrar oculta la ventana con la bandeja activa", window.isVisible() is False and window._force_quit is False)  # noqa: SLF001
+        window.quit_application()
+        _settle(app, 150)
+        check("Salir desde la bandeja cierra de verdad", window._force_quit is True)  # noqa: SLF001
+    else:
+        window.quit_application()
+
+    # Se reabre para el resto de comprobaciones de interfaz.
+    window = MainWindow(app_settings, history_store)
+    window.resize(1360, 860)
+    window.show()
+    _settle(app, 600)
+    window._on_sample(window.metrics.poll())  # noqa: SLF001
+
+    # Marcar una tarea desde la interfaz y comprobar el estado en el registro.
+    window.navigate("tasks")
+    tasks_page = window.tasks_page
+    pending = window.task_store.pending()
+    if pending:
+        target_id = pending[0].id
+        tasks_page._toggle(target_id)  # noqa: SLF001
+        check("Marcar tarea desde la interfaz", window.task_store.get(target_id).is_done)
+        tasks_page._toggle(target_id)  # noqa: SLF001
+
+    # Ninguna página debe desbordar en horizontal, ni en el tamaño mínimo.
+    from PySide6.QtWidgets import QScrollArea
+
+    for size in ((1360, 860), (1180, 740)):
+        window.resize(*size)
+        _settle(app, 250)
+        for key in ("home", "memory", "disk", "tools", "tasks", "reports", "schedule"):
+            window.navigate(key)
+            _settle(app, 250)
+            page = window._pages[key]  # noqa: SLF001
+            areas = page.findChildren(QScrollArea)
+            overflow = [area.horizontalScrollBar().maximum() for area in areas]
+            check(
+                f"Sin desbordes horizontales en {key} ({size[0]}x{size[1]})",
+                all(value == 0 for value in overflow),
+                str(overflow),
+            )
+    window.resize(1360, 860)
+    _settle(app, 250)
+
+    # Aspecto del render real: fondo oscuro, sin dominante azul y con el acento esmeralda.
+    window.navigate("home")
+    _settle(app, 300)
+    image = window.grab().toImage()
+    # Se mira por bloques de 40x40: un elemento azul de verdad llenaría el suyo,
+    # mientras que los flecos de color del suavizado de texto quedan dispersos.
+    block = 40
+    step = 2
+    sampled = dark = accent = 0
+    totals: dict[tuple[int, int], int] = {}
+    blues: dict[tuple[int, int], int] = {}
+    for y in range(0, image.height(), step):
+        for x in range(0, image.width(), step):
+            colour = image.pixelColor(x, y)
+            red, green, blue_channel = colour.red(), colour.green(), colour.blue()
+            sampled += 1
+            if red + green + blue_channel < 190:
+                dark += 1
+            if green > red + 40 and green > blue_channel + 20 and green > 90:
+                accent += 1
+            key = (x // block, y // block)
+            totals[key] = totals.get(key, 0) + 1
+            if blue_channel > red + 30 and blue_channel > green + 30:
+                blues[key] = blues.get(key, 0) + 1
+    # Con la paleta cálida lo esperable es que no haya ni un bloque azulado, así
+    # que el caso vacío es el bueno y no un error: sin `default` la comprobación
+    # saltaba con `max()` sobre una secuencia vacía.
+    worst = max((count / totals[key] for key, count in blues.items()), default=0.0)
+    check("Fondo oscuro en pantalla", dark / sampled > 0.5, f"{dark / sampled:.0%} de píxeles oscuros")
+    check(
+        "Sin zonas azules en el render",
+        worst < 0.35,
+        f"{len(blues)} bloques azulados, el mayor al {worst:.0%}",
+    )
+    check("Acento esmeralda pintado", accent > 200, f"{accent} píxeles de acento")
+
+    # --- Foco del teclado, alineación y controles apagados -------------------
+    # El tema no puede dejar el foco invisible al tabular, ni que dos botones de la
+    # misma fila midan distinto, ni que un control deshabilitado se pinte como si
+    # estuviera activo. Se mide sobre el render de verdad, no sobre el texto del
+    # estilo: así se comprueba lo que ve quien usa la aplicación.
+    from PySide6.QtGui import QColor
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QCheckBox as _QCheckBox
+    from PySide6.QtWidgets import QListWidget as _QListWidget
+    from PySide6.QtWidgets import QVBoxLayout as _QVBoxLayout
+    from PySide6.QtWidgets import QWidget as _QWidget
+
+    def _borde_superior(widget):  # noqa: ANN001
+        imagen = widget.grab().toImage()
+        centro = widget.width() // 2
+        tonos = [
+            imagen.pixelColor(x, 0)
+            for x in range(max(1, centro - 12), min(widget.width() - 1, centro + 12))
+        ]
+        return QColor(
+            sum(tono.red() for tono in tonos) // len(tonos),
+            sum(tono.green() for tono in tonos) // len(tonos),
+            sum(tono.blue() for tono in tonos) // len(tonos),
+        )
+
+    def _distancia(uno, otro):  # noqa: ANN001
+        referencia = QColor(otro)
+        return (
+            (uno.red() - referencia.red()) ** 2
+            + (uno.green() - referencia.green()) ** 2
+            + (uno.blue() - referencia.blue()) ** 2
+        ) ** 0.5
+
+    window.navigate("schedule")
+    for _ in range(80):
+        if window.schedule_page.status_loaded:
+            break
+        _settle(app, 200)
+    fantasma = window.schedule_page.refresh_button
+    principal = window.schedule_page.save_button
+    check(
+        "Los botones de una misma fila quedan a la misma altura",
+        fantasma.height() == principal.height() and fantasma.y() == principal.y(),
+        f"{fantasma.height()}x{fantasma.y()} y {principal.height()}x{principal.y()}",
+    )
+
+    window.activateWindow()
+    fantasma.setFocus()
+    _settle(app, 250)
+    lateral_con_foco = _borde_superior(fantasma)
+    fantasma.clearFocus()
+    window.setFocus()
+    _settle(app, 200)
+    lateral_sin_foco = _borde_superior(fantasma)
+    check(
+        "El botón secundario marca el foco del teclado",
+        _distancia(lateral_con_foco, lateral_sin_foco) > 25 and _distancia(lateral_con_foco, COLORS["accent"]) < 60,
+        f"{lateral_sin_foco.name()} -> {lateral_con_foco.name()}",
+    )
+    window.activateWindow()
+    principal.setFocus()
+    _settle(app, 250)
+    principal_con_foco = _borde_superior(principal)
+    principal.clearFocus()
+    window.setFocus()
+    _settle(app, 200)
+    check(
+        "El botón principal también marca el foco",
+        _distancia(principal_con_foco, _borde_superior(principal)) > 40,
+        f"{_borde_superior(principal).name()} -> {principal_con_foco.name()}",
+    )
+
+    lateral = window._nav_buttons["disk"]  # noqa: SLF001
+    window.activateWindow()
+    lateral.setFocus()
+    _settle(app, 250)
+    lateral_con_foco = _borde_superior(lateral)
+    lateral.clearFocus()
+    window.setFocus()
+    _settle(app, 200)
+    lateral_sin_foco = _borde_superior(lateral)
+    check(
+        "Las secciones de la barra lateral marcan el foco",
+        _distancia(lateral_con_foco, lateral_sin_foco) > 25,
+        f"{lateral_sin_foco.name()} -> {lateral_con_foco.name()}",
+    )
+
+    from pctoolkit.ui.widgets import ActionCard
+
+    casilla = _QCheckBox("Casilla marcada y apagada")
+    casilla.setChecked(True)
+    casilla.setEnabled(False)
+    casilla.show()
+    _settle(app, 250)
+    indicador = casilla.grab().toImage().pixelColor(7, casilla.height() // 2)
+    check(
+        "Una casilla marcada pero apagada no se pinta como activa",
+        _distancia(indicador, COLORS["accent"]) > 60 and _distancia(indicador, COLORS["border"]) < 40,
+        indicador.name(),
+    )
+    casilla.close()
+
+    # La selección de una lista se apaga cuando su ventana no está activa: con el
+    # selector escrito de otra forma la regla no se aplicaba y quedaba un estilo
+    # muerto (la selección seguía encendida en segundo plano).
+    panel_lista = _QWidget()
+    listado = _QListWidget()
+    panel_lista.setLayout(_QVBoxLayout(panel_lista))
+    panel_lista.layout().addWidget(listado)
+    for texto in ("Primera", "Segunda", "Tercera"):
+        listado.addItem(texto)
+    panel_lista.resize(280, 180)
+    panel_lista.show()
+    QTest.qWaitForWindowActive(panel_lista, 1500)
+    QTest.qWait(200)
+    listado.setCurrentRow(0)
+    _settle(app, 250)
+    seleccion_activa = listado.grab().toImage().pixelColor(20, 20).name()
+    window.activateWindow()
+    QTest.qWaitForWindowActive(window, 1500)
+    _settle(app, 350)
+    seleccion_apagada = listado.grab().toImage().pixelColor(20, 20).name()
+    check(
+        "La selección de una lista se apaga en segundo plano",
+        QColor(seleccion_activa) == QColor(SURFACES["selected"])
+        and QColor(seleccion_apagada) == QColor(COLORS["panel_alt"]),
+        f"activa {seleccion_activa} / inactiva {seleccion_apagada}",
+    )
+    panel_lista.close()
+
+    tarjeta = ActionCard("tool", "Abrir el Administrador de tareas", "Procesos, rendimiento y arranque.")
+    pulsaciones: list[int] = []
+    tarjeta.clicked.connect(lambda: pulsaciones.append(1))
+    tarjeta.show()
+    _settle(app, 250)
+    check(
+        "Las tarjetas pulsables se alcanzan con el tabulador",
+        tarjeta.focusPolicy() == Qt.TabFocus,
+        str(tarjeta.focusPolicy()),
+    )
+    tarjeta.setFocus()
+    _settle(app, 200)
+    check(
+        "La tarjeta enfocada marca el foco",
+        _distancia(_borde_superior(tarjeta), COLORS["border_soft"]) > 25,
+        _borde_superior(tarjeta).name(),
+    )
+    QTest.keyClick(tarjeta, Qt.Key_Return)
+    _settle(app, 100)
+    QTest.keyClick(tarjeta, Qt.Key_Space)
+    _settle(app, 100)
+    check("Intro y Espacio abren la tarjeta pulsable", len(pulsaciones) == 2, str(len(pulsaciones)))
+    tarjeta.close()
+
+    # Atajos de teclado: cada sección, en el orden de la barra lateral.
+    check("Nueve atajos de sección registrados", len(window.nav_shortcuts) == 9, str(len(window.nav_shortcuts)))
+    secciones = ("home", "memory", "startup", "disk", "tools", "tasks", "reports", "schedule")
+    fallos_atajo: list[str] = []
+    for indice, clave in enumerate(secciones, start=1):
+        # Los atajos de ventana solo responden si la ventana es la activa: las
+        # tarjetas y casillas sueltas de arriba son ventanas propias y se llevan
+        # la activación mientras están abiertas.
+        window.activateWindow()
+        QTest.qWaitForWindowActive(window, 1500)
+        QTest.keyClick(window, getattr(Qt, f"Key_{indice}"), Qt.ControlModifier)
+        _settle(app, 150)
+        if window.stack.currentWidget() is not window._pages[clave]:  # noqa: SLF001
+            fallos_atajo.append(f"Ctrl+{indice} no abrió {clave}")
+    check("Los atajos Ctrl+1…Ctrl+8 cambian de sección", not fallos_atajo, "; ".join(fallos_atajo))
+
+    # --- Anuncios para lectores de pantalla --------------------------------
+    from pctoolkit.ui import accessibility
+
+    anuncios: list[str] = []
+    accessibility.set_announcer(anuncios.append)
+    try:
+        window.set_status("Prueba de anuncio accesible")
+        vacio = accessibility.announce(window.status_message, "   ")
+        with_value = accessibility.announce(window.status_message, "Memoria liberada", assertive=True)
+    finally:
+        accessibility.set_announcer(None)
+    check(
+        "El estado se anuncia a los lectores de pantalla",
+        anuncios == ["Prueba de anuncio accesible", "Memoria liberada"],
+        str(anuncios),
+    )
+    check(
+        "El mensaje queda en el nombre accesible de la barra",
+        window.status_message.accessibleName() == "Prueba de anuncio accesible",
+        window.status_message.accessibleName(),
+    )
+    check("Un mensaje vacío no se anuncia", vacio is False and with_value is True)
+    check(
+        "Las métricas del equipo tienen nombre accesible",
+        window.status_metrics.accessibleName() == "Métricas del equipo",
+        window.status_metrics.accessibleName(),
+    )
+
+    # Los indicadores pintados a mano solo pueden leerse por su descripción.
+    window.navigate("home")
+    _settle(app, 400)
+    medidores = {
+        "CPU": window.dashboard.cpu_gauge,
+        "RAM": window.dashboard.ram_gauge,
+        "Disco": window.dashboard.disk_gauge,
+        "Red": window.dashboard.net_gauge,
+    }
+    sin_nombre = [nombre for nombre, medidor in medidores.items() if not medidor.accessibleName()]
+    check("Los indicadores de la portada tienen nombre accesible", not sin_nombre, ", ".join(sin_nombre))
+    check(
+        "El nombre del indicador es el de su tarjeta",
+        medidores["CPU"].accessibleName() == "CPU",
+        medidores["CPU"].accessibleName(),
+    )
+    descripciones = [medidor.accessibleDescription() for medidor in medidores.values()]
+    check(
+        "Cada indicador describe su valor",
+        all(texto and "%" in texto for texto in descripciones),
+        " | ".join(descripciones),
+    )
+    check(
+        "El medidor de salud describe la puntuación",
+        "de 100" in window.dashboard.health_meter.accessibleDescription(),
+        window.dashboard.health_meter.accessibleDescription(),
+    )
+
+    # --- Rol accesible de los widgets propios ------------------------------
+    # Qt da a cada clase un rol fijo: un `QFrame` es «borde» y un `QWidget` es
+    # «cliente». Los widgets propios (tarjetas, medidores, barras) dicen lo que
+    # son de verdad, y el lector de pantalla lo anuncia así.
+    from PySide6.QtCore import QPoint, QRect
+    from PySide6.QtGui import QAccessible
+    from PySide6.QtWidgets import QLabel, QPushButton, QWidget
+
+    from pctoolkit.ui.alert_settings import AlertSettingsDialog
+    from pctoolkit.ui.chart import HistoryChart
+    from pctoolkit.ui.tools_page import ToolTile
+    from pctoolkit.ui.widgets import (
+        ActionCard as TarjetaPulsable,
+        ArcGauge as Indicador,
+        ArcProgress as Barra,
+        BarRow as FilaDisco,
+        Card as Tarjeta,
+        HealthMeter as MedidorSalud,
+        PageHeader,
+        SectionTitle as TituloSeccion,
+    )
+
+    def _rol_de(widget):
+        """Rol que ve de verdad el lector: pasa por la interfaz accesible de Qt."""
+        interfaz = QAccessible.queryAccessibleInterface(widget)
+        return interfaz.role() if interfaz is not None else None
+
+    def _nombre_de(widget):
+        """Nombre accesible tal y como lo lee el lector de pantalla.
+
+        No siempre es `accessibleName()`: una etiqueta con rol propio (un título de
+        sección, por ejemplo) se lee con su propio texto, como hace Qt.
+        """
+        interfaz = QAccessible.queryAccessibleInterface(widget)
+        return interfaz.text(QAccessible.Text.Name) if interfaz is not None else ""
+
+    # Las subclases van antes que su clase base: la primera regla que encaja manda.
+    reglas = (
+        (ToolTile, QAccessible.Role.Button),
+        (TarjetaPulsable, QAccessible.Role.Button),
+        (FilaDisco, QAccessible.Role.Button),
+        (Tarjeta, QAccessible.Role.Grouping),
+        (TituloSeccion, QAccessible.Role.Heading),
+        (Indicador, QAccessible.Role.Chart),
+        (HistoryChart, QAccessible.Role.Chart),
+        (MedidorSalud, QAccessible.Role.ProgressBar),
+        (Barra, QAccessible.Role.ProgressBar),
+    )
+
+    def _regla_para(widget):
+        for clase, rol in reglas:
+            if isinstance(widget, clase):
+                return clase, rol
+        return None, None
+
+    encontrados: dict[type, list] = {clase: [] for clase, _rol in reglas}
+    for widget in window.findChildren(QWidget):
+        clase, rol = _regla_para(widget)
+        if clase is not None:
+            encontrados[clase].append(widget)
+
+    sin_rol = [
+        type(widget).__name__
+        for clase, rol in reglas
+        for widget in encontrados[clase]
+        if _rol_de(widget) != rol
+    ]
+    check(
+        "Cada widget propio anuncia su rol",
+        not sin_rol,
+        ", ".join(sin_rol) or "todos correctos",
+    )
+    sin_nombre = [
+        type(widget).__name__
+        for clase, _rol in reglas
+        for widget in encontrados[clase]
+        if not _nombre_de(widget)
+    ]
+    check(
+        "Cada widget propio tiene nombre accesible",
+        not sin_nombre,
+        ", ".join(sin_nombre) or "todos con nombre",
+    )
+    # No basta con que existan: cada tipo tiene que estar presente en la ventana.
+    ausentes = [
+        clase.__name__
+        for clase, _rol in reglas
+        if clase not in (TarjetaPulsable, FilaDisco)
+        and not encontrados[clase]
+    ]
+    check("Hay tarjetas, títulos, medidores, barras y gráfica en la ventana", not ausentes, ", ".join(ausentes))
+    check(
+        "El rol no se sale de los widgets marcados",
+        len(encontrados[Tarjeta]) >= 10 and len(encontrados[TituloSeccion]) >= 4,
+        f"{len(encontrados[Tarjeta])} tarjetas y {len(encontrados[TituloSeccion])} títulos",
+    )
+    # Los widgets corrientes siguen con el rol que les da Qt.
+    boton_corriente = QPushButton("Botón corriente")
+    etiqueta_corriente = QLabel("Etiqueta corriente")
+    check(
+        "Los widgets con rol de Qt no cambian",
+        _rol_de(boton_corriente) == QAccessible.Role.Button
+        and _rol_de(etiqueta_corriente) == QAccessible.Role.StaticText,
+        f"{_rol_de(boton_corriente)} / {_rol_de(etiqueta_corriente)}",
+    )
+
+    # El título de la página se anuncia como encabezado, no como texto suelto.
+    cabeceras = window.findChildren(PageHeader)
+    check(
+        "El título de cada página es un encabezado",
+        cabeceras and all(_rol_de(cabecera.title) == QAccessible.Role.Heading for cabecera in cabeceras),
+        f"{len(cabeceras)} cabeceras",
+    )
+
+    # El rol llega con nombre, descripción, estado y rectángulo: sin el estado, el
+    # lector no sabe si el widget tiene el foco; sin el rectángulo, no lo encuentra.
+    tarjeta_rol = TarjetaPulsable("tool", "Abrir el Administrador de tareas", "Procesos, rendimiento y arranque.")
+    tarjeta_rol.show()
+    QTest.qWaitForWindowActive(tarjeta_rol, 1500)
+    tarjeta_rol.setFocus()
+    _settle(app, 250)
+    interfaz = QAccessible.queryAccessibleInterface(tarjeta_rol)
+    estado = interfaz.state()
+    check(
+        "El rol y el nombre llegan a la interfaz accesible",
+        interfaz.role() == QAccessible.Role.Button
+        and interfaz.text(QAccessible.Text.Name) == "Abrir el Administrador de tareas"
+        and interfaz.text(QAccessible.Text.Description) == "Procesos, rendimiento y arranque.",
+        f"{interfaz.role()} / {interfaz.text(QAccessible.Text.Name)!r}",
+    )
+    check(
+        "El estado accesible refleja visibilidad y foco",
+        bool(estado.visible) and bool(estado.enabled) and bool(estado.focusable),
+        f"visible {bool(estado.visible)} activo {bool(estado.enabled)} enfocable {bool(estado.focusable)}",
+    )
+    check(
+        "El estado accesible sigue al foco del widget",
+        bool(estado.focused) == tarjeta_rol.hasFocus(),
+        f"interfaz {bool(estado.focused)} / widget {tarjeta_rol.hasFocus()}",
+    )
+    check(
+        "El rectángulo accesible es el del widget en pantalla",
+        interfaz.rect() == QRect(tarjeta_rol.mapToGlobal(QPoint(0, 0)), tarjeta_rol.size()),
+        str(interfaz.rect()),
+    )
+    # Una tarjeta pulsable marca su rol después del grupo que hereda de `Card`:
+    # el último rol es el que vale, y el de una tarjeta normal no cambia.
+    check(
+        "La tarjeta pulsable gana el rol al grupo que hereda",
+        accessibility.role_of(tarjeta_rol) == QAccessible.Role.Button
+        and accessibility.role_of(Tarjeta()) == QAccessible.Role.Grouping,
+        f"{accessibility.role_of(tarjeta_rol)} / {accessibility.role_of(Tarjeta())}",
+    )
+    tarjeta_rol.close()
+
+    # La fila del analizador se abre con Intro o Espacio: es un botón, y su nombre
+    # es el del elemento al que apunta.
+    class _Nodo:
+        name = "videos"
+        path = "C:\\videos"
+        size = 3_000_000
+        is_dir = True
+
+    fila_disco = FilaDisco(_Nodo(), 0.5)
+    check(
+        "La fila del analizador es un botón con el nombre del elemento",
+        _rol_de(fila_disco) == QAccessible.Role.Button and _nombre_de(fila_disco) == "videos",
+        f"{_rol_de(fila_disco)} / {_nombre_de(fila_disco)}",
+    )
+
+    # Las tarjetas del diálogo de ajustes también son grupos con nombre.
+    dialogo_roles = AlertSettingsDialog(app_settings, history_store, tray_available(), window)
+    tarjetas_dialogo = dialogo_roles.findChildren(Tarjeta)
+    nombres_dialogo = [tarjeta.accessibleName() for tarjeta in tarjetas_dialogo]
+    check(
+        "Las tarjetas del diálogo de ajustes tienen nombre",
+        len(tarjetas_dialogo) >= 3 and all(nombres_dialogo) and all(_rol_de(t) == QAccessible.Role.Grouping for t in tarjetas_dialogo),
+        f"{len(tarjetas_dialogo)} tarjetas: {nombres_dialogo}",
+    )
+    dialogo_roles.close()
+    # Las ventanas sueltas de arriba se llevaron la activación: se devuelve a la
+    # principal, que es como se usa de verdad (y el estilo apaga lo seleccionado
+    # en segundo plano).
+    window.activateWindow()
+    QTest.qWaitForWindowActive(window, 1500)
+    _settle(app, 250)
+
+    # --- Tema claro ---------------------------------------------------------
+    from pctoolkit.core.config import LIGHT_COLORS, active_palette
+    from pctoolkit.ui.alert_settings import AlertSettingsDialog
+
+    dialogo = AlertSettingsDialog(app_settings, history_store, tray_available(), window)
+    dialogo.theme_combo.setCurrentIndex(dialogo.theme_combo.findData("light"))
+    _settle(app, 150)
+    check(
+        "El diálogo explica el modo elegido",
+        "claro" in dialogo.theme_note.text(),
+        dialogo.theme_note.text(),
+    )
+    dialogo.apply()
+    check("El modo de apariencia se guarda", app_settings.theme_mode == "light", app_settings.theme_mode)
+    dialogo.close()
+
+    apply_theme(app, app_settings.theme_mode)
+    check("La paleta activa es la clara", active_palette() == "light" and COLORS["bg"] == LIGHT_COLORS["bg"], COLORS["bg"])
+    from pctoolkit.ui import theme as theme_ui
+
+    check(
+        "La marca de verificación es la del tema activo",
+        "check_light.png" in theme_ui.stylesheet(),
+        "check_light.png en el QSS (la imagen es blanca; en oscuro sería invisible)",
+    )
+    clara = window.reload_theme()
+    _settle(app, 700)
+    check(
+        "La ventana nueva se abre con la paleta clara",
+        clara.isVisible() and clara.size() == window.size(),
+        f"visible={clara.isVisible()} {clara.size().width()}x{clara.size().height()}",
+    )
+    clara.navigate("home")
+    _settle(app, 500)
+    # La ventana nueva pinta sus indicadores cuando le llega la primera muestra de
+    # métricas: sin esperarla, el render puede salir con los abanicos a cero y el
+    # recuento de acento no mediría lo que dice medir.
+    muestras_listas = False
+    for _intento in range(60):
+        if clara.dashboard.cpu_gauge.accessibleDescription() not in ("", "Sin datos todavía"):
+            muestras_listas = True
+            break
+        _settle(app, 100)
+    check("La ventana nueva recibe métricas", muestras_listas, clara.dashboard.cpu_gauge.accessibleDescription())
+    clara.activateWindow()
+    _settle(app, 150)
+    imagen_clara = clara.grab().toImage()
+    muestreo = claro_px = oscuro_px = acento_px = 0
+    for y in range(0, imagen_clara.height(), 4):
+        for x in range(0, imagen_clara.width(), 4):
+            tono = imagen_clara.pixelColor(x, y)
+            red, green, blue = tono.red(), tono.green(), tono.blue()
+            luz = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+            muestreo += 1
+            if luz > 170:
+                claro_px += 1
+            elif luz < 90:
+                oscuro_px += 1
+            if green > red + 30 and green > blue + 10 and green > 90:
+                acento_px += 1
+    check("Fondo claro en pantalla", claro_px / muestreo > 0.85, f"{claro_px / muestreo:.0%} de píxeles claros")
+    check("Texto oscuro sobre el fondo claro", oscuro_px / muestreo > 0.005, f"{oscuro_px / muestreo:.2%} de píxeles oscuros")
+    check("El acento esmeralda sigue ahí en claro", acento_px > 200, f"{acento_px} píxeles de acento")
+
+    # Se vuelve al tema oscuro para el resto de comprobaciones.
+    app_settings.theme_mode = "dark"
+    apply_theme(app, "dark")
+    window = clara.reload_theme()
+    _settle(app, 700)
+    check(
+        "Volver al tema oscuro rehace la ventana",
+        active_palette() == "dark" and window.stack.currentWidget() is not None
+        and "check_dark.png" in theme_ui.stylesheet(),
+        active_palette(),
+    )
+    window.navigate("home")
+    _settle(app, 300)
+
+    # Asistente del instalador: se construye, se pinta y recoge las opciones.
+    from installer import installer_core as installer_core_test
+    from installer.setup_app import InstallerWindow
+
+    opciones_wizard = installer_core_test.InstallOptions(
+        target_dir=Path(_TEMP_HOME) / "instalacion_prueba",
+        desktop=Path(_TEMP_HOME) / "escritorio_prueba",
+        start_menu=Path(_TEMP_HOME) / "menu_prueba",
+    )
+    wizard = InstallerWindow(options=opciones_wizard)
+    wizard.show()
+    _settle(app, 400)
+    wizard_image = wizard.grab().toImage()
+    check(
+        "Asistente de instalación pintado",
+        not wizard_image.isNull() and wizard_image.width() > 500,
+        f"{wizard_image.width()}x{wizard_image.height()}",
+    )
+    check("Botón principal del asistente", wizard.main_button.text() == "Instalar", wizard.main_button.text())
+    # El asistente avisa de la situación real del equipo (instalación previa,
+    # instancia abierta o listo para instalar), así que se comprueba que el
+    # mensaje se corresponde con lo que hay de verdad en el registro.
+    estado = wizard.status_label.text()
+    if installer_core_test.read_uninstall_entry(wizard.options.key_name):
+        esperado_estado = "Ya había una instalación"
+    elif installer_core_test.is_running():
+        esperado_estado = "instancia de PC Toolkit abierta"
+    else:
+        esperado_estado = "Listo para instalar"
+    check("Estado del asistente según el equipo", esperado_estado in estado, estado)
+    check("Carpeta propuesta en el asistente", wizard.folder_edit.text() == str(opciones_wizard.target_dir), wizard.folder_edit.text())
+    wizard.autostart_check.setChecked(True)
+    recogidas = wizard._collect()  # noqa: SLF001
+    check(
+        "El asistente recoge las opciones",
+        recogidas.autostart and recogidas.desktop_shortcut and recogidas.start_menu_shortcut and recogidas.launch_after,
+        f"autostart={recogidas.autostart} escritorio={recogidas.desktop_shortcut} menu={recogidas.start_menu_shortcut}",
+    )
+    wizard.desktop_check.setChecked(False)
+    check("El asistente respeta lo que se desmarca", not wizard._collect().desktop_shortcut)  # noqa: SLF001
+    wizard.close()
+
+    uninstaller_wizard = InstallerWindow(uninstall_mode=True, options=opciones_wizard)
+    uninstaller_wizard.show()
+    _settle(app, 400)
+    check("Asistente de desinstalación pintado", not uninstaller_wizard.grab().toImage().isNull())
+    check("Aviso de datos conservados", "conservan" in uninstaller_wizard.data_check.toolTip(), uninstaller_wizard.data_check.toolTip())
+    check("Botón del desinstalador", uninstaller_wizard.main_button.text() == "Desinstalar")
+    uninstaller_wizard.close()
+
+    shots = Path(_TEMP_HOME) / "capturas_prueba"
+    shots.mkdir(parents=True, exist_ok=True)
+    for key in ("home", "memory", "startup", "disk", "tools", "tasks", "reports", "schedule"):
+        window.navigate(key)
+        app.processEvents()
+        saved = window.grab().save(str(shots / f"{key}.png"))
+        check(f"Captura de {key}", saved, str(shots / f"{key}.png"))
+
+    # --- Cierre con trabajo en segundo plano --------------------------------
+    # Salir mientras una consulta está en marcha es el caso que hacía que Qt
+    # abortara el proceso por destruir un hilo vivo (la suite terminaba con
+    # código 127 en vez de 0). Se comprueba de punta a punta: se lanza a propósito
+    # la búsqueda de tareas de inicio de sesión y se sale sin esperarla.
+    window.startup_page.refresh(with_tasks=True, force=True)
+    app.processEvents()
+    pendientes = workers_ui.pending_calls()
+    check(
+        "Hay trabajo en segundo plano al cerrar",
+        bool(pendientes),
+        ", ".join(call.describe() for call in pendientes),
+    )
+    window.quit_application()
+    check("Salir cierra de verdad", window._force_quit is True)  # noqa: SLF001
+    restantes = workers_ui.pending_calls()
+    check(
+        "El cierre espera a las tareas en curso (ningún hilo queda vivo)",
+        not restantes,
+        ", ".join(call.describe() for call in restantes),
+    )
+
+
+def _settle(app, ms: int) -> None:
+    """Deja que se apliquen tamaños y estilos pendientes."""
+    from PySide6.QtCore import QEventLoop, QTimer
+
+    loop = QEventLoop()
+    QTimer.singleShot(ms, loop.quit)
+    loop.exec()
+    app.processEvents()
+
+
+def test_firma() -> None:
+    """Firma digital: localización de signtool y construcción del comando de firmado.
+
+    No firma nada de verdad (eso lo comprueba `python firmar.py --autoprueba` con un
+    certificado autofirmado); aquí se verifica que los argumentos que se le pasan a
+    signtool son los correctos en cada forma de conseguir el certificado.
+    """
+    import firmar
+
+    signtool = firmar.find_signtool()
+    check("signtool localizado", signtool is not None and signtool.exists(), str(signtool))
+    check("Sitios donde se busca signtool", len(firmar.signtool_candidates()) >= 1, str(len(firmar.signtool_candidates())))
+
+    sello = firmar.SELLO_POR_DEFECTO
+    pfx = firmar.CertificateSpec(modo="pfx", pfx=Path("llave.pfx"), password="secreta")
+    almacen = firmar.CertificateSpec(modo="almacen", huella="AABBCC")
+    hsm = firmar.CertificateSpec(modo="hsm", csp="Proveedor KSP", clave="alias", cert_publico=Path("cert.crt"))
+    azure = firmar.CertificateSpec(modo="azure", dlib=Path("d.lib"), metadatos=Path("metadata.json"))
+    auto = firmar.CertificateSpec(modo="auto")
+
+    def args(cert, archivo=Path("app.exe"), sello_=sello):
+        return firmar.sign_command(Path("signtool.exe"), cert, [archivo], sello_, "PC Toolkit")
+
+    base = args(pfx)
+    check(
+        "Comando de firma con SHA-256 y sello RFC 3161",
+        "/fd" in base and base[base.index("/fd") + 1] == "SHA256" and base[base.index("/tr") + 1] == sello
+        and base[base.index("/td") + 1] == "SHA256",
+        firmar.visible_command(Path("signtool.exe"), base[:12], pfx.password),
+    )
+    check("Firma con archivo PFX", "/f" in base and "llave.pfx" in base and "/p" in base)
+    check("Certificado del almacén por huella", args(almacen).count("/sha1") == 1 and "AABBCC" in args(almacen))
+    check("Certificado del almacén por nombre", "/n" in args(firmar.CertificateSpec(modo="almacen", sujeto="Mi SL")))
+    check(
+        "Firma con clave en HSM o token",
+        all(parte in args(hsm) for parte in ("/csp", "Proveedor KSP", "/kc", "alias", "/f", "cert.crt")),
+    )
+    check("Firma en la nube (Azure Artifact Signing)", "/dlib" in args(azure) and "/dmdf" in args(azure))
+    check("Certificado automático del almacén", args(auto) == ["sign", "/v", "/fd", "SHA256", "/tr", sello, "/td", "SHA256", "/a", "/d", "PC Toolkit", "app.exe"])
+    sin_sello = args(pfx, sello_="")
+    check("Se puede firmar sin sello de tiempo", "/tr" not in sin_sello and "/td" not in sin_sello)
+
+    visible = firmar.visible_command(Path("signtool.exe"), base, pfx.password)
+    check("La contraseña no se muestra en el comando visible", "secreta" not in visible and "contraseña" in visible)
+
+    check(
+        "Nombre del firmante legible (CN con coma)",
+        firmar._nombre_corto("CN=PC Toolkit (prueba, no usar), O=Alguien") == "PC Toolkit (prueba, no usar)",  # noqa: SLF001
+    )
+    check("Solo se firman los ejecutables que existen", all(archivo.exists() for archivo in firmar.artifacts()), str(len(firmar.artifacts())))
+    check("Los cuatro artefactos previstos", len(firmar.artifacts()) == 4, str([a.name for a in firmar.artifacts()]))
+
+    from firmar import build_parser
+
+    parser = build_parser()
+    opciones = parser.parse_args(["--pfx", "llave.pfx", "--sin-sello", "dist\\PC Toolkit.exe"])
+    check("Opciones de firma reconocidas", opciones.pfx == "llave.pfx" and opciones.sin_sello and opciones.archivos)
+
+
+def test_firma_en_la_compilacion() -> None:
+    """Firma integrada en los scripts de compilación (`--firmar`).
+
+    Se firma de verdad una **copia** con un certificado de prueba temporal, usando
+    exactamente la función que llaman `build_exe.py --firmar` y
+    `build_installer.py --firmar`, y se comprueba que los ejecutables de `dist\\`
+    no se tocan. Si no hay red, la firma se repite sin sello de tiempo.
+    """
+    import contextlib
+    import io
+    import shutil as _shutil
+
+    import build_exe
+    import build_installer
+    import firmar
+
+    # --- Cómo llegan los argumentos al firmador ------------------------------
+    for nombre, modulo in (("build_exe.py", build_exe), ("build_installer.py", build_installer)):
+        opciones, extra = modulo.build_parser().parse_known_args(
+            ["--firmar", "--pfx", "llave.pfx", "--huella", "AABB"]
+        )
+        check(f"{nombre} acepta --firmar", opciones.firmar, str(extra))
+        check(
+            f"{nombre} pasa los argumentos de firma tal cual",
+            extra == ["--pfx", "llave.pfx", "--huella", "AABB"],
+            str(extra),
+        )
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            try:
+                modulo.main(["--pfx", "llave.pfx"])
+                aviso = False
+            except SystemExit as salida:  # argparse sale con 2 ante argumentos desconocidos
+                aviso = salida.code == 2
+        check(f"{nombre} avisa si se pasan opciones de firma sin --firmar", aviso)
+
+    texto = r'--pfx "C:\mis llaves\llave.pfx" --sello http://timestamp.acs.microsoft.com'
+    repartidos = firmar.split_arguments(texto)
+    check(
+        "Comillas y barras invertidas de Windows bien separadas",
+        repartidos == ["--pfx", r"C:\mis llaves\llave.pfx", "--sello", "http://timestamp.acs.microsoft.com"],
+        str(repartidos),
+    )
+
+    anterior = os.environ.get(firmar.SIGN_ARGS_ENV)
+    os.environ[firmar.SIGN_ARGS_ENV] = "--huella AABBCC --sin-sello"
+    try:
+        del_entorno = firmar.environment_arguments()
+        forzados = build_exe.forwarded_signing_arguments([])
+        con_orden = build_exe.forwarded_signing_arguments(["--pfx", "llave.pfx"])
+    finally:
+        if anterior is None:
+            os.environ.pop(firmar.SIGN_ARGS_ENV, None)
+        else:
+            os.environ[firmar.SIGN_ARGS_ENV] = anterior
+    check(
+        "La firma se configura desde el entorno (PCTOOLKIT_SIGN_ARGS)",
+        del_entorno == ["--huella", "AABBCC", "--sin-sello"],
+        str(del_entorno),
+    )
+    check("Sin argumentos propios se usan los del entorno", forzados == del_entorno, str(forzados))
+    check("Los argumentos de la orden tienen prioridad", con_orden == ["--pfx", "llave.pfx"], str(con_orden))
+    os.environ.pop(firmar.SIGN_ARGS_ENV, None)
+    check("Sin configurar nada no hay argumentos de firma", firmar.environment_arguments() == [])
+
+    avisos: list[str] = []
+    falta = firmar.sign_paths([ROOT / "no_existe.exe"], [], log=avisos.append)
+    check(
+        "No se firma algo que no existe",
+        falta is False and any("no existe" in aviso for aviso in avisos),
+        avisos[-1].strip() if avisos else "",
+    )
+    if (ROOT / "dist" / "PC Toolkit.exe").exists():
+        muestra = ROOT / "dist" / "PC Toolkit.exe"
+    else:
+        muestra = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "where.exe"
+    avisos.clear()
+    sin_pfx = firmar.sign_paths([muestra], ["--pfx", str(ROOT / "no_existe.pfx")], log=avisos.append)
+    check(
+        "Av\u00edsa si el PFX indicado no existe",
+        sin_pfx is False and any("PFX" in aviso for aviso in avisos),
+        avisos[-1].strip() if avisos else "",
+    )
+
+    # --- Firma de verdad, sobre una copia y con un certificado de prueba -----
+    signtool = firmar.find_signtool()
+    if signtool is None:
+        check("Firma real en la compilaci\u00f3n (omitida: no hay signtool)", True, "firmar.py --traer-signtool")
+        return
+
+    with tempfile.TemporaryDirectory() as tmp:
+        carpeta = Path(tmp)
+        clave = carpeta / "clave.txt"
+        password = firmar._random_password()  # noqa: SLF001
+        clave.write_text(password + "\n", encoding="utf-8")
+        pfx = carpeta / "prueba.pfx"
+        huella, mensaje = firmar._create_test_certificate(pfx, password)  # noqa: SLF001
+        if not huella:
+            check("Certificado de prueba para firmar en la compilaci\u00f3n", False, mensaje)
+            return
+        try:
+            argumentos = ["--pfx", str(pfx), "--password-file", str(clave)]
+            copia = carpeta / "muestra.exe"
+            _shutil.copyfile(muestra, copia)
+            # La salida de signtool se guarda: en la suite solo se muestra si algo falla.
+            salida = io.StringIO()
+            with contextlib.redirect_stdout(salida):
+                firmada = build_exe.sign_executables([copia], argumentos)
+            info = firmar.signature_info(copia)
+            if not firmada:  # sin red el sello de tiempo no se puede pedir
+                copia = carpeta / "muestra_sin_sello.exe"
+                _shutil.copyfile(muestra, copia)
+                with contextlib.redirect_stdout(salida):
+                    firmada = build_exe.sign_executables([copia], argumentos + ["--sin-sello"])
+                info = firmar.signature_info(copia)
+            check(
+                "Firma real al compilar (copias, nunca dist\\)",
+                firmada and info.get("Status") != "NotSigned",
+                str(info.get("Status")) if firmada else salida.getvalue().strip()[-200:],
+            )
+            check(
+                "El certificado con el que se firm\u00f3 es el indicado",
+                (info.get("Thumbprint") or "").upper() == huella.upper(),
+                (info.get("Thumbprint") or "")[:16],
+            )
+            correcta, resumen, _salida = firmar.verify_signature(signtool, copia)
+            check("signtool lee la firma creada al compilar", correcta or "ra\u00edz" in resumen, resumen)
+            comprobado = firmar.check_signatures([copia], log=avisos.append)
+            check(
+                "El comprobador de firmas avisa de una firma no confiable",
+                comprobado is False and bool(avisos),
+                avisos[-1].strip() if avisos else "",
+            )
+            if muestra == ROOT / "dist" / "PC Toolkit.exe":
+                check("Los ejecutables de dist/ siguen sin tocar", firmar.signature_info(muestra).get("Status") == "NotSigned")
+        finally:
+            firmar._remove_test_certificate(huella)  # noqa: SLF001
+
+
+def main() -> int:
+    test_metrics()
+    test_theme()
+    test_disk()
+    test_tasks()
+    test_tools()
+    test_reports()
+    test_alerts()
+    test_history()
+    test_memory()
+    test_scheduler()
+    test_startup()
+    test_maintenance()
+    test_installer()
+    test_firma()
+    test_firma_en_la_compilacion()
+    test_interface()
+
+    failures = [name for name, ok, _ in CHECKS if not ok]
+    for name, ok, detail in CHECKS:
+        mark = "OK  " if ok else "FALLO"
+        print(f"[{mark}] {name}" + (f"  ->  {detail}" if detail else ""))
+    print(f"\n{len(CHECKS) - len(failures)}/{len(CHECKS)} comprobaciones correctas")
+    if failures:
+        print("Fallos: " + ", ".join(failures))
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

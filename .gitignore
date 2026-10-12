@@ -1,0 +1,31 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Salidas de compilación y pruebas
+dist/
+build/
+*.spec
+assets/version_info.txt
+capturas_prueba/
+informes/
+tools/bin/
+*.log
+
+# Certificados y claves de firma: nunca al repositorio
+*.pfx
+*.p12
+*.pem
+*.key
+clave.txt
+password.txt
+metadata.json
+
+# Sistema, editores y metadatos locales de herramientas
+.freebuff/
+Thumbs.db
+desktop.ini
+.directory
+.vscode/
+.idea/
