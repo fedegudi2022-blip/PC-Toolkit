@@ -579,3 +579,8 @@ Si no hay pantalla disponible se puede ejecutar en modo sin ventana:
   pedir confirmación la primera vez que se ejecuten en otro equipo.
 - **Documentación completa:** [DOCUMENTACION.md](DOCUMENTACION.md) explica de una pieza qué hace el
   programa, cómo funciona cada módulo y cómo se instala, se desinstala y se compila.
+
+## Licencia
+
+[MIT](LICENSE): puedes usar, modificar y redistribuir el código, incluso comercialmente, siempre que
+conserves el aviso de copyright y la propia licencia.
