@@ -952,6 +952,156 @@ def test_installer() -> None:
     faltante = core.install(core.InstallOptions(source=ROOT / "no_existe", key_name="PCToolkitPruebaTest"))
     check("Instalación sin origen avisa", not faltante.ok and "build_exe" in faltante.message, faltante.message)
 
+    # --- Instalador de un solo archivo: la aplicación viaja dentro --------------
+    # PyInstaller deja sus datos en `sys._MEIPASS`; ahí está la carga cuando el
+    # instalador se compila con `build_installer.py`. Se simula esa carpeta con un
+    # ZIP de verdad para comprobar extracción, defensas y limpieza.
+    import shutil
+    import zipfile
+
+    check(
+        "Fuera del instalador no hay carga incrustada",
+        core.payload_path() is None and core.unpack_payload() is None,
+        f"{core.payload_path()} · {core.unpack_payload()}",
+    )
+
+    original_carga = getattr(sys, "_MEIPASS", None)
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        base = Path(tmp)
+        carga = base / "carga"
+        app = base / "app"
+        (app / "_internal").mkdir(parents=True)
+        (app / "PC Toolkit.exe").write_bytes(b"MZ" + b"0" * 64)
+        (app / "Desinstalar PC Toolkit.exe").write_bytes(b"MZ")
+        (app / "_internal" / "datos.dll").write_bytes(b"0" * 512)
+        carga.mkdir()
+        with zipfile.ZipFile(carga / core.PAYLOAD_NAME, "w", zipfile.ZIP_DEFLATED) as archivo:
+            for ruta in sorted(app.rglob("*")):
+                if ruta.is_file():
+                    archivo.write(ruta, ruta.relative_to(app).as_posix())
+
+        sys._MEIPASS = str(carga)
+        try:
+            check(
+                "La carga se encuentra dentro del instalador",
+                core.payload_path() == carga / core.PAYLOAD_NAME,
+                str(core.payload_path()),
+            )
+            extraida = core.unpack_payload()
+            check(
+                "La carga se extrae con la aplicación dentro",
+                extraida is not None
+                and core.app_executable(extraida).exists()
+                and (extraida / "_internal" / "datos.dll").exists(),
+                str(extraida),
+            )
+            # Sin carpeta de destino la extracción es temporal: la prueba la llama
+            # directamente, así que también la borra ella (el instalador lo hace solo).
+            if extraida is not None:
+                shutil.rmtree(extraida, ignore_errors=True)
+            check(
+                "La extracción directa no deja carpeta colgando",
+                extraida is not None and not extraida.exists(),
+                str(extraida),
+            )
+
+            # Un paquete manipulado no puede escribir fuera de la carpeta temporal.
+            trampa = base / "trampa.zip"
+            with zipfile.ZipFile(trampa, "w") as archivo:
+                archivo.writestr("../fuera.txt", "no debería salir de la carpeta")
+            destino_trampa = base / "trampa_destino"
+            shutil.copyfile(trampa, carga / core.PAYLOAD_NAME)
+            aviso_trampa = ""
+            try:
+                core.unpack_payload(destino_trampa)
+            except ValueError as exc:
+                aviso_trampa = str(exc)
+            check(
+                "Una carga con «../» se rechaza sin escribir fuera",
+                aviso_trampa and not (base / "fuera.txt").exists(),
+                aviso_trampa or "no se quejó",
+            )
+
+            # Y una carga sin la aplicación tampoco se acepta.
+            vacia = base / "vacia.zip"
+            with zipfile.ZipFile(vacia, "w") as archivo:
+                archivo.writestr("leeme.txt", "no hay aplicación aquí")
+            destino_vacia = base / "vacia_destino"
+            shutil.copyfile(vacia, carga / core.PAYLOAD_NAME)
+            aviso_vacia = ""
+            try:
+                core.unpack_payload(destino_vacia)
+            except ValueError as exc:
+                aviso_vacia = str(exc)
+            check(
+                "Una carga sin la aplicación se rechaza y se limpia",
+                aviso_vacia and not destino_vacia.exists(),
+                f"{aviso_vacia or 'no se quejó'} · existe={destino_vacia.exists()}",
+            )
+
+            # Instalación completa desde la carga incrustada, sin origen explícito.
+            with zipfile.ZipFile(carga / core.PAYLOAD_NAME, "w", zipfile.ZIP_DEFLATED) as archivo:
+                for ruta in sorted(app.rglob("*")):
+                    if ruta.is_file():
+                        archivo.write(ruta, ruta.relative_to(app).as_posix())
+            escritorio_carga = base / "escritorio"
+            menu_carga = base / "menu"
+            escritorio_carga.mkdir()
+            menu_carga.mkdir()
+            instalado_carga = base / "instalado"
+            antes = set(Path(tempfile.gettempdir()).glob("pctoolkit_carga_*"))
+            pasos_carga: list[str] = []
+            resultado_carga = core.install(
+                core.InstallOptions(
+                    target_dir=instalado_carga,
+                    key_name="PCToolkitCargaTest",
+                    run_value="PCToolkitCargaTest",
+                    desktop=escritorio_carga,
+                    start_menu=menu_carga,
+                    launch_after=False,
+                ),
+                progress=pasos_carga.append,
+            )
+            check(
+                "Se instala desde la carga incrustada sin origen",
+                resultado_carga.ok
+                and core.app_executable(instalado_carga).exists()
+                and (instalado_carga / "_internal" / "datos.dll").exists()
+                and "Preparando los archivos de la aplicación…" in pasos_carga,
+                f"{resultado_carga.message} · pasos: {' | '.join(pasos_carga)}",
+            )
+            despues = set(Path(tempfile.gettempdir()).glob("pctoolkit_carga_*"))
+            check(
+                "La carpeta temporal de la carga se borra al terminar",
+                despues <= antes,
+                str(despues - antes),
+            )
+            core.uninstall(
+                target_dir=instalado_carga,
+                key_name="PCToolkitCargaTest",
+                run_value="PCToolkitCargaTest",
+                desktop=escritorio_carga,
+                start_menu=menu_carga,
+            )
+            # La carpeta la borra un proceso aparte: se le da un momento para que la
+            # carpeta temporal de la prueba no quede ocupada al salir.
+            limite_carga = time_module.time() + 20
+            while time_module.time() < limite_carga and instalado_carga.exists():
+                time_module.sleep(0.5)
+        finally:
+            if original_carga is None:
+                try:
+                    delattr(sys, "_MEIPASS")
+                except AttributeError:  # pragma: no cover - ya no estaba
+                    pass
+            else:
+                sys._MEIPASS = original_carga
+    check(
+        "La carga simulada no cambia el proceso",
+        getattr(sys, "_MEIPASS", None) == original_carga,
+        str(getattr(sys, "_MEIPASS", None)),
+    )
+
     with tempfile.TemporaryDirectory() as tmp:
         base = Path(tmp)
         origen = base / "origen" / "PC Toolkit"

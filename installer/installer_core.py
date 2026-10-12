@@ -24,7 +24,9 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import zipfile
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -41,6 +43,12 @@ RUN_VALUE = "PCToolkit"
 
 UNINSTALLER_NAME = "Desinstalar PC Toolkit.exe"
 APP_EXE_NAME = "PC Toolkit.exe"
+
+# La aplicación viaja comprimida dentro del propio instalador, así que la descarga es
+# un solo archivo: se extrae a una carpeta temporal al instalar y se borra al terminar.
+# Si el instalador se reparte junto a la carpeta de la aplicación (o se ejecuta desde
+# el repositorio), la carga no existe y se usa la carpeta de al lado.
+PAYLOAD_NAME = "pc_toolkit_app.zip"
 
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -113,6 +121,60 @@ def source_dir() -> Path:
             return candidata
         return base
     return repo_root() / "dist" / APP_DISPLAY_NAME
+
+
+def app_beside() -> bool:
+    """¿Hay una aplicación ya lista junto al instalador?
+
+    Repartida en carpeta (o al ejecutar el instalador desde `dist\\` mientras se
+    desarrolla) la aplicación está al lado y se usa tal cual: no hace falta sacarla
+    de la carga, que es más lento.
+    """
+    if not getattr(sys, "frozen", False):
+        return False
+    base = Path(sys.executable).resolve().parent
+    return (base / APP_DISPLAY_NAME / APP_EXE_NAME).exists() or (base / APP_EXE_NAME).exists()
+
+
+def payload_path() -> Path | None:
+    """El ZIP con la aplicación que viaja dentro del instalador, si lo lleva.
+
+    PyInstaller saca sus datos a `sys._MEIPASS`, y ahí está la carga cuando el
+    instalador se compiló con `build_installer.py`. Si no hay carga (versión
+    repartida junto a la carpeta), devuelve `None`.
+    """
+    base = getattr(sys, "_MEIPASS", None)
+    if base is None:
+        return None
+    ruta = Path(base) / PAYLOAD_NAME
+    return ruta if ruta.is_file() else None
+
+
+def unpack_payload(destination: Path | None = None) -> Path | None:
+    """Extrae la carga incrustada y devuelve la carpeta con la aplicación.
+
+    Devuelve `None` si el instalador no lleva carga. El ZIP se revisa antes de
+    extraerlo: una ruta absoluta o con `..` no puede escribir fuera de la carpeta
+    temporal (el paquete podría haber sido manipulado).
+
+    Sin `destination` crea una carpeta temporal, y **el que llama se encarga de
+    borrarla**: `install()` la quita al terminar, salga bien o mal.
+    """
+    carga = payload_path()
+    if carga is None:
+        return None
+    destino = Path(destination) if destination else Path(tempfile.mkdtemp(prefix="pctoolkit_carga_"))
+    destino.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(carga) as archivo:
+        for miembro in archivo.infolist():
+            nombre = Path(miembro.filename)
+            if nombre.is_absolute() or ".." in nombre.parts:
+                raise ValueError(f"La carga trae una ruta que no se admite: {miembro.filename}")
+        archivo.extractall(destino)
+    if not app_executable(destino).exists():
+        shutil.rmtree(destino, ignore_errors=True)
+        raise ValueError("La carga incrustada no trae la aplicación.")
+    return destino
 
 
 def repo_root() -> Path:
@@ -367,8 +429,6 @@ def schedule_directory_removal(path: Path, attempts: int = 20, wait_seconds: int
         ":fin\r\n"
         'del "%~f0" >nul 2>nul\r\n'
     )
-    import tempfile
-
     try:
         handle = Path(tempfile.gettempdir()) / f"pctoolkit_borrar_{abs(hash(str(path))) % 100000}.bat"
         handle.write_text(script, encoding="cp1252", errors="replace")
@@ -514,7 +574,36 @@ def remove_scheduled_task() -> str:
 
 
 def install(options: InstallOptions, progress: Callable[[str], None] | None = None) -> InstallResult:
-    """Copia la aplicación, crea accesos directos y registra todo."""
+    """Copia la aplicación, crea accesos directos y registra todo.
+
+    Si el instalador lleva la aplicación dentro (la descarga de un solo archivo), se
+    extrae a una carpeta temporal que se borra al terminar, salga bien o mal.
+    """
+    temporal: Path | None = None
+    if options.source is None and not app_beside() and payload_path() is not None:
+        if progress:
+            progress("Preparando los archivos de la aplicación…")
+        try:
+            temporal = unpack_payload()
+        except (OSError, ValueError) as exc:
+            return InstallResult(
+                ok=False,
+                installed_dir=str(options.target_dir),
+                message=f"No se pudo preparar la aplicación: {exc}",
+            )
+    try:
+        return _install(options, temporal, progress)
+    finally:
+        if temporal is not None:
+            shutil.rmtree(temporal, ignore_errors=True)
+
+
+def _install(
+    options: InstallOptions,
+    origin: Path | None,
+    progress: Callable[[str], None] | None,
+) -> InstallResult:
+    """Instalación propiamente dicha, con la carpeta de origen ya preparada."""
     started = time.perf_counter()
     result = InstallResult(ok=False, installed_dir=str(options.target_dir))
 
@@ -522,7 +611,8 @@ def install(options: InstallOptions, progress: Callable[[str], None] | None = No
         if progress:
             progress(message)
 
-    origin = options.source_path
+    if origin is None:
+        origin = options.source_path
     if not origin.exists() or not app_executable(origin).exists():
         result.message = (
             f"No se encuentra la aplicación en {origin}. Genera antes el ejecutable con «build_exe.bat»."

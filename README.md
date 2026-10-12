@@ -313,13 +313,15 @@ python build_installer.py --rebuild    Reconstruye antes la aplicación
 python build_installer.py --no-verify  Solo empaqueta
 ```
 
-El resultado queda en `dist\` y hay que **copiar las dos cosas al mismo sitio**: el instalador busca
-la aplicación a su lado.
+El resultado queda en `dist\PC Toolkit Setup.exe` y **es un solo archivo**: lleva la aplicación
+dentro, comprimida (`pc_toolkit_app.zip`, 32,6 MB), y la despliega en una carpeta temporal al pulsar
+«Instalar», borrándola al terminar. No hay que descomprimir nada ni copiar una carpeta al lado; de
+hecho, la carpeta `dist\PC Toolkit\` solo hace falta para repartir la aplicación sin instalador.
 
 | Archivo | Qué es |
 | --- | --- |
-| `dist\PC Toolkit Setup.exe` | Instalador (46,4 MB): asistente, opciones y modo silencioso. |
-| `dist\PC Toolkit\` | Aplicación que copia (159 archivos, 72,0 MB, con el desinstalador dentro). |
+| `dist\PC Toolkit Setup.exe` | Instalador (78,9 MB): asistente, opciones, modo silencioso **y la aplicación dentro**. |
+| `dist\PC Toolkit\` | Aplicación ya compilada (159 archivos, 72,0 MB), por si se reparte sin instalador. |
 
 ![Asistente de instalación](capturas/instalador.png)
 
@@ -344,10 +346,11 @@ PC Toolkit Setup.exe --silent --desinstalar --borrar-datos
 Desinstalar PC Toolkit.exe --silencioso
 ```
 
-`build_installer.py` no se limita a empaquetar: **instala de verdad en carpetas temporales** con
-escritorio, menú Inicio y clave de registro propios, ejecuta la copia instalada y desinstala
-comprobando que no queda rastro. Medido en este equipo: **159 archivos / 72,0 MB en 8,2 s**, dos
-accesos directos correctos y desinstalación completa. Las capturas del asistente se generan con
+`build_installer.py` no se limita a empaquetar: **copia el instalador solo, sin la aplicación al
+lado**, a una carpeta limpia —exactamente lo que tiene quien lo descarga— y desde ahí instala de
+verdad en otra carpeta temporal con escritorio, menú Inicio y clave de registro propios, ejecuta la
+copia instalada y desinstala comprobando que no queda rastro. Medido en este equipo: **159 archivos
+/ 72,0 MB en 8,2 s**, dos accesos directos correctos y desinstalación completa. Las capturas del asistente se generan con
 `tools\capturar_instalador.py` y la instalación real (con las rutas del usuario y desinstalación al
 terminar) se comprueba con `tools\verificar_instalacion.py`.
 
@@ -461,10 +464,10 @@ pctoolkit/
     tasks_page.py           Página del registro de tareas
     reports_page.py         Página de exportación de informes
 tools/verificar_instalacion.py  Instala de verdad con las rutas del usuario y desinstala al terminar
-tests/smoke_test.py         536 comprobaciones automáticas (núcleo, interfaz, instalador y firma)
-dist/PC Toolkit/            Programa (carpeta autocontenida, lo que instala el instalador)
+tests/smoke_test.py         545 comprobaciones automáticas (núcleo, interfaz, instalador y firma)
+dist/PC Toolkit/            Programa (carpeta autocontenida, para repartirlo sin instalador)
 dist/PC Toolkit.exe         Programa en un solo archivo (variante para compartir)
-dist/PC Toolkit Setup.exe   Instalador de Windows
+dist/PC Toolkit Setup.exe   Instalador de Windows, con la aplicación dentro (un solo archivo)
 dist/                       Todo lo anterior se regenera con los scripts de compilación
 ```
 

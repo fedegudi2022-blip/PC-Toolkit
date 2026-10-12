@@ -7,13 +7,16 @@
 
 El resultado queda listo para repartir en `dist\\`:
 
-    dist\\PC Toolkit Setup.exe     Instalador (doble clic)
-    dist\\PC Toolkit\\              Aplicación que copia el instalador
+    dist\\PC Toolkit Setup.exe     Instalador con la aplicación dentro (un solo archivo)
+    dist\\PC Toolkit\\              Aplicación ya compilada, para repartirla sin instalador
 
-La comprobación instala en una carpeta temporal con escritorio, menú Inicio y
-clave de registro propios, ejecuta la aplicación instalada, la desinstala y
-verifica que no queda rastro. Así se prueba el ciclo completo sin ensuciar el
-equipo del usuario.
+La aplicación viaja comprimida dentro del propio `Setup.exe`, así que la descarga es
+un único archivo: el instalador la saca a una carpeta temporal cuando se pulsa
+«Instalar» y la borra al terminar. La comprobación copia el instalador **solo**, sin
+aplicación al lado, a una carpeta limpia; instala en otra carpeta temporal con
+escritorio, menú Inicio y clave de registro propios; ejecuta la aplicación instalada;
+la desinstala y verifica que no queda rastro. Así se prueba el ciclo completo tal y
+como lo vive quien descarga el archivo.
 """
 
 from __future__ import annotations
@@ -25,15 +28,19 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parent
 sys.path.insert(0, str(RAIZ))
 
+from installer.installer_core import PAYLOAD_NAME  # noqa: E402 (necesita la raíz en sys.path)
+
 APP_FOLDER = RAIZ / "dist" / "PC Toolkit"
 SETUP_EXE = RAIZ / "dist" / "PC Toolkit Setup.exe"
 UNINSTALLER = APP_FOLDER / "Desinstalar PC Toolkit.exe"
 BUILD_DIR = RAIZ / "build" / "installer"
+PAYLOAD = BUILD_DIR / PAYLOAD_NAME
 
 TEST_KEY = "PCToolkitBuildTest"
 
@@ -105,9 +112,32 @@ def build_uninstaller() -> bool:
     return True
 
 
+def build_payload() -> Path | None:
+    """Comprime la aplicación para que viaje dentro del instalador.
+
+    Se guarda como un único ZIP —que ya viene comprimido— en vez de 159 archivos
+    sueltos: así la descarga es un solo ejecutable y lo extrae el propio instalador,
+    sin que nadie tenga que descomprimir nada a mano.
+    """
+    if not (APP_FOLDER / "PC Toolkit.exe").exists():
+        print(f"  [!] No hay aplicación que empaquetar en {APP_FOLDER}")
+        return None
+    print("Comprimiendo la aplicación para meterla dentro del instalador…")
+    BUILD_DIR.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(PAYLOAD, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archivo:
+        for ruta in sorted(APP_FOLDER.rglob("*")):
+            if ruta.is_file():
+                archivo.write(ruta, ruta.relative_to(APP_FOLDER).as_posix())
+    print(f"  Carga lista: {PAYLOAD.name} ({PAYLOAD.stat().st_size / (1024 * 1024):.1f} MB)")
+    return PAYLOAD
+
+
 def build_setup() -> bool:
-    """Compila el instalador en `dist\\` junto a la carpeta de la aplicación."""
+    """Compila el instalador con la aplicación dentro, en `dist\\`."""
     print("Compilando el instalador…")
+    carga = build_payload()
+    if carga is None:
+        return False
     icon = RAIZ / "assets" / "pc_toolkit.ico"
     version_file = RAIZ / "assets" / "version_info.txt"
     command = [
@@ -126,6 +156,9 @@ def build_setup() -> bool:
         "PC Toolkit Setup",
         "--icon",
         str(icon),
+        # La aplicación entera viaja dentro del ejecutable: la descarga es un archivo.
+        "--add-data",
+        f"{carga}{os.pathsep}.",
         "--distpath",
         str(RAIZ / "dist"),
         "--workpath",
@@ -173,9 +206,17 @@ def verify() -> bool:
     ok = True
 
     # --- Instalación silenciosa -------------------------------------------------
+    # Se instala con el instalador **solo**, copiado a una carpeta limpia y sin la
+    # aplicación al lado: es exactamente lo que tiene quien descarga el archivo, y
+    # obliga a que la saque de su propia carga.
+    descarga = base / "descarga"
+    descarga.mkdir(parents=True, exist_ok=True)
+    suelto = descarga / SETUP_EXE.name
+    shutil.copy2(SETUP_EXE, suelto)
+    print(f"  Instalador suelto en {descarga} (sin la aplicación al lado)")
     install = run(
         [
-            str(SETUP_EXE),
+            str(suelto),
             "--silent",
             "--dir",
             str(destino),
@@ -188,9 +229,9 @@ def verify() -> bool:
             "--autostart",
             "--sin-abrir",
         ],
-        cwd=str(SETUP_EXE.parent),
+        cwd=str(descarga),
         env=entorno,
-        timeout=600,
+        timeout=900,
     )
     if install.returncode != 0:
         print(f"  [!] La instalación falló (código {install.returncode})")
@@ -416,8 +457,9 @@ def main(argv: list[str] | None = None) -> int:
 
     print("\nListo para repartir:")
     print(f"  {SETUP_EXE}  ({SETUP_EXE.stat().st_size / (1024 * 1024):.1f} MB)")
-    print(f"  {APP_FOLDER}  (carpeta completa, con el desinstalador dentro)")
-    print("Copia ambos al mismo sitio: el instalador busca la aplicación en su propia carpeta.")
+    print("    Un solo archivo: lleva la aplicación dentro y la despliega al instalar.")
+    print(f"  {APP_FOLDER}  (carpeta ya compilada, por si prefieres repartirla sin instalador)")
+    print("Para la descarga basta con el Setup.exe; la carpeta solo es para pruebas o reparto manual.")
     return 0
 
 

@@ -35,8 +35,11 @@ administrador.
 
 ## 2. El instalador de Windows
 
-**Archivo:** `dist\PC Toolkit Setup.exe` (46,4 MB). Se reparte junto a la carpeta `dist\PC Toolkit\`,
-que es la aplicación que el instalador copia (159 archivos, 72,0 MB, con el desinstalador dentro).
+**Archivo:** `dist\PC Toolkit Setup.exe` (78,9 MB). Es **un solo archivo**: lleva dentro la
+aplicación comprimida (`pc_toolkit_app.zip`, 32,6 MB, los 159 archivos y el desinstalador) y la saca
+a una carpeta temporal al instalar, borrándola al terminar. No hay que descomprimir nada ni dejar una
+carpeta al lado; si el instalador encuentra la carpeta `PC Toolkit\` junto a él (por ejemplo al
+probarlo desde `dist\`), la usa directamente y no extrae nada.
 
 ### Qué hace al hacer doble clic
 
@@ -103,8 +106,9 @@ Otras opciones: `--sin-escritorio`, `--sin-menu`, `--origen` (carpeta de la apli
   carpeta de prueba con escritorio, menú Inicio y clave de registro propios, comprueba que los
   accesos directos apuntan al programa instalado, que el registro y el arranque automático quedan
   bien, **ejecuta la copia instalada** y desinstala verificando que no queda rastro.
-- **Instalación real en este equipo** (medida): `46,4 MB` de instalador, **159 archivos / 72,0 MB**
-  copiados en **8,2 s**, dos accesos directos correctos, entrada de registro y arranque automático
+- **Instalación real en este equipo** (medida): `78,9 MB` de instalador (que ya trae la aplicación
+  dentro), **159 archivos / 72,0 MB** copiados en **8,2 s**, dos accesos directos correctos, entrada
+  de registro y arranque automático
   en la bandeja, la copia instalada ejecutando el mantenimiento, y desinstalación dejando todo
   limpio (accesos directos, registro y carpeta eliminados; datos del usuario intactos). Se puede
   repetir cuando quieras con `tools\verificar_instalacion.py`.
@@ -117,8 +121,10 @@ python build_installer.py --rebuild    Reconstruye antes la aplicación
 python build_installer.py --no-verify  Solo empaqueta
 ```
 
-El resultado queda en `dist\`: `PC Toolkit Setup.exe` y la carpeta `PC Toolkit\`. **Hay que copiar
-los dos al mismo sitio**: el instalador busca la aplicación a su lado.
+El resultado queda en `dist\`: `PC Toolkit Setup.exe` (que ya incluye la aplicación) y la carpeta
+`PC Toolkit\` (la aplicación compilada, para repartirla sin instalador). Antes de compilar, la
+aplicación se comprime en `build\installer\pc_toolkit_app.zip` y esa carga es la que se incrusta en
+el ejecutable.
 
 ---
 
@@ -429,7 +435,7 @@ pctoolkit/
   ui/                           Interfaz PySide6: temas (claro y oscuro), anuncios accesibles y
                                 roles de los widgets propios, iconos, tarjetas, gráfica, bandeja,
                                 ventana principal y una página por módulo
-tests/smoke_test.py             536 comprobaciones automáticas (núcleo, interfaz, instalador y firma)
+tests/smoke_test.py             545 comprobaciones automáticas (núcleo, interfaz, instalador y firma)
 tools/
   app_icon.py                   Dibuja el icono de la aplicación
   medir_consumo.py              Mide el consumo de CPU/RAM de cada perfil de muestreo
@@ -441,7 +447,7 @@ Al compilar aparecen tres artefactos en `dist\`:
 
   dist\PC Toolkit\               Programa completo (carpeta autocontenida, 64,7 MB)
   dist\PC Toolkit.exe            Programa en un solo archivo (46,6 MB)
-  dist\PC Toolkit Setup.exe      Instalador de Windows (46,4 MB)
+  dist\PC Toolkit Setup.exe      Instalador de Windows con la aplicación dentro (78,9 MB)
 ```
 
 ---
@@ -490,8 +496,8 @@ no hay que preocuparse: cada script firma al terminar, cuando ya está todo crea
 
 Qué entregar:
 
-- **Para instalar en un equipo**: `dist\PC Toolkit Setup.exe` **y** la carpeta `dist\PC Toolkit\`,
-  los dos en el mismo sitio. Es la forma recomendada (accesos directos y desinstalador incluidos).
+- **Para instalar en un equipo**: `dist\PC Toolkit Setup.exe`, un único archivo que ya lleva la
+  aplicación dentro. Es la forma recomendada (accesos directos y desinstalador incluidos).
 - **Para llevar y ejecutar sin instalar nada**: `dist\PC Toolkit.exe`, un único archivo (tarda un
   par de segundos más en abrir porque se descomprime en memoria cada vez).
 - **Firmados** (opcional, véase la sección 8): después de compilar, `firmar.bat` firma los cuatro
@@ -504,7 +510,7 @@ de instalar, ejecutar y desinstalar.
 Pruebas:
 
 ```bat
-.venv\Scripts\python.exe tests\smoke_test.py           536 comprobaciones
+.venv\Scripts\python.exe tests\smoke_test.py           545 comprobaciones
 .venv\Scripts\python.exe tools\verificar_instalacion.py  Instala de verdad y desinstala al terminar
 set PCTOOLKIT_OFFSCREEN=1                               si no hay pantalla disponible
 ```
