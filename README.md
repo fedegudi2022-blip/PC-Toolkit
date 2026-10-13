@@ -160,7 +160,7 @@ Desinstalar conserva estos datos salvo que se pidan borrar desde el asistente.
 .venv\Scripts\python.exe tests\smoke_test.py
 ```
 
-**568 comprobaciones** sin marco externo: métricas y disco reales, persistencia, alertas,
+**573 comprobaciones** sin marco externo: métricas y disco reales, persistencia, alertas,
 historial, informes en los tres formatos, las ocho páginas construidas y navegadas, programas de
 inicio y cambios reversibles sobre claves propias de la prueba, el ciclo del instalador en carpetas
 temporales, la firma (argumentos de `signtool` y firma real con certificado de prueba), el contraste
@@ -170,6 +170,9 @@ Se ejecutan con la plataforma gráfica real de Qt; en un equipo sin escritorio, 
 PCTOOLKIT_OFFSCREEN=1` las ejecuta sin pantalla (las comprobaciones de desbordes avisarán de más y
 no se ejecutan las que necesitan bandeja).
 
+La última comprobación vigila esta misma documentación: que las guías citen la versión actual y que
+cada captura se haya hecho con ella. Para rehacerlas: `tools\capturar_documentacion.py`.
+
 ## Estructura
 
 ```
@@ -178,14 +181,14 @@ build_exe.py / .bat          Empaquetado con PyInstaller (icono, versión y comp
 build_installer.py / .bat    Instalador de Windows y comprobación del ciclo completo
 firmar.py / .bat             Firma con signtool (SHA-256, sello RFC 3161 y verificación)
 installer/                   Asistente, desinstalador y lógica de instalación por usuario
-tools/                       Icono, medición de consumo, capturas y verificación del instalador
+tools/                       Icono, medición de consumo, capturas (y su regeneración) y verificación
 capturas/                    Imágenes de esta documentación
 pctoolkit/
   core/                      Lógica sin interfaz: config, métricas, memoria, disco, tareas,
                              informes, historial, alertas, arranque, mantenimiento, programador
   ui/                        Interfaz PySide6: tema, accesibilidad, iconos, widgets, gráfica,
                              bandeja, diálogos y una página por sección
-tests/smoke_test.py          568 comprobaciones (núcleo, interfaz, instalador y firma)
+tests/smoke_test.py          573 comprobaciones (núcleo, interfaz, instalador, firma y docs)
 dist/                        Todo lo compilado; se regenera con los scripts
 ```
 

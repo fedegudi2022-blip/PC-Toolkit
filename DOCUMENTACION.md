@@ -470,13 +470,16 @@ pctoolkit/
   ui/                           Interfaz PySide6: temas (claro y oscuro), anuncios accesibles y
                                 roles de los widgets propios, iconos, tarjetas, gráfica, bandeja,
                                 ventana principal y una página por módulo
-tests/smoke_test.py             568 comprobaciones automáticas (núcleo, interfaz, instalador y firma)
+tests/smoke_test.py             573 comprobaciones automáticas (núcleo, interfaz, instalador, firma
+                                y coherencia de esta misma documentación)
 tools/
   app_icon.py                   Dibuja el icono de la aplicación
   medir_consumo.py              Mide el consumo de CPU/RAM de cada perfil de muestreo
+  capturar_documentacion.py     Rehace todas las capturas de la documentación
   capturar_instalador.py        Capturas del asistente y del desinstalador
+  capturas.py                   Anota con qué versión se generó cada captura
   verificar_instalacion.py      Instala de verdad con tus rutas y desinstala al terminar
-capturas/                       Imágenes de la documentación
+capturas/                       Imágenes de la documentación (con estado.json de versiones)
 
 Al compilar aparecen tres artefactos en `dist\`:
 
@@ -545,15 +548,30 @@ de instalar, ejecutar y desinstalar.
 Pruebas:
 
 ```bat
-.venv\Scripts\python.exe tests\smoke_test.py           568 comprobaciones
+.venv\Scripts\python.exe tests\smoke_test.py           573 comprobaciones
 .venv\Scripts\python.exe tools\verificar_instalacion.py  Instala de verdad y desinstala al terminar
 set PCTOOLKIT_OFFSCREEN=1                               si no hay pantalla disponible
 ```
 
 El total depende del equipo: unas pocas comprobaciones solo se hacen si el sistema tiene bandeja,
-si hay `signtool` disponible o si `dist\` ya está compilado. Con la plataforma real de Qt salen 568;
+si hay `signtool` disponible o si `dist\` ya está compilado. Con la plataforma real de Qt salen 573;
 en modo sin pantalla son unas cuantas menos, porque las que necesitan una bandeja de verdad no se
 ejecutan (la comprobación de que la bandeja solo se usa si el sistema la tiene sí se hace siempre).
+
+La última comprobación de la suite revisa esta documentación: que las guías hablen de la versión
+actual, que cada imagen citada exista y sea un PNG con el fondo de la paleta de hoy, y que el
+recuento de comprobaciones sea el de la pasada. Las capturas llevan la versión dentro (en la barra
+lateral de cada página y en el asistente de instalación), así que al subir de versión hay que
+rehacerlas con:
+
+```bat
+.venv\Scripts\python.exe tools\capturar_documentacion.py   Todas las capturas
+.venv\Scripts\python.exe tools\capturar_instalador.py      Solo las del instalador
+```
+
+Cada una de esas herramientas apunta en `capturas\estado.json` la versión con la que ha guardado
+sus archivos: si alguna se queda con la versión anterior, la suite lo dice por su nombre en vez de
+dejar que la documentación enseñe un número viejo.
 
 ---
 

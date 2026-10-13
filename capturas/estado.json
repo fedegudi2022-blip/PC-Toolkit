@@ -1,0 +1,50 @@
+{
+  "desinstalador.png": {
+    "sha256": "dc52c8ad8ae89a4f05bacfe95ed4c5527e62c0bea2a0f18c85fcd48a7d6df0ae",
+    "version": "1.1.1"
+  },
+  "dialogo_ajustes.png": {
+    "sha256": "c1288b32adc48f420b13a238ab9fca37634d4dec1e168c2bd040d74ab25af578",
+    "version": "1.1.1"
+  },
+  "disk.png": {
+    "sha256": "2a8a1362b2c38cdb9f7857c89a551c4538f73b38dba35080b8b0cc4d5f4079ff",
+    "version": "1.1.1"
+  },
+  "home.png": {
+    "sha256": "052d867d788d5b1e2e7e7fd35fa5ab92e33753b764cabefa9bafa5fe4ba04234",
+    "version": "1.1.1"
+  },
+  "inicio_claro.png": {
+    "sha256": "b6d8ecf83b9a3dd847ca3375a4c1041a164491e465e3e2a85df5d429be67dc6a",
+    "version": "1.1.1"
+  },
+  "instalador.png": {
+    "sha256": "617ba8c55f8891e4fe2ff384f747df7b6f0c898e287d5885ff1c17ce6924db6c",
+    "version": "1.1.1"
+  },
+  "memory.png": {
+    "sha256": "6402731a0a756a8a3818ad5fef434055cdc771f19c84f4ca7999f516fac9f644",
+    "version": "1.1.1"
+  },
+  "reports.png": {
+    "sha256": "16c6da6f826bb47e23db32cf1f10d47352df962d5a25506f60d46b5d06129e43",
+    "version": "1.1.1"
+  },
+  "schedule.png": {
+    "sha256": "8d583020075284f2262f97fd7d7849c1eca862efd9e1366221e7c2941ee54a3a",
+    "version": "1.1.1"
+  },
+  "startup.png": {
+    "sha256": "6c6169b2ecffb7c46015730aba3516eb7fdb1656335239091ab83f241274f1f0",
+    "version": "1.1.1"
+  },
+  "tasks.png": {
+    "sha256": "9c37513311ae3f52a5cf6d8f4d8e2c4d4c9a201e77c5fcfa7045fc8c42f51f03",
+    "version": "1.1.1"
+  },
+  "tools.png": {
+    "sha256": "80590ba2e76dd11e65a3bce5fba2263a80b6aea4698b7629a67eccc51227d657",
+    "version": "1.1.1"
+  }
+}
