@@ -50,11 +50,14 @@ Datos y preferencias se guardan en `%APPDATA%\PCToolkit` (véase [Dónde se guar
 | **Tareas** | Registro de mantenimiento con estados, prioridades, fechas límite y estadísticas. |
 | **Informes** | Exportación a HTML (visual), CSV y JSON, con selección de contenido y destino. |
 
-Dos temas completos —oscuro «grafito frío» y claro «niebla verde»— que por defecto siguen al de
-Windows, cambio de tema al instante y todo manejable con el teclado (`Ctrl+1`…`Ctrl+8` para las
-secciones, `Ctrl+9` para ajustes; `Tab` e `Intro` alcanzan también tarjetas y filas). Los textos de
-las dos paletas cumplen el contraste 4,5:1 de la WCAG y lo que ocurre se anuncia a los lectores de
-pantalla.
+Dos temas completos —oscuro «negro mate» (fondo negro y grises neutros) y claro «papel»— que se
+cambian al instante; por defecto abre en oscuro y en **Ajustes y alertas → Apariencia** se puede
+seguir a Windows o pasar al claro. El color tiene significado: **violeta** para la acción principal,
+el foco y la selección, **cian** para lo saludable, **ámbar** para los avisos y **rojo** para los
+errores; los datos llevan tonos propios (CPU cian, memoria violeta y disco naranja) y el verde no se
+usa en ningún sitio. Todo se maneja con el teclado (`Ctrl+1`…`Ctrl+8` para las secciones, `Ctrl+9`
+para ajustes; `Tab` e `Intro` alcanzan también tarjetas y filas). Los textos de las dos paletas
+cumplen el contraste 4,5:1 de la WCAG y lo que ocurre se anuncia a los lectores de pantalla.
 
 Medido en un Windows 11 x64: liberar RAM bajó del **78,9 % al 63,6 %** (+1.212 MB en 0,84 s), y con
 la ventana en la bandeja el consumo baja a **0,52 % de un núcleo** frente al 2,79 % con la ventana a
@@ -160,11 +163,12 @@ Desinstalar conserva estos datos salvo que se pidan borrar desde el asistente.
 .venv\Scripts\python.exe tests\smoke_test.py
 ```
 
-**573 comprobaciones** sin marco externo: métricas y disco reales, persistencia, alertas,
+**576 comprobaciones** sin marco externo: métricas y disco reales, persistencia, alertas,
 historial, informes en los tres formatos, las ocho páginas construidas y navegadas, programas de
 inicio y cambios reversibles sobre claves propias de la prueba, el ciclo del instalador en carpetas
 temporales, la firma (argumentos de `signtool` y firma real con certificado de prueba), el contraste
-WCAG de las dos paletas y la accesibilidad (roles, nombres, anuncios y foco visible).
+WCAG y la ausencia de verde en las dos paletas, y la accesibilidad (roles, nombres, anuncios y foco
+visible).
 
 Se ejecutan con la plataforma gráfica real de Qt; en un equipo sin escritorio, `set
 PCTOOLKIT_OFFSCREEN=1` las ejecuta sin pantalla (las comprobaciones de desbordes avisarán de más y
@@ -188,7 +192,7 @@ pctoolkit/
                              informes, historial, alertas, arranque, mantenimiento, programador
   ui/                        Interfaz PySide6: tema, accesibilidad, iconos, widgets, gráfica,
                              bandeja, diálogos y una página por sección
-tests/smoke_test.py          573 comprobaciones (núcleo, interfaz, instalador, firma y docs)
+tests/smoke_test.py          576 comprobaciones (núcleo, interfaz, instalador, firma y docs)
 dist/                        Todo lo compilado; se regenera con los scripts
 ```
 

@@ -271,8 +271,8 @@ def _html(report: dict[str, Any]) -> str:
     tasks = report.get("tareas", {}).get("lista", [])
     analysis = report.get("analisis_disco")
     # El informe se abre en el navegador y siempre va en claro, así que sus colores
-    # salen de la paleta **clara** aunque la aplicación esté en oscuro: los verdes y
-    # rojos brillantes de la oscura no se leen sobre blanco.
+    # salen de la paleta **clara** aunque la aplicación esté en oscuro: los violetas y
+    # cianes brillantes de la oscura no se leen sobre blanco.
     claro = LIGHT_COLORS
 
     def bar(percent: float, color: str | None = None) -> str:
@@ -356,8 +356,8 @@ def _html(report: dict[str, Any]) -> str:
     cpu_temp = resumen.get("cpu_temperatura")
     temp_row = f"<li><span>Temperatura</span><strong>{cpu_temp:.0f} °C</strong></li>" if cpu_temp else ""
 
-    # La cabecera sí lleva el grafito de la paleta oscura (la identidad de la
-    # aplicación) y las barras de categorías, los tres tonos de dato.
+    # La cabecera sí lleva la paleta oscura (la identidad de la aplicación) y las barras
+    # de categorías, los tres tonos de dato.
     grafito = DARK_COLORS
     claro_sup = LIGHT_SURFACES
 

@@ -5,8 +5,8 @@ sitio: libera memoria RAM cuando hace falta, programa el mantenimiento en el pro
 la CPU, la memoria y el disco, analiza el espacio ocupado, reúne los accesos rápidos a las
 herramientas del sistema y exporta informes.
 
-Está hecha en **Python + PySide6 + psutil**, con tema oscuro «grafito frío» (grises neutros con un
-matiz verde muy leve y cada nivel de superficie separado del siguiente), verde para las acciones y
+Está hecha en **Python + PySide6 + psutil**, con tema oscuro «negro mate» (fondo negro de verdad y
+grises neutros, cada nivel de superficie separado del siguiente) y violeta para las acciones y
 los estados saludables, ámbar para los avisos y rojo para lo que va mal; y se instala con un
 **instalador propio de Windows** (asistente, accesos directos y desinstalador), sin necesidad de ser
 administrador.
@@ -337,8 +337,8 @@ como estaba.
 ### 3.9 Teclado y accesibilidad
 
 La ventana se maneja entera con el teclado y **el foco siempre se ve**: el borde del control
-enfocado se ilumina en verde (en el botón principal, que ya es verde, el borde cambia al color de
-contraste del acento: casi negro en oscuro y blanco en claro). Antes
+enfocado se ilumina en violeta (en el botón principal, que ya es violeta, el borde cambia al color
+de contraste del acento: casi negro en oscuro y blanco en claro). Antes
 del cambio, la hoja de estilos quitaba el contorno de todos los controles y con el tabulador no se
 sabía dónde estabas.
 
@@ -357,7 +357,7 @@ Detalles del tema que también se comprueban en las pruebas:
 - Al cambiar de sección, el texto de la barra lateral ya no salta de sitio: los dos estados llevan
   los mismos grosores de borde.
 - Un control deshabilitado se ve apagado y no reacciona al ratón; una casilla marcada pero
-  deshabilitada ya no se queda pintada en verde (parecía activa).
+  deshabilitada ya no se queda pintada con el color del acento (parecía activa).
 - Con la ventana en segundo plano, la selección de una lista se apaga para no confundirla con la de
   verdad.
 
@@ -414,9 +414,9 @@ aplicación seguiría pintando con la paleta vieja.
 
 | Modo | Qué hace |
 | --- | --- |
-| **Seguir a Windows** (por defecto) | Lee `HKCU\...\Themes\Personalize\AppsUseLightTheme`, la misma marca que usa Windows para el modo claro |
-| **Oscuro** | Paleta «grafito frío»: gris muy oscuro con un matiz verde muy leve y el texto casi blanco |
-| **Claro** | Paleta «niebla verde»: blancos fríos y el mismo verde oscurecido, para que se lea como texto y como relleno con texto blanco encima |
+| **Oscuro** (por defecto) | Paleta «negro mate»: fondo negro, superficies en grises neutros y texto casi blanco |
+| **Claro** | Paleta «papel»: blancos y grises fríos, texto casi negro y el mismo violeta oscurecido, para que se lea como texto y como relleno con texto blanco encima |
+| **Seguir a Windows** | Lee `HKCU\...\Themes\Personalize\AppsUseLightTheme`, la misma marca que usa Windows para el modo claro |
 
 El cambio se hace en **Ajustes y alertas → Apariencia**, y la propia ventana explica en una línea
 qué supone la opción elegida *según cómo esté Windows ahora mismo* («Se usa el mismo modo que
@@ -428,8 +428,14 @@ hereda tamaño, posición y visibilidad, y la anterior se cierra de verdad (no s
 Con `--tema claro|oscuro|auto` se fuerza el tema **solo para esa ejecución**, sin tocar lo guardado:
 es la forma de probarlo o de generar documentación reproducible.
 
+El color tiene significado: **violeta** para la acción principal, el foco y la selección; **cian**
+para lo saludable; **ámbar** para lo que pide atención y **rojo** para los errores. Los datos llevan
+tres tonos propios —CPU cian, memoria violeta y disco naranja— que se distinguen en la gráfica y en
+la leyenda sin parecer una alerta cuando el valor es normal. **El verde no se usa en ningún sitio**
+de la paleta: ni como acento, ni como estado, ni como dato.
+
 **Comprobado:** el contraste WCAG 4,5:1 de los pares texto/fondo en **las dos paletas**, que el
-acento sea verde en ambas y que ningún color de la paleta caiga en el rango azul, que los tres
+acento sea violeta/índigo en ambas, que ningún color de la paleta tenga matiz verde, que los tres
 tonos de dato se distingan entre sí, que cambiar de paleta no reasigne los diccionarios (las referencias
 ya tomadas siguen valiendo), que la plantilla del QSS no deje claves sin rellenar, que cada paleta
 tenga su marca de verificación (la del tema oscuro es blanca y sobre fondo claro desaparecería), que
@@ -470,7 +476,7 @@ pctoolkit/
   ui/                           Interfaz PySide6: temas (claro y oscuro), anuncios accesibles y
                                 roles de los widgets propios, iconos, tarjetas, gráfica, bandeja,
                                 ventana principal y una página por módulo
-tests/smoke_test.py             573 comprobaciones automáticas (núcleo, interfaz, instalador, firma
+tests/smoke_test.py             576 comprobaciones automáticas (núcleo, interfaz, instalador, firma
                                 y coherencia de esta misma documentación)
 tools/
   app_icon.py                   Dibuja el icono de la aplicación
@@ -548,13 +554,13 @@ de instalar, ejecutar y desinstalar.
 Pruebas:
 
 ```bat
-.venv\Scripts\python.exe tests\smoke_test.py           573 comprobaciones
+.venv\Scripts\python.exe tests\smoke_test.py           576 comprobaciones
 .venv\Scripts\python.exe tools\verificar_instalacion.py  Instala de verdad y desinstala al terminar
 set PCTOOLKIT_OFFSCREEN=1                               si no hay pantalla disponible
 ```
 
 El total depende del equipo: unas pocas comprobaciones solo se hacen si el sistema tiene bandeja,
-si hay `signtool` disponible o si `dist\` ya está compilado. Con la plataforma real de Qt salen 573;
+si hay `signtool` disponible o si `dist\` ya está compilado. Con la plataforma real de Qt salen 576;
 en modo sin pantalla son unas cuantas menos, porque las que necesitan una bandeja de verdad no se
 ejecutan (la comprobación de que la bandeja solo se usa si el sistema la tiene sí se hace siempre).
 

@@ -24,7 +24,7 @@ from . import accessibility
 # Series de la gráfica: (clave de la muestra, etiqueta, clave de color de la paleta).
 # Se guarda la **clave** y no el color: la paleta cambia al cambiar de tema, y un
 # color copiado aquí al importar el módulo se quedaría con el del tema anterior.
-# Los colores de serie son de datos, no de estado: verde, rosa y turquesa se
+# Los colores de serie son de datos, no de estado: cian, violeta y naranja se
 # distinguen entre sí sin parecer una alerta cuando el valor es normal (el amarillo
 # y el rojo quedan reservados para avisos y errores).
 SERIES = (

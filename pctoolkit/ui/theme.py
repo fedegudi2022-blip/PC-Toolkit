@@ -1,11 +1,11 @@
 """Tema visual de PC Toolkit: dos paletas y una hoja de estilos QSS.
 
-La oscura «grafito frío» es un gris muy oscuro con un matiz verde muy leve; la
-clara «niebla verde» usa blancos fríos con el mismo verde oscurecido. En las dos,
-un único verde manda en las acciones y la selección, el amarillo queda para los
-avisos y el rojo para los errores, y todos los matices de superficie (hover,
-pulsado, selección, pistas) salen de `COLORS`/`SURFACES`, así que el conjunto se
-reajusta desde un solo sitio.
+La oscura «negro mate» es fondo negro con superficies en grises neutros; la clara
+«papel» usa blancos y grises fríos con el mismo violeta oscurecido. En las dos, un
+único violeta manda en las acciones, el foco y la selección, el cian queda para el
+estado saludable, el ámbar para los avisos y el rojo para los errores, y todos los
+matices de superficie (hover, pulsado, selección, pistas) salen de
+`COLORS`/`SURFACES`, así que el conjunto se reajusta desde un solo sitio.
 
 El QSS es una plantilla con una clave por color: se rellena **al aplicarlo**, no
 al importar el módulo, que es lo que permite cambiar de tema en caliente.
@@ -343,7 +343,7 @@ QCheckBox::indicator:checked {{
 QCheckBox::indicator:hover {{ border-color: {accent}; }}
 QCheckBox:focus {{ color: {text}; }}
 QCheckBox:focus::indicator {{ border-color: {accent}; }}
-/* Una casilla marcada pero apagada no puede seguir pintada en esmeralda: se ve
+/* Una casilla marcada pero apagada no puede seguir pintada con el acento: se ve
    como si estuviera activa. */
 QCheckBox::indicator:disabled {{ background: {bg_alt}; border-color: {border_soft}; }}
 QCheckBox::indicator:checked:disabled {{

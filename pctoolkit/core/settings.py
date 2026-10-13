@@ -7,7 +7,7 @@ import json
 from PySide6.QtCore import QSettings
 
 from .alerts import AlertConfig
-from .appearance import MODE_AUTO, normalize_mode
+from .appearance import MODE_DARK, normalize_mode
 from .history import DEFAULT_INTERVAL_SECONDS
 from .memory import MemoryOptions
 from .scheduler import MaintenanceSchedule
@@ -107,8 +107,13 @@ class AppSettings:
     # --- Apariencia ------------------------------------------------------
     @property
     def theme_mode(self) -> str:
-        """Tema de la interfaz: `auto` (el que tenga Windows), `dark` o `light`."""
-        return normalize_mode(self._settings.value("tema", MODE_AUTO, type=str))
+        """Tema de la interfaz: `auto` (el que tenga Windows), `dark` o `light`.
+
+        Por defecto, oscuro: la identidad de la aplicación es el negro y solo cambia si
+        se elige a mano en «Ajustes y alertas → Apariencia» (`auto` para seguir a
+        Windows o `light` para el claro).
+        """
+        return normalize_mode(self._settings.value("tema", MODE_DARK, type=str))
 
     @theme_mode.setter
     def theme_mode(self, value: str) -> None:

@@ -393,12 +393,14 @@ def test_history() -> None:
 
 
 def test_theme() -> None:
-    """Las dos paletas (oscura y clara): contraste, acento esmeralda y coherencia.
+    """Las dos paletas (oscura y clara): contraste, acento violeta y coherencia.
 
     El contraste se calcula con la fórmula de la WCAG sobre los pares de texto y
     fondo que la interfaz usa de verdad, no sobre una lista inventada: si alguien
     retoca un color y el texto deja de leerse, aquí salta.
     """
+    from itertools import combinations
+
     from pctoolkit.core import appearance, config
     from pctoolkit.ui import theme
 
@@ -447,17 +449,33 @@ def test_theme() -> None:
         ("oscura", config.DARK_COLORS, config.DARK_SURFACES),
         ("clara", config.LIGHT_COLORS, config.LIGHT_SURFACES),
     ):
-        bluish = [
+        # El verde no se usa en ninguna parte: ni acento, ni estado, ni dato. Se mira el
+        # matiz (y no un valor exacto) para que valga cualquier tono futuro, pero no
+        # cualquier verde: los grises neutros no cuentan (apenas tienen matiz).
+        verdes = [
             name
-            for name, value in paleta.items()
-            if 195.0 <= hue(value) <= 265.0 and max(channels(value)) - min(channels(value)) > 20
+            for name, value in {**paleta, **superficies}.items()
+            if 80.0 <= hue(value) <= 170.0 and max(channels(value)) - min(channels(value)) > 20
         ]
-        check(f"Ningún color de la paleta {nombre} está en el rango azul", not bluish, ", ".join(bluish))
+        check(f"Ningún color de la paleta {nombre} es verde", not verdes, ", ".join(verdes))
         accent = channels(paleta["accent"])
         check(
-            f"El acento de la paleta {nombre} es esmeralda (verde dominante)",
-            accent[1] > accent[0] and accent[1] > accent[2],
+            f"El acento de la paleta {nombre} es violeta/índigo",
+            250.0 <= hue(paleta["accent"]) <= 290.0 and accent[2] > accent[0] and accent[2] > accent[1],
             paleta["accent"],
+        )
+        # Los tres tonos de dato se distinguen entre sí de un vistazo: cada uno en su franja
+        # de color y ninguno verde, para que el dato no se confunda con una alerta.
+        tonos = {clave: hue(paleta[clave]) for clave in ("series_cpu", "series_ram", "series_disk")}
+        separacion = min(
+            min(abs(uno - otro), 360 - abs(uno - otro))
+            for uno, otro in combinations(tonos.values(), 2)
+        )
+        check(
+            f"Los tonos de dato de la paleta {nombre} se distinguen",
+            separacion >= 40 and not any(80.0 <= valor <= 170.0 for valor in tonos.values()),
+            ", ".join(f"{clave} {valor:.0f}°" for clave, valor in tonos.items())
+            + f"; separación mínima {separacion:.0f}°",
         )
         for name, value in paleta.items():
             check(f"Color válido ({nombre}): {name}", len(value) == 7 and value.startswith("#"), value)
@@ -1958,17 +1976,21 @@ def test_interface() -> None:
     window.resize(1360, 860)
     _settle(app, 250)
 
-    # Aspecto del render real: fondo oscuro, sin dominante azul y con el acento esmeralda.
+    # Aspecto del render real: fondo negro, sin restos del verde anterior y con el acento
+    # violeta a la vista. Se mide sobre la pantalla de verdad, no sobre el texto del estilo.
     window.navigate("home")
     _settle(app, 300)
     image = window.grab().toImage()
-    # Se mira por bloques de 40x40: un elemento azul de verdad llenaría el suyo,
-    # mientras que los flecos de color del suavizado de texto quedan dispersos.
+    # Se mira por bloques de 40x40: un elemento de color de verdad llenaría el suyo,
+    # mientras que los flecos del suavizado de texto quedan dispersos.
+    from PySide6.QtGui import QColor as _Color
+
+    acento = _Color(COLORS["accent"])
     block = 40
     step = 2
     sampled = dark = accent = 0
     totals: dict[tuple[int, int], int] = {}
-    blues: dict[tuple[int, int], int] = {}
+    verdes: dict[tuple[int, int], int] = {}
     for y in range(0, image.height(), step):
         for x in range(0, image.width(), step):
             colour = image.pixelColor(x, y)
@@ -1976,23 +1998,28 @@ def test_interface() -> None:
             sampled += 1
             if red + green + blue_channel < 190:
                 dark += 1
+            # El verde del diseño anterior (el acento esmeralda): si quedara algún resto,
+            # llenaría bloques enteros en vez de dejar píxeles sueltos.
             if green > red + 40 and green > blue_channel + 20 and green > 90:
+                verdes[(x // block, y // block)] = verdes.get((x // block, y // block), 0) + 1
+            if (
+                (red - acento.red()) ** 2
+                + (green - acento.green()) ** 2
+                + (blue_channel - acento.blue()) ** 2
+            ) < 2500:
                 accent += 1
             key = (x // block, y // block)
             totals[key] = totals.get(key, 0) + 1
-            if blue_channel > red + 30 and blue_channel > green + 30:
-                blues[key] = blues.get(key, 0) + 1
-    # Con la paleta cálida lo esperable es que no haya ni un bloque azulado, así
-    # que el caso vacío es el bueno y no un error: sin `default` la comprobación
-    # saltaba con `max()` sobre una secuencia vacía.
-    worst = max((count / totals[key] for key, count in blues.items()), default=0.0)
+    # Lo esperable es que no haya ni un bloque verde, así que el caso vacío es el bueno y
+    # no un error: sin `default` la comprobación saltaba con `max()` sobre una secuencia vacía.
+    worst = max((count / totals[key] for key, count in verdes.items()), default=0.0)
     check("Fondo oscuro en pantalla", dark / sampled > 0.5, f"{dark / sampled:.0%} de píxeles oscuros")
     check(
-        "Sin zonas azules en el render",
+        "Sin restos verdes en el render",
         worst < 0.35,
-        f"{len(blues)} bloques azulados, el mayor al {worst:.0%}",
+        f"{len(verdes)} bloques verdosos, el mayor al {worst:.0%}",
     )
-    check("Acento esmeralda pintado", accent > 200, f"{accent} píxeles de acento")
+    check("Acento violeta pintado", accent > 200, f"{accent} píxeles de acento")
 
     # --- Foco del teclado, alineación y controles apagados -------------------
     # El tema no puede dejar el foco invisible al tabular, ni que dos botones de la
@@ -2460,6 +2487,9 @@ def test_interface() -> None:
     _activar(app, clara)
     _settle(app, 150)
     imagen_clara = clara.grab().toImage()
+    # El acento de la paleta activa **ahora**: en claro es el violeta oscurecido, no el
+    # brillante del tema oscuro.
+    acento_claro = _Color(COLORS["accent"])
     muestreo = claro_px = oscuro_px = acento_px = 0
     for y in range(0, imagen_clara.height(), 4):
         for x in range(0, imagen_clara.width(), 4):
@@ -2471,11 +2501,15 @@ def test_interface() -> None:
                 claro_px += 1
             elif luz < 90:
                 oscuro_px += 1
-            if green > red + 30 and green > blue + 10 and green > 90:
+            if (
+                (red - acento_claro.red()) ** 2
+                + (green - acento_claro.green()) ** 2
+                + (blue - acento_claro.blue()) ** 2
+            ) < 2500:
                 acento_px += 1
     check("Fondo claro en pantalla", claro_px / muestreo > 0.85, f"{claro_px / muestreo:.0%} de píxeles claros")
     check("Texto oscuro sobre el fondo claro", oscuro_px / muestreo > 0.005, f"{oscuro_px / muestreo:.2%} de píxeles oscuros")
-    check("El acento esmeralda sigue ahí en claro", acento_px > 200, f"{acento_px} píxeles de acento")
+    check("El acento violeta sigue ahí en claro", acento_px > 200, f"{acento_px} píxeles de acento")
 
     # Se vuelve al tema oscuro para el resto de comprobaciones.
     app_settings.theme_mode = "dark"
@@ -2995,6 +3029,30 @@ def test_documentacion() -> None:
         not problemas,
         "; ".join(problemas)
         or f"{len(imagenes)} capturas de la {APP_VERSION} (tools\\capturar_documentacion.py)",
+    )
+
+    # --- El informe de muestra --------------------------------------------
+    # Es un documento generado (no una captura), así que se mira lo que lleva dentro: la
+    # versión con la que se hizo y el acento de la paleta clara, que es con la que se pinta.
+    informe = ROOT / "capturas" / "informe_muestra.html"
+    texto_informe = informe.read_text(encoding="utf-8") if informe.exists() else ""
+    ficha_informe = anotado.get(informe.name) or {}
+    problemas_informe = []
+    if not texto_informe:
+        problemas_informe.append(f"no existe {informe.name}")
+    else:
+        if f"PC Toolkit {APP_VERSION}" not in texto_informe:
+            problemas_informe.append("no dice la versión actual")
+        if config.LIGHT_COLORS["accent"] not in texto_informe:
+            problemas_informe.append(f"no lleva el acento de hoy ({config.LIGHT_COLORS['accent']})")
+        if ficha_informe.get("version") != APP_VERSION:
+            problemas_informe.append(f"anotado como {ficha_informe.get('version') or 'sin anotar'}")
+        elif ficha_informe.get("sha256") != capturas.sha256(informe):
+            problemas_informe.append("cambió desde que se anotó")
+    check(
+        "El informe de muestra es de la versión y la paleta actuales",
+        not problemas_informe,
+        "; ".join(problemas_informe) or f"informe_muestra.html con la {APP_VERSION} y el acento claro",
     )
 
     # --- Las guías hablan de la versión actual ----------------------------

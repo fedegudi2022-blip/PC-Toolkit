@@ -304,10 +304,10 @@ class HealthMeter(QWidget):
         painter.setBrush(QColor(COLORS["bg_alt"]))
         painter.drawRoundedRect(QRectF(bar_x, top, bar_width, bar_height), 7, 7)
 
-        # El relleno lleva el color del **estado** (verde, amarillo o rojo) y el
-        # degradado solo le da volumen. Antes pintaba la escala entera —rojo abajo,
-        # verde arriba—, así que una puntuación «Aceptable» enseñaba medio rojo y
-        # parecía una alarma cuando el equipo estaba bien.
+        # El relleno lleva el color del **estado** (cian, ámbar o rojo) y el degradado
+        # solo le da volumen. Antes pintaba la escala entera —rojo abajo, verde arriba—,
+        # así que una puntuación «Aceptable» enseñaba medio rojo y parecía una alarma
+        # cuando el equipo estaba bien.
         base = QColor(health_color(self._score))
         fill_height = bar_height * self._score / 100.0
         gradient = QLinearGradient(0, bottom, 0, top)

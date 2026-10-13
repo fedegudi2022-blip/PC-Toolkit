@@ -46,19 +46,23 @@ def config_file() -> Path:
 
 
 # --- Colores de la interfaz -----------------------------------------------
-# Hay **dos paletas completas** con las mismas claves: la oscura «grafito frío»
-# (grises neutros con un matiz verde muy leve, texto casi blanco y verde de
-# acento) y la clara «niebla verde» (blancos fríos, texto casi negro y el mismo
-# verde oscurecido para que el texto siga leyéndose).
+# Hay **dos paletas completas** con las mismas claves: la oscura «negro mate»
+# (fondo negro de verdad, superficies en grises neutros sin matiz y texto casi
+# blanco) y la clara «papel» (blancos fríos, texto casi negro y el mismo violeta
+# oscurecido para que el texto siga leyéndose sobre blanco).
 #
 # El color se usa por **significado**, no por decoración:
-#   verde   → acción principal, selección activa y estado saludable
-#   amarillo→ advertencia o atención necesaria
+#   violeta → acción principal, foco y selección
+#   cian    → estado saludable
+#   ámbar   → advertencia o atención necesaria
 #   rojo    → error, peligro o estado crítico
-#   series_*→ datos (CPU, memoria y disco): tres tonos que se distinguen entre sí
-#             sin parecer una alerta cuando el valor es normal. Van solo en la
-#             gráfica, la leyenda y las barras del icono de la bandeja, nunca como
-#             fondo de una tarjeta ni como color de estado.
+#   series_*→ datos (CPU cian, memoria violeta y disco naranja): tres tonos que se
+#             distinguen entre sí sin parecer una alerta cuando el valor es normal.
+#             Van solo en la gráfica, la leyenda y las barras del icono de la
+#             bandeja, nunca como fondo de una tarjeta ni como color de estado.
+#
+# El verde no aparece en la paleta: ni como acento, ni como estado, ni como dato. La
+# suite lo comprueba de verdad (ningún color de la paleta tiene matiz verde).
 #
 # `COLORS` y `SURFACES` son siempre la paleta **activa** y se usan por referencia
 # en toda la interfaz, así que cambiar de tema es reemplazar su contenido con
@@ -69,88 +73,99 @@ def config_file() -> Path:
 #   on_accent    texto e iconos que se pintan encima del acento
 #   on_selected  texto sobre una superficie seleccionada (barra lateral, listas)
 DARK_COLORS = {
-    "bg": "#0B0F0E",
-    "bg_alt": "#101614",
-    "panel": "#151C19",
-    "panel_alt": "#1B2420",
-    "border": "#29352F",
-    "border_soft": "#1E2823",
-    "text": "#F3F7F4",
-    "text_muted": "#A7B4AC",
-    "text_dim": "#8C9A92",
-    "accent": "#22C55E",
-    "accent_soft": "#1B9E4B",
-    "accent_glow": "#4ADE80",
-    "good": "#34D399",
+    # Negro de verdad en el fondo y tres grises neutros (sin matiz de ningún color)
+    # para las superficies: cada nivel se separa del anterior lo justo para que se
+    # vean los bordes de las tarjetas.
+    "bg": "#000000",
+    "bg_alt": "#0A0A0A",
+    "panel": "#121212",
+    "panel_alt": "#1A1A1A",
+    "border": "#2E2E33",
+    "border_soft": "#1F1F23",
+    "text": "#F4F4F6",
+    "text_muted": "#A9A9B2",
+    "text_dim": "#8E8E97",
+    # Violeta/índigo de acento: botones principales, foco del teclado y selección.
+    "accent": "#8B5CF6",
+    "accent_soft": "#7C3AED",
+    "accent_glow": "#A78BFA",
+    # El estado saludable es cian: el verde ya no se usa para nada.
+    "good": "#22D3EE",
     "warn": "#FBBF24",
     "bad": "#F87171",
-    "series_cpu": "#22C55E",
-    "series_ram": "#F472B6",
-    "series_disk": "#2DD4BF",
-    "on_accent": "#04220F",
-    "on_selected": "#A7F3C2",
-    "primary_hover": "#86EFAC",
-    "primary_disabled_bg": "#1B2320",
-    "primary_disabled_border": "#2A3A32",
-    "primary_disabled_text": "#7E8C85",
+    # Datos: CPU cian, memoria violeta y disco naranja.
+    "series_cpu": "#22D3EE",
+    "series_ram": "#A78BFA",
+    "series_disk": "#FB923C",
+    # Sobre el violeta el texto va casi negro: es lo que mantiene el 4,5:1
+    # (con blanco encima, #8B5CF6 se queda en 3,5:1).
+    "on_accent": "#0B0714",
+    "on_selected": "#E9E4FF",
+    "primary_hover": "#B9A2FF",
+    "primary_disabled_bg": "#16161A",
+    "primary_disabled_border": "#2A2A31",
+    "primary_disabled_text": "#6C6C76",
     "danger_border": "#4A2A2C",
     "danger_hover": "#2A1618",
 }
 
 LIGHT_COLORS = {
-    "bg": "#F2F5F3",
-    "bg_alt": "#E8EDEA",
+    # Blancos y grises fríos, sin el matiz verdoso de la paleta anterior.
+    "bg": "#F5F5F7",
+    "bg_alt": "#EBEBEF",
     "panel": "#FFFFFF",
-    "panel_alt": "#F5F8F6",
-    "border": "#C6D0CA",
-    "border_soft": "#DCE4DF",
-    "text": "#0F1614",
-    "text_muted": "#414E48",
-    "text_dim": "#5F6D66",
-    # En claro el acento es un verde oscuro porque hace dos trabajos a la vez:
-    # relleno de los botones principales (con texto blanco encima) y color de texto
-    # y de borde sobre blanco. El tono claro no sirve para lo segundo.
-    "accent": "#166534",
-    "accent_soft": "#14532D",
-    "accent_glow": "#15803D",
-    "good": "#047857",
+    "panel_alt": "#F7F7F9",
+    "border": "#C9C9D2",
+    "border_soft": "#E0E0E6",
+    "text": "#111114",
+    "text_muted": "#4B4B54",
+    "text_dim": "#63636D",
+    # En claro el acento es el mismo violeta, oscurecido porque hace dos trabajos a
+    # la vez: relleno de los botones principales (con texto blanco encima) y color
+    # de texto y de borde sobre blanco. El tono brillante no sirve para lo segundo.
+    "accent": "#6D28D9",
+    "accent_soft": "#5B21B6",
+    "accent_glow": "#7C3AED",
+    "good": "#0E7490",
     "warn": "#96620B",
     "bad": "#B32424",
-    "series_cpu": "#15803D",
-    "series_ram": "#BE185D",
-    "series_disk": "#0F766E",
+    "series_cpu": "#0E7490",
+    "series_ram": "#7C3AED",
+    "series_disk": "#C2410C",
     "on_accent": "#FFFFFF",
-    "on_selected": "#0B3B22",
+    "on_selected": "#2E1065",
     # El hover del botón principal oscurece (el gradiente va de `primary_hover` a
-    # `accent_glow`): aclarar el verde obligaría a quitar el texto blanco.
-    "primary_hover": "#14532D",
-    "primary_disabled_bg": "#E4EAE7",
-    "primary_disabled_border": "#CBD5D0",
+    # `accent_glow`): aclarar el violeta obligaría a quitar el texto blanco.
+    "primary_hover": "#5B21B6",
+    "primary_disabled_bg": "#E6E6EB",
+    "primary_disabled_border": "#D0D0D8",
     # El texto de un control apagado queda por debajo de 4,5:1 a propósito (la
     # WCAG exime a los componentes inactivos): tiene que verse apagado, no legible
     # como si estuviera disponible. 3,6:1 se lee sin confundirse con el activo.
-    "primary_disabled_text": "#6E7B75",
+    "primary_disabled_text": "#7B7B85",
     "danger_border": "#E3BDBD",
     "danger_hover": "#FBEDED",
 }
 
-# Matices de superficie usados en hover/selecciones/filas alternas.
+# Matices de superficie usados en hover/selecciones/filas alternas. Son grises
+# neutros salvo la selección, que lleva el violeta del acento para que se vea de un
+# vistazo qué fila o qué sección está activa.
 DARK_SURFACES = {
-    "hover": "#1C2621",
-    "pressed": "#161E1A",
-    "selected": "#1F3D2C",
-    "track": "#29352F",
-    "track_hover": "#3C4A43",
-    "row": "#121A17",
+    "hover": "#1C1C21",
+    "pressed": "#151519",
+    "selected": "#2A2140",
+    "track": "#2E2E33",
+    "track_hover": "#3F3F46",
+    "row": "#0E0E11",
 }
 
 LIGHT_SURFACES = {
-    "hover": "#E7EEE9",
-    "pressed": "#DBE5DF",
-    "selected": "#CFEBD9",
-    "track": "#C6D0CA",
-    "track_hover": "#A9B7AF",
-    "row": "#F8FAF9",
+    "hover": "#EDEDF2",
+    "pressed": "#DFDFE6",
+    "selected": "#E7E0FB",
+    "track": "#C9C9D2",
+    "track_hover": "#B2B2BC",
+    "row": "#FAFAFC",
 }
 
 THEME_DARK = "dark"

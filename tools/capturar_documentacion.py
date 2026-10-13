@@ -32,7 +32,10 @@ if os.environ.get("PCTOOLKIT_OFFSCREEN") == "1":
 from PySide6.QtCore import QEventLoop, QTimer  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from app import _capture_screens  # noqa: E402
+from app import _capture_screens, _seed_demo_tasks  # noqa: E402
+from pctoolkit.core import reports  # noqa: E402
+from pctoolkit.core.disk import list_drives  # noqa: E402
+from pctoolkit.core.metrics import MetricsService  # noqa: E402
 from pctoolkit.core.settings import AppSettings  # noqa: E402
 from pctoolkit.ui.alert_settings import AlertSettingsDialog  # noqa: E402
 from pctoolkit.ui.shell import MainWindow  # noqa: E402
@@ -42,6 +45,7 @@ from tools import capturas, capturar_instalador  # noqa: E402
 
 SALIDA = ROOT / "capturas"
 PAGINAS = ("home", "memory", "startup", "disk", "tools", "tasks", "reports", "schedule")
+INFORME = "informe_muestra.html"
 
 
 def _wait(ms: int) -> None:
@@ -72,6 +76,9 @@ def main() -> int:
     # El analizador de disco necesita una carpeta escaneada; la del usuario da una
     # imagen representativa y termina enseguida.
     oscura = _nueva_ventana(settings)
+    # Tareas de ejemplo, como `app.py --demo`: la página de tareas y el informe salen con
+    # contenido en vez de con una lista vacía.
+    _seed_demo_tasks(oscura)
     codigo = _capture_screens(oscura, SALIDA, str(Path.home()))
 
     # El diálogo es de la familia de las páginas en oscuro, así que se captura con esa
@@ -100,9 +107,36 @@ def main() -> int:
     apply_theme(app, "light")
     nombres = capturar_instalador.capturar(SALIDA, app)
 
-    capturas.marcar([f"{pagina}.png" for pagina in PAGINAS] + ["inicio_claro.png", "dialogo_ajustes.png", *nombres])
+    # --- Informe de muestra -----------------------------------------------
+    # El informe del README se genera con los datos reales del equipo y las tareas de
+    # ejemplo, igual que al exportarlo desde la aplicación (que siempre lo dibuja en
+    # claro, aunque la interfaz esté en oscuro).
+    generar_informe(oscura)
+
+    capturas.marcar(
+        [f"{pagina}.png" for pagina in PAGINAS]
+        + ["inicio_claro.png", "dialogo_ajustes.png", INFORME, *nombres]
+    )
     print(f"Versión anotada en {capturas.ESTADO.name}: {capturas.APP_VERSION}")
     return codigo
+
+
+def generar_informe(ventana: MainWindow) -> Path:
+    """Escribe `capturas\\informe_muestra.html` con los datos de este equipo."""
+    servicio = MetricsService()
+    servicio.poll()
+    _wait(600)
+    snapshot = servicio.poll()
+    informe = reports.build_report(
+        snapshot=snapshot,
+        system_info=servicio.system_info(),
+        drives=list_drives(),
+        tasks=ventana.task_store.to_dicts(),
+        task_stats=ventana.task_store.stats(),
+    )
+    destino = reports.export_html(informe, SALIDA / INFORME)
+    print(f"Informe guardado: {destino}  (versión {informe['app']['version']})")
+    return destino
 
 
 if __name__ == "__main__":
