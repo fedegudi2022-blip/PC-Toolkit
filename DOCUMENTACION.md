@@ -1,4 +1,4 @@
-# PC Toolkit 1.1.1 — qué es, qué hace y cómo funciona
+# PC Toolkit 1.2.0 — qué es, qué hace y cómo funciona
 
 Aplicación de escritorio para **Windows 10 y 11** que reúne el mantenimiento del equipo en un solo
 sitio: libera memoria RAM cuando hace falta, programa el mantenimiento en el propio Windows, vigila

@@ -7,7 +7,7 @@ from pathlib import Path
 
 APP_NAME = "PC Toolkit"
 APP_TAGLINE = "Herramientas para controlar y mantener tu PC"
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.2.0"
 ORG_NAME = "PCToolkit"
 
 IS_WINDOWS = os.name == "nt"

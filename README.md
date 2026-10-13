@@ -26,8 +26,8 @@ Windows 10 u 11 (x64). No hace falta instalar Python ni nada más.
 
 | Archivo | Qué es |
 | --- | --- |
-| [`PC-Toolkit-1.1.1-Setup.exe`](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/download/v1.1.1/PC-Toolkit-1.1.1-Setup.exe) | **Recomendado** (78,9 MB). Asistente con la aplicación dentro: accesos directos, arranque automático opcional y desinstalador. Por usuario, sin avisos de Windows. |
-| [`PC-Toolkit-1.1.1-portable.exe`](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/download/v1.1.1/PC-Toolkit-1.1.1-portable.exe) | Versión portátil (46,7 MB). Doble clic y funciona, sin instalar ni dejar rastro. |
+| [`PC-Toolkit-1.2.0-Setup.exe`](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/download/v1.2.0/PC-Toolkit-1.2.0-Setup.exe) | **Recomendado** (78,9 MB). Asistente con la aplicación dentro: accesos directos, arranque automático opcional y desinstalador. Por usuario, sin avisos de Windows. |
+| [`PC-Toolkit-1.2.0-portable.exe`](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/download/v1.2.0/PC-Toolkit-1.2.0-portable.exe) | Versión portátil (46,7 MB). Doble clic y funciona, sin instalar ni dejar rastro. |
 
 Datos y preferencias se guardan en `%APPDATA%\PCToolkit` (véase [Dónde se guardan los datos](#dónde-se-guardan-los-datos)).
 
