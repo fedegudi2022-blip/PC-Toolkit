@@ -7,6 +7,8 @@ __pycache__/
 dist/
 build/
 *.spec
+# Temporales de las comprobaciones (registros de compilación y de pruebas)
+.scratch/
 assets/version_info.txt
 capturas_prueba/
 informes/

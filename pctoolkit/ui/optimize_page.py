@@ -49,11 +49,13 @@ def relaunch_elevated() -> bool:
     """Vuelve a abrir PC Toolkit pidiendo permisos de administrador (UAC)."""
     if not memory_core.IS_WINDOWS:
         return False
+    # `--esperar` hace que la copia nueva aguarde al bloqueo de instancia única: esta
+    # todavía lo tiene cogido hasta que se cierre, y sin esperar saldría sin abrir nada.
     if getattr(sys, "frozen", False):
-        program, arguments = str(Path(sys.executable)), ""
+        program, arguments = str(Path(sys.executable)), "--esperar"
     else:
         script = Path(__file__).resolve().parents[2] / "app.py"
-        program, arguments = sys.executable, f'"{script}"'
+        program, arguments = sys.executable, f'"{script}" --esperar'
     try:
         result = ctypes.windll.shell32.ShellExecuteW(  # type: ignore[attr-defined]
             None, "runas", program, arguments or None, None, 1
@@ -267,6 +269,9 @@ class OptimizeMemoryPage(QWidget):
     status = Signal(str)
     release_requested = Signal()
     settings_changed = Signal(object)
+    # Se emite cuando ya se lanzó la copia con permisos: la ventana actual tiene que
+    # cerrarse para soltar el bloqueo de instancia única y que aquella pueda arrancar.
+    restart_requested = Signal()
 
     def __init__(self, settings: AppSettings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -626,6 +631,7 @@ class OptimizeMemoryPage(QWidget):
     def _elevate(self) -> None:
         if relaunch_elevated():
             self.status.emit("Pidiendo permisos de administrador… la aplicación se reiniciará.")
+            self.restart_requested.emit()
         else:
             self.status.emit("No se pudieron solicitar los permisos de administrador.")
 

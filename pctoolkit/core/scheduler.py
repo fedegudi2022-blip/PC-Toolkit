@@ -23,6 +23,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Sequence
 
+from .tools import MIN_TEMP_AGE_HOURS
+
 IS_WINDOWS = __import__("os").name == "nt"
 
 TASK_FOLDER = "PCToolkit"
@@ -116,7 +118,9 @@ class MaintenanceSchedule:
         clone.time = normalize_time(self.time)
         clone.frequency = self.frequency if self.frequency in FREQUENCIES else FREQ_DAILY
         clone.weekday = self.weekday if self.weekday in WEEKDAYS else "Lunes"
-        clone.temp_min_age_hours = max(0.0, min(720.0, float(self.temp_min_age_hours)))
+        # El suelo lo pone `tools`: por debajo de una hora no se borra nada, así que
+        # aquí se refleja para que la interfaz no permita pedir algo que no se hará.
+        clone.temp_min_age_hours = max(MIN_TEMP_AGE_HOURS, min(720.0, float(self.temp_min_age_hours)))
         return clone
 
     def to_dict(self) -> dict[str, Any]:
@@ -146,7 +150,7 @@ class MaintenanceSchedule:
             weekday=str(data.get("dia") or defaults.weekday),
             clean_temp=as_flag(data.get("limpiar"), defaults.clean_temp),
             temp_min_age_hours=as_number(
-                data.get("antiguedad_horas"), defaults.temp_min_age_hours, 0.0, 720.0
+                data.get("antiguedad_horas"), defaults.temp_min_age_hours, MIN_TEMP_AGE_HOURS, 720.0
             ),
             release_memory=as_flag(data.get("memoria"), defaults.release_memory),
             export_report=as_flag(data.get("informe"), defaults.export_report),
@@ -210,8 +214,10 @@ def launcher_command(schedule: MaintenanceSchedule) -> tuple[str, str]:
     if getattr(sys, "frozen", False):
         return str(Path(sys.executable).resolve()), " ".join(arguments)
     script = application_root() / "app.py"
-    quoted = f'"{script}"' if " " in str(script) else str(script)
-    return str(Path(sys.executable).resolve()), " ".join([quoted, *arguments])
+    # El script se entrecomilla siempre: es un argumento del intérprete y la ruta puede
+    # llevar espacios (por ejemplo en «C:\Users\José Luis\…»), donde sin comillas el
+    # Programador de tareas cortaría la línea y el modo desatendido no arrancaría.
+    return str(Path(sys.executable).resolve()), " ".join([f'"{script}"', *arguments])
 
 
 def command_line(schedule: MaintenanceSchedule) -> str:

@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 
 from ..core.config import COLORS
 from ..core.tasks import PRIORITIES, STATUS_DONE, TASK_CATEGORIES, TEMPLATES, MaintenanceTask
-from . import icons
+from . import icons, theme
 from .widgets import Card, IconBadge, Muted, PageHeader, SectionTitle, hline
 
 PRIORITY_COLORS = {"Alta": COLORS["bad"], "Normal": COLORS["accent"], "Baja": COLORS["text_muted"]}
@@ -142,7 +142,9 @@ class TaskRow(Card):
             "QPushButton:hover { border-color: %s; }"
             % (
                 COLORS["good"] if task.is_done else COLORS["border"],
-                COLORS["good"] + "22" if task.is_done else "transparent",
+                # El ayudante escribe `rgba(...)`: pegar `22` al hexadecimal no vale,
+                # porque Qt lee los ocho dígitos como `#AARRGGBB`.
+                theme.with_alpha(COLORS["good"], 34) if task.is_done else "transparent",
                 COLORS["good"],
             )
         )
@@ -207,7 +209,7 @@ class TaskRow(Card):
     def _pill(self, text: str, color: str) -> QLabel:
         label = QLabel(text)
         label.setStyleSheet(
-            f"background: {color}1F; color: {color}; border-radius: 9px;"
+            f"background: {theme.with_alpha(color, 31)}; color: {color}; border-radius: 9px;"
             f"padding: 2px 8px; font-size: 11px;"
         )
         return label
@@ -406,7 +408,7 @@ class TasksPage(QWidget):
             ("calendar", "Pendientes", str(stats["pendientes"]), COLORS["accent"]),
             ("check", "Completadas", str(stats["completadas"]), COLORS["good"]),
             ("warn", "Vencidas", str(stats["vencidas"]), COLORS["warn"] if stats["vencidas"] else COLORS["text_muted"]),
-            ("gauge", "Progreso", f"{stats['porcentaje']:.0f}%", COLORS["magenta"]),
+            ("gauge", "Progreso", f"{stats['porcentaje']:.0f}%", COLORS["accent"]),
         ]
         for icon_name, title, value, color in tiles:
             self.stats_layout.addWidget(TaskStat(icon_name, title, value, color))

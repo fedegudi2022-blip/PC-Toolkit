@@ -329,13 +329,17 @@ class DiskAnalyzerPage(QWidget):
                 widget.deleteLater()
 
         total = max(1, result.total_size)
+        # Colores de las categorías: los tonos de dato y, después, neutros. Aquí no
+        # se usan el amarillo ni el rojo: este gráfico reparte tamaño entre carpetas
+        # y no dice nada del estado del disco, así que esos dos colores se leerían
+        # como un aviso que no existe.
         palette = [
-            COLORS["accent"],
-            COLORS["magenta"],
-            COLORS["amber"],
-            COLORS["bad"],
-            COLORS["good"],
+            COLORS["series_cpu"],
+            COLORS["series_ram"],
+            COLORS["series_disk"],
             COLORS["accent_glow"],
+            COLORS["accent_soft"],
+            COLORS["text_muted"],
             COLORS["text_dim"],
         ]
 

@@ -30,8 +30,9 @@ from PySide6.QtWidgets import (
 from ..core import maintenance as maintenance_core
 from ..core import scheduler as scheduler_core
 from ..core.config import COLORS, format_bytes
+from ..core.tools import MIN_TEMP_AGE_HOURS
 from ..core.settings import AppSettings
-from . import icons
+from . import icons, theme
 from .widgets import Card, IconBadge, Muted, PageHeader, SectionTitle, hline, kv_row
 from .workers import run_in_background
 
@@ -145,10 +146,14 @@ class MaintenanceSchedulePage(QWidget):
         grid.addWidget(self.time_edit, 2, 1)
 
         self.age_spin = QDoubleSpinBox()
-        self.age_spin.setRange(0, 720)
+        # El mínimo es una hora: por debajo de eso no se borra nada (los temporales
+        # recién escritos pueden ser de una instalación en curso).
+        self.age_spin.setRange(MIN_TEMP_AGE_HOURS, 720)
         self.age_spin.setDecimals(0)
         self.age_spin.setSuffix(" h")
-        self.age_spin.setToolTip("Solo se borran temporales con más antigüedad que esta.")
+        self.age_spin.setToolTip(
+            "Solo se borran temporales con más antigüedad que esta (mínimo una hora)."
+        )
         grid.addWidget(QLabel("Antigüedad mínima"), 3, 0)
         grid.addWidget(self.age_spin, 3, 1)
 
@@ -371,8 +376,9 @@ class MaintenanceSchedulePage(QWidget):
         self._status_querying = True
         self.state_badge.setText("Consultando…")
         self.state_badge.setStyleSheet(
-            f"#HealthBadge {{ background: {COLORS['text_muted']}22; color: {COLORS['text_muted']}; "
-            f"border: 1px solid {COLORS['text_muted']}55; }}"
+            f"#HealthBadge {{ background: {theme.with_alpha(COLORS['text_muted'], 34)}; "
+            f"color: {COLORS['text_muted']}; "
+            f"border: 1px solid {theme.with_alpha(COLORS['text_muted'], 85)}; }}"
         )
         self.notice_label.setText("Leyendo el Programador de tareas… puede tardar unos segundos.")
         self._set_busy(True, "Consultando el Programador de tareas…")
@@ -398,8 +404,9 @@ class MaintenanceSchedulePage(QWidget):
             self.status_rows[key].setText("—")
         self.state_badge.setText("Sin consultar")
         self.state_badge.setStyleSheet(
-            f"#HealthBadge {{ background: {COLORS['text_muted']}22; color: {COLORS['text_muted']}; "
-            f"border: 1px solid {COLORS['text_muted']}55; }}"
+            f"#HealthBadge {{ background: {theme.with_alpha(COLORS['text_muted'], 34)}; "
+            f"color: {COLORS['text_muted']}; "
+            f"border: 1px solid {theme.with_alpha(COLORS['text_muted'], 85)}; }}"
         )
         self.command_label.setText(scheduler_core.command_line(self.schedule))
         self.notice_label.setText(
@@ -474,7 +481,8 @@ class MaintenanceSchedulePage(QWidget):
             text, color = "Sin programar", COLORS["text_muted"]
         self.state_badge.setText(text)
         self.state_badge.setStyleSheet(
-            f"#HealthBadge {{ background: {color}22; color: {color}; border: 1px solid {color}55; }}"
+            f"#HealthBadge {{ background: {theme.with_alpha(color, 34)}; color: {color}; "
+            f"border: 1px solid {theme.with_alpha(color, 85)}; }}"
         )
 
         if not status.exists:

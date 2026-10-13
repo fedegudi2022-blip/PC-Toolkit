@@ -28,10 +28,12 @@ def status_pixmap(snapshot, size: int = 32) -> QPixmap:
     painter.setBrush(QColor(COLORS["panel_alt"]))
     painter.drawRoundedRect(1, 1, size - 2, size - 2, radius, radius)
 
+    # Los mismos tres colores de dato que la gráfica del historial: así el icono de
+    # la bandeja y la leyenda de la ventana cuentan lo mismo.
     values = [
-        (getattr(snapshot, "cpu_percent", 0.0) if snapshot else 0.0, COLORS["accent"]),
-        (getattr(snapshot, "ram_percent", 0.0) if snapshot else 0.0, COLORS["magenta"]),
-        (getattr(snapshot, "disk_percent", 0.0) if snapshot else 0.0, COLORS["good"]),
+        (getattr(snapshot, "cpu_percent", 0.0) if snapshot else 0.0, COLORS["series_cpu"]),
+        (getattr(snapshot, "ram_percent", 0.0) if snapshot else 0.0, COLORS["series_ram"]),
+        (getattr(snapshot, "disk_percent", 0.0) if snapshot else 0.0, COLORS["series_disk"]),
     ]
     bar_width = size * 0.18
     gap = size * 0.10

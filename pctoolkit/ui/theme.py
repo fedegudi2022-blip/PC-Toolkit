@@ -1,10 +1,11 @@
 """Tema visual de PC Toolkit: dos paletas y una hoja de estilos QSS.
 
-La oscura «grafito vivo» es un gris casi negro sin tinte azul; la clara «papel
-cálido» usa blancos sucios con el mismo acento esmeralda oscurecido. En las dos,
-un único acento manda en las acciones y los indicadores activos, y todos los
-matices de superficie (hover, pulsado, selección, pistas) salen de
-`COLORS`/`SURFACES`, así que el conjunto se reajusta desde un solo sitio.
+La oscura «grafito frío» es un gris muy oscuro con un matiz verde muy leve; la
+clara «niebla verde» usa blancos fríos con el mismo verde oscurecido. En las dos,
+un único verde manda en las acciones y la selección, el amarillo queda para los
+avisos y el rojo para los errores, y todos los matices de superficie (hover,
+pulsado, selección, pistas) salen de `COLORS`/`SURFACES`, así que el conjunto se
+reajusta desde un solo sitio.
 
 El QSS es una plantilla con una clave por color: se rellena **al aplicarlo**, no
 al importar el módulo, que es lo que permite cambiar de tema en caliente.
@@ -37,6 +38,18 @@ def stylesheet() -> str:
     """QSS final con la paleta activa y la marca de verificación ya generada."""
     check_icon = _check_indicator()
     return _QSS_TEMPLATE.format_map({**COLORS, **SURFACES}).replace("__CHECK_ICON__", check_icon)
+
+
+def with_alpha(color: str, alpha: int) -> str:
+    """Color de la paleta con transparencia, para las insignias de estado.
+
+    Ojo con el orden: Qt lee un hexadecimal de ocho dígitos como `#AARRGGBB`, no como
+    el `#RRGGBBAA` del CSS. Pegar el alfa al final —`#FBBF24` + `22`— daba un rojo
+    casi opaco en vez de un amarillo al 13 %, así que aquí se escribe el alfa delante.
+    """
+    tono = QColor(color)
+    valor = max(0, min(255, int(alpha)))
+    return f"#{valor:02X}{tono.red():02X}{tono.green():02X}{tono.blue():02X}"
 
 
 def _check_indicator() -> str:
@@ -185,8 +198,9 @@ QPushButton#Primary:hover {{
     border-color: {primary_hover};
 }}
 QPushButton#Primary:pressed {{ background: {accent_soft}; }}
-/* Su borde normal ya es el acento: para el foco se aclara a blanco. */
-QPushButton#Primary:focus {{ border-color: #FFFFFF; }}
+/* Su borde normal ya es el acento: para el foco se cambia al color que contrasta
+   con él (`on_accent`: casi negro en la paleta oscura y blanco en la clara). */
+QPushButton#Primary:focus {{ border-color: {on_accent}; }}
 QPushButton#Primary:disabled {{
     background: {primary_disabled_bg};
     border-color: {primary_disabled_border};
@@ -198,7 +212,7 @@ QPushButton#Ghost {{
     border: 1px solid {border};
     color: {text_muted};
 }}
-QPushButton#Ghost:hover {{ color: {text}; border-color: {accent_soft}; }}
+QPushButton#Ghost:hover {{ color: {text}; border-color: {accent_soft}; background: {hover}; }}
 QPushButton#Ghost:focus {{ color: {text}; border-color: {accent}; }}
 QPushButton#Ghost:disabled {{
     color: {text_dim};
@@ -295,6 +309,15 @@ QLineEdit:focus, QComboBox:focus, QTextEdit:focus, QSpinBox:focus, QDoubleSpinBo
 QDateEdit:focus, QTimeEdit:focus {{
     border-color: {accent};
 }}
+/* Un campo apagado tiene que verse apagado: sin esto hereda el aspecto del activo y
+   da la impresión de que se puede escribir en él. */
+QLineEdit:disabled, QComboBox:disabled, QTextEdit:disabled, QPlainTextEdit:disabled,
+QSpinBox:disabled, QDoubleSpinBox:disabled, QDateEdit:disabled, QTimeEdit:disabled {{
+    color: {text_dim};
+    background: {bg_alt};
+    border-color: {border_soft};
+}}
+QComboBox:disabled::drop-down {{ border: none; }}
 QComboBox::drop-down {{ border: none; width: 22px; }}
 QComboBox QAbstractItemView {{
     background: {panel_alt};
@@ -403,8 +426,19 @@ QListWidget:focus {{ border: 1px solid {accent_soft}; }}
 /* El puesto de la fila se pinta desde el código: su color depende del consumo de
    cada proceso, algo que la hoja de estilos no puede decidir. */
 
-QTableWidget::item {{ padding: 6px 8px; }}
-QTableWidget::item:selected {{ background: {selected}; }}
+QTableWidget::item {{ padding: 6px 8px; border: 1px solid transparent; }}
+QTableWidget::item:hover {{ background: {hover}; }}
+QTableWidget::item:selected {{
+    background: {selected};
+    color: {text};
+    border: 1px solid {accent_soft};
+}}
+/* Igual que en las listas: con la ventana en segundo plano la selección se apaga. */
+QTableWidget::item:selected:!active {{ background: {panel_alt}; color: {text_muted}; }}
+QTreeWidget::item {{ padding: 6px 8px; }}
+QTreeWidget::item:hover {{ background: {hover}; }}
+QTreeWidget::item:selected {{ background: {selected}; color: {text}; }}
+QTableWidget::item:alternate, QTreeWidget::item:alternate {{ background: {row}; }}
 QHeaderView::section {{
     background: {panel};
     color: {text_muted};

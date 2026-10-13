@@ -217,7 +217,12 @@ class ToolsPage(QWidget):
     # --- Temporales -------------------------------------------------------
     def _scan_temp(self) -> None:
         report = tool_core.scan_temp_folder()
-        if report.file_count == 0:
+        if report.rejected:
+            # La carpeta no es una temporal de verdad: se dice el motivo en vez de
+            # dar a entender que simplemente no había nada que borrar.
+            self.temp_info.setText(report.rejected)
+            self.clean_temp_button.setEnabled(False)
+        elif report.file_count == 0:
             self.temp_info.setText("No hay archivos temporales antiguos que se puedan borrar.")
             self.clean_temp_button.setEnabled(False)
         else:

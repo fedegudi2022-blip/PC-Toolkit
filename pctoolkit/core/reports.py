@@ -8,7 +8,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
-from .config import APP_NAME, APP_VERSION, COLORS, format_bytes
+from .config import (
+    APP_NAME,
+    APP_VERSION,
+    COLORS,
+    DARK_COLORS,
+    LIGHT_COLORS,
+    LIGHT_SURFACES,
+    format_bytes,
+)
 from .disk import DriveInfo, ScanResult
 from .metrics import MetricsSnapshot
 
@@ -262,23 +270,28 @@ def _html(report: dict[str, Any]) -> str:
     stats = report.get("tareas", {}).get("estadisticas", {})
     tasks = report.get("tareas", {}).get("lista", [])
     analysis = report.get("analisis_disco")
+    # El informe se abre en el navegador y siempre va en claro, así que sus colores
+    # salen de la paleta **clara** aunque la aplicación esté en oscuro: los verdes y
+    # rojos brillantes de la oscura no se leen sobre blanco.
+    claro = LIGHT_COLORS
 
-    def bar(percent: float, color: str = COLORS["accent"]) -> str:
+    def bar(percent: float, color: str | None = None) -> str:
         value = max(0.0, min(100.0, float(percent or 0)))
         return (
-            f'<div class="bar"><span style="width:{value:.1f}%;background:{color}"></span></div>'
+            f'<div class="bar"><span style="width:{value:.1f}%;background:{color or claro["accent"]}">'
+            "</span></div>"
         )
 
     def color_for(percent: float) -> str:
         if percent >= 85:
-            return COLORS["bad"]
+            return claro["bad"]
         if percent >= 65:
-            return COLORS["warn"]
-        return COLORS["accent"]
+            return claro["warn"]
+        return claro["accent"]
 
     health = float(resumen.get("salud", 0) or 0)
     health_color = (
-        COLORS["good"] if health >= 70 else (COLORS["warn"] if health >= 45 else COLORS["bad"])
+        claro["good"] if health >= 70 else (claro["warn"] if health >= 45 else claro["bad"])
     )
 
     drive_rows = "".join(
@@ -343,6 +356,11 @@ def _html(report: dict[str, Any]) -> str:
     cpu_temp = resumen.get("cpu_temperatura")
     temp_row = f"<li><span>Temperatura</span><strong>{cpu_temp:.0f} °C</strong></li>" if cpu_temp else ""
 
+    # La cabecera sí lleva el grafito de la paleta oscura (la identidad de la
+    # aplicación) y las barras de categorías, los tres tonos de dato.
+    grafito = DARK_COLORS
+    claro_sup = LIGHT_SURFACES
+
     return f"""<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -352,39 +370,44 @@ def _html(report: dict[str, Any]) -> str:
   :root {{ color-scheme: light; }}
   * {{ box-sizing: border-box; }}
   body {{ margin:0; padding:32px; font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-         background:#F7F5F2; color:#1A1917; }}
+         background:{claro['bg']}; color:{claro['text']}; }}
   .wrap {{ max-width:1080px; margin:0 auto; }}
   header {{ display:flex; justify-content:space-between; align-items:flex-start; gap:24px;
-            background:#111110; color:#F5F3F0; padding:24px 28px; border-radius:18px;
-            border:1px solid #2E2C29; }}
+            background:{grafito['bg_alt']}; color:{grafito['text']}; padding:24px 28px;
+            border-radius:18px; border:1px solid {grafito['border']}; }}
   header h1 {{ margin:0 0 6px; font-size:24px; letter-spacing:.2px; }}
-  header p {{ margin:0; color:#A5A19B; font-size:13px; }}
+  header p {{ margin:0; color:{grafito['text_muted']}; font-size:13px; }}
   .score {{ text-align:center; min-width:150px; }}
   .score b {{ display:block; font-size:42px; color:{health_color}; line-height:1; }}
-  .score span {{ font-size:12px; color:#A5A19B; text-transform:uppercase; letter-spacing:1px; }}
+  .score span {{ font-size:12px; color:{grafito['text_muted']}; text-transform:uppercase; letter-spacing:1px; }}
   section {{ margin-top:24px; }}
   h2 {{ font-size:16px; margin:0 0 12px; }}
   h3 {{ font-size:14px; margin:0 0 10px; }}
-  .muted {{ color:#6F6B65; font-size:12px; }}
+  .muted {{ color:{claro['text_dim']}; font-size:12px; }}
   .grid {{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }}
-  .card {{ background:#fff; border:1px solid #E6E1DA; border-radius:14px; padding:18px; }}
+  .card {{ background:{claro['panel']}; border:1px solid {claro['border_soft']};
+           border-radius:14px; padding:18px; }}
   ul.kv {{ list-style:none; margin:0; padding:0; display:grid;
            grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:12px; }}
-  ul.kv li {{ background:#fff; border:1px solid #E6E1DA; border-radius:12px; padding:12px 14px;
+  ul.kv li {{ background:{claro['panel']}; border:1px solid {claro['border_soft']};
+              border-radius:12px; padding:12px 14px;
               display:flex; justify-content:space-between; align-items:baseline; gap:8px; }}
-  ul.kv span {{ color:#6F6B65; font-size:12px; }}
+  ul.kv span {{ color:{claro['text_dim']}; font-size:12px; }}
   ul.kv strong {{ font-size:15px; }}
   table {{ width:100%; border-collapse:collapse; font-size:13px; }}
-  th, td {{ text-align:left; padding:8px 10px; border-bottom:1px solid #EFEBE4; vertical-align:top; }}
-  th {{ color:#6F6B65; font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.6px; }}
+  th, td {{ text-align:left; padding:8px 10px; border-bottom:1px solid {claro['border_soft']};
+            vertical-align:top; }}
+  th {{ color:{claro['text_dim']}; font-weight:600; font-size:11px; text-transform:uppercase;
+        letter-spacing:.6px; }}
   tr:last-child td {{ border-bottom:none; }}
-  .bar {{ height:8px; border-radius:6px; background:#EFEBE4; overflow:hidden; margin-bottom:4px; }}
+  .bar {{ height:8px; border-radius:6px; background:{claro['bg_alt']}; overflow:hidden;
+          margin-bottom:4px; }}
   .bar span {{ display:block; height:100%; border-radius:6px; }}
   .w-140 {{ width:160px; }}
   .tag {{ font-size:11px; padding:2px 8px; border-radius:20px; }}
-  .tag.done {{ background:#E4F8EE; color:#1E875B; }}
-  .tag.pending {{ background:#FFF3DC; color:#9A6A0B; }}
-  footer {{ margin-top:28px; text-align:center; color:#736F69; font-size:12px; }}
+  .tag.done {{ background:{claro_sup['selected']}; color:{claro['good']}; }}
+  .tag.pending {{ background:{claro['bg_alt']}; color:{claro['warn']}; }}
+  footer {{ margin-top:28px; text-align:center; color:{claro['text_dim']}; font-size:12px; }}
   @media (max-width:760px) {{ .grid {{ grid-template-columns:1fr; }} }}
 </style>
 </head>

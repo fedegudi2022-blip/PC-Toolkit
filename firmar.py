@@ -63,6 +63,7 @@ except (AttributeError, ValueError):
     pass
 
 from pctoolkit.core.config import APP_NAME, APP_VERSION  # noqa: E402
+from pctoolkit.core.tools import powershell_environment  # noqa: E402
 
 DIST = ROOT / "dist"
 APP_EXE = DIST / APP_NAME / "PC Toolkit.exe"
@@ -100,6 +101,15 @@ CARACTERES_CERTIFICADO = (
     "--sujeto",
     "--csp",
 )
+
+# Estados que devuelve `Get-AuthenticodeSignature` cuando el archivo **sí** lleva firma
+# pero esta no vale en este equipo, con la explicación que se enseña al comprobarla.
+# Es lo que ocurre con un certificado de prueba o con una cadena de confianza incompleta.
+FIRMA_SIN_CONFIANZA = {
+    "UnknownError": "la cadena termina en una raíz que este equipo no confía",
+    "NotTrusted": "el certificado no es de confianza en este equipo",
+    "HashMismatch": "la firma no coincide con el contenido del archivo",
+}
 
 
 # --- Localizar signtool ----------------------------------------------------
@@ -259,6 +269,7 @@ def _powershell(script: str, timeout: int = 120) -> subprocess.CompletedProcess:
         errors="replace",
         timeout=timeout,
         creationflags=NO_WINDOW,
+        env=powershell_environment(),
     )
 
 
@@ -487,9 +498,17 @@ def check_signatures(files: list[Path] | None = None, log=print) -> bool:
         sello = "con sello de tiempo" if info.get("Sello") else "sin sello de tiempo"
         if estado == "Valid":
             log(f"  OK    {archivo.name}: {firmante} · {sello}")
+            continue
+        # «Sin firma» y «firma que existe pero no es de fiar» fallan igual (es lo que
+        # necesita un servidor de compilación), pero no significan lo mismo: en un
+        # servidor, lo segundo casi siempre es un certificado de prueba o una cadena de
+        # confianza incompleta, y saberlo ahorra media hora de búsqueda. Se distinguen.
+        motivo = FIRMA_SIN_CONFIANZA.get(estado)
+        if motivo and info.get("Thumbprint"):
+            log(f"  FALLO {archivo.name}: hay firma de {firmante} ({sello}), pero {motivo}.")
         else:
             log(f"  FALLO {archivo.name}: {estado} · {sello}")
-            correcto = False
+        correcto = False
     return correcto
 
 
@@ -749,7 +768,9 @@ def _create_test_certificate(pfx: Path, password: str) -> tuple[str, str]:
         f"Export-PfxCertificate -Cert $cert -FilePath '{pfx}' -Password $seguro | Out-Null; "
         "$cert.Thumbprint"
     )
-    entorno = dict(os.environ, PCTOOLKIT_TEST_PASSWORD=password)
+    # El `PSModulePath` heredado deja a Windows PowerShell sin el módulo PKI, que es
+    # justo el que trae `New-SelfSignedCertificate`.
+    entorno = dict(powershell_environment(), PCTOOLKIT_TEST_PASSWORD=password)
     try:
         resultado = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
@@ -765,16 +786,40 @@ def _create_test_certificate(pfx: Path, password: str) -> tuple[str, str]:
         return "", f"No se pudo crear el certificado de prueba: {exc}"
     huella = (resultado.stdout or "").strip().splitlines()[-1].strip() if (resultado.stdout or "").strip() else ""
     if resultado.returncode != 0 or not huella or not pfx.exists():
-        return "", "No se pudo crear el certificado de prueba (¿permisos del almacén de certificados?)"
+        # Se devuelve lo que dijo PowerShell: sin esto, un fallo del almacén y uno del
+        # módulo PKI se ven igual («¿permisos del almacén?») y no hay por dónde tirar.
+        detalle = " ".join((resultado.stderr or resultado.stdout or "").split())
+        return "", f"No se pudo crear el certificado de prueba (código {resultado.returncode}): {detalle[:300]}"
     return huella, f"Certificado de prueba creado (huella {huella[:12]}…), exportado a PFX con contraseña temporal"
 
 
 def _remove_test_certificate(huella: str) -> None:
-    script = f"Remove-Item -LiteralPath 'Cert:\\CurrentUser\\My\\{huella}' -Force -ErrorAction SilentlyContinue"
-    try:
-        _powershell(script, timeout=60)
-    except (OSError, subprocess.SubprocessError):
-        pass
+    """Borra el certificado de prueba del almacén y avisa si no puede.
+
+    No basta con lanzar el `Remove-Item` y olvidarse: si falla, queda en el almacén del
+    usuario una clave privada con la que se puede firmar código, y como `signtool` sin
+    certificado indicado usa `/a` (el que encuentre), una prueba podría acabar firmando
+    con el certificado de prueba en vez de con el de verdad.
+    """
+    if not huella:
+        return
+    ruta = f"Cert:\\CurrentUser\\My\\{huella}"
+    script = (
+        f"Remove-Item -LiteralPath '{ruta}' -Force -ErrorAction SilentlyContinue; "
+        f"if (Test-Path -LiteralPath '{ruta}') {{ 'SIGUE' }} else {{ 'BORRADO' }}"
+    )
+    for _intento in range(2):
+        try:
+            salida = _powershell(script, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if "BORRADO" in (salida.stdout or ""):
+            return
+        time.sleep(0.5)
+    print(
+        f"  [!] El certificado de prueba {huella[:12]}… sigue en el almacén «Personal» del "
+        "usuario. Bórralo con certmgr.msc: es una clave con la que se puede firmar código."
+    )
 
 
 # --- Línea de comandos -----------------------------------------------------

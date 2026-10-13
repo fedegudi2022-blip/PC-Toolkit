@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.config import COLORS, SURFACES
+from ..core.config import COLORS, SURFACES, health_color
 from . import accessibility, icons
 
 
@@ -304,13 +304,15 @@ class HealthMeter(QWidget):
         painter.setBrush(QColor(COLORS["bg_alt"]))
         painter.drawRoundedRect(QRectF(bar_x, top, bar_width, bar_height), 7, 7)
 
+        # El relleno lleva el color del **estado** (verde, amarillo o rojo) y el
+        # degradado solo le da volumen. Antes pintaba la escala entera —rojo abajo,
+        # verde arriba—, así que una puntuación «Aceptable» enseñaba medio rojo y
+        # parecía una alarma cuando el equipo estaba bien.
+        base = QColor(health_color(self._score))
         fill_height = bar_height * self._score / 100.0
         gradient = QLinearGradient(0, bottom, 0, top)
-        gradient.setColorAt(0.0, QColor(COLORS["bad"]))
-        gradient.setColorAt(0.25, QColor(COLORS["warn_alt"]))
-        gradient.setColorAt(0.55, QColor(COLORS["warn"]))
-        gradient.setColorAt(0.8, QColor(COLORS["good_alt"]))
-        gradient.setColorAt(1.0, QColor(COLORS["good"]))
+        gradient.setColorAt(0.0, base.darker(125))
+        gradient.setColorAt(1.0, base)
         painter.setBrush(QBrush(gradient))
         painter.drawRoundedRect(QRectF(bar_x, bottom - fill_height, bar_width, fill_height), 7, 7)
 
@@ -348,10 +350,13 @@ class HealthMeter(QWidget):
 class ArcProgress(QWidget):
     """Barra horizontal con porcentaje (para listas y desglose)."""
 
-    def __init__(self, color: str = COLORS["accent"], parent: QWidget | None = None) -> None:
+    def __init__(self, color: str | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._ratio = 0.0
-        self._color = color
+        # El color por defecto se resuelve ahora y no como argumento por defecto: los
+        # valores por defecto se evalúan al importar el módulo, y entonces la barra se
+        # quedaría con el acento del tema que hubiera en ese momento.
+        self._color = color or COLORS["accent"]
         self._label = "Progreso"
         self.setFixedHeight(7)
         accessibility.mark(self, QAccessible.Role.ProgressBar, self._label, "0 %")
@@ -391,9 +396,10 @@ class BarRow(QWidget):
 
     activated = Signal(object)
 
-    def __init__(self, node, ratio: float, color: str = COLORS["accent"], parent: QWidget | None = None) -> None:
+    def __init__(self, node, ratio: float, color: str | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.node = node
+        color = color or COLORS["accent"]
         self.setCursor(Qt.PointingHandCursor)
         # Se puede llegar con el tabulador y abrir con Intro o Espacio (el estilo
         # `#DiskRow` le pinta el anillo de foco cuando lo tiene).

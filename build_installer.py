@@ -265,7 +265,9 @@ def verify() -> bool:
         timeout=60,
     )
     objetivo = (consulta.stdout or "").strip()
-    if objetivo.lower() != str(copiada).lower():
+    # Se comparan rutas resueltas: Windows guarda el destino en su forma larga aunque la
+    # carpeta temporal sea la corta (8.3), y en un servidor de compilación es `RUNNER~1`.
+    if not objetivo or Path(objetivo).resolve() != copiada.resolve():
         print(f"  [!] El acceso directo apunta a {objetivo!r} en vez de {str(copiada)!r}")
         ok = False
 

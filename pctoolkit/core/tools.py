@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import ctypes
 import os
-import shutil
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
 
 IS_WINDOWS = os.name == "nt"
@@ -95,6 +95,21 @@ def find_tool(tool_id: str) -> ToolShortcut | None:
     return None
 
 
+def powershell_environment() -> dict[str, str]:
+    """Entorno para lanzar Windows PowerShell desde Python.
+
+    Si el proceso padre es PowerShell 7 (o cualquier shell que lo exporte), los hijos
+    heredan su `PSModulePath`, y entonces Windows PowerShell 5.1 busca sus propios
+    módulos en el sitio equivocado: `Import-Module PKI`, `New-SelfSignedCertificate` y
+    demás dejan de cargarse y el comando falla sin motivo aparente. Quitando esa
+    variable, el hijo construye la suya como si se hubiera abierto a mano (es el
+    arreglo que documenta Microsoft para los procesos intermedios como Python).
+    """
+    entorno = dict(os.environ)
+    entorno.pop("PSModulePath", None)
+    return entorno
+
+
 def launch(tool: ToolShortcut) -> tuple[bool, str]:
     """Abre una herramienta del sistema. Devuelve (éxito, mensaje)."""
     if not IS_WINDOWS:
@@ -123,6 +138,16 @@ def launch(tool: ToolShortcut) -> tuple[bool, str]:
 
 TEMP_FOLDERS = ("TEMP", "TMP")
 
+# Por debajo de esta antigüedad no se borra nada, aunque quien llame pida cero:
+# un temporal recién escrito suele pertenecer a algo que se está instalando o a un
+# programa abierto, y llevárselo por delante rompe la instalación o la sesión.
+MIN_TEMP_AGE_HOURS = 1.0
+
+# FILE_ATTRIBUTE_REPARSE_POINT: marca las carpetas que en realidad son un enlace
+# (junction) o un acceso simbólico. `os.path.isjunction` solo existe desde Python
+# 3.12, así que se mira el atributo, que además viene en el propio `stat`.
+FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
 
 @dataclass
 class TempReport:
@@ -132,21 +157,108 @@ class TempReport:
     skipped: int = 0
     freed: int = 0
     deleted: int = 0
+    # Motivo por el que no se tocó nada (carpeta rechazada); vacío si se pudo limpiar.
+    rejected: str = ""
 
 
 def default_temp_folder() -> str:
     return os.environ.get("TEMP") or os.environ.get("TMP") or ""
 
 
-def scan_temp_folder(folder: str | None = None, min_age_hours: float = 1.0) -> TempReport:
-    """Suma el tamaño de los archivos temporales que se pueden borrar."""
+def min_temp_age_hours(min_age_hours: float) -> float:
+    """Antigüedad mínima efectiva, nunca por debajo del suelo de seguridad."""
+    try:
+        pedida = float(min_age_hours)
+    except (TypeError, ValueError):
+        pedida = MIN_TEMP_AGE_HOURS
+    return max(MIN_TEMP_AGE_HOURS, pedida)
+
+
+def _normalized(path: str | os.PathLike[str]) -> str:
+    return os.path.normcase(os.path.abspath(str(path)))
+
+
+def _protected_folders() -> set[str]:
+    """Carpetas que nunca se limpian: sistema, perfil y raíces de unidad.
+
+    Si `%TEMP%` apuntase a cualquiera de ellas por un error de configuración, la
+    limpieza se llevaría por delante archivos que no son temporales, así que se
+    rechazan de plano en vez de confiar en la variable de entorno.
+    """
+    system_root = os.environ.get("SystemRoot") or r"C:\Windows"
+    drive = os.environ.get("SystemDrive") or os.path.splitdrive(system_root)[0] or "C:"
+    perfil = os.environ.get("USERPROFILE") or str(Path.home())
+    candidatos = [
+        system_root,
+        os.path.join(system_root, "System32"),
+        os.path.join(drive + os.sep),
+        os.path.join(drive + os.sep, "Users"),
+        perfil,
+        os.path.join(perfil, "Desktop"),
+        os.path.join(perfil, "Documents"),
+        os.path.join(perfil, "Downloads"),
+        os.environ.get("ProgramFiles"),
+        os.environ.get("ProgramFiles(x86)"),
+        os.environ.get("ProgramData"),
+        os.environ.get("PUBLIC"),
+    ]
+    return {_normalized(item) for item in candidatos if item}
+
+
+def is_safe_temp_folder(folder: str | os.PathLike[str] | None) -> bool:
+    """¿Se puede borrar dentro de esa carpeta sin arriesgar archivos ajenos?"""
+    if not folder:
+        return False
+    ruta = _normalized(folder)
+    # Raíz de una unidad (C:\, D:\…): nunca.
+    if os.path.splitdrive(ruta)[1] in ("", os.sep):
+        return False
+    if ruta in _protected_folders():
+        return False
+    # La carpeta tiene que ser una subcarpeta de algo, no el propio perfil ni C:\.
+    padre = os.path.dirname(ruta)
+    return bool(padre) and _normalized(padre) != ruta
+
+
+def _is_reparse_dir(entry: os.DirEntry) -> bool:
+    """¿La entrada es un directorio que en realidad apunta a otro sitio?
+
+    Un junction dentro de `%TEMP%` llevaría el recorrido a un destino ajeno, así que
+    no se sigue: ni se cuenta ni se borra lo que haya al otro lado.
+    """
+    try:
+        if not entry.is_dir(follow_symlinks=False):
+            return False
+        stat = entry.stat(follow_symlinks=False)
+    except OSError:
+        return False
+    return bool(getattr(stat, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _prepare(folder: str | None, min_age_hours: float) -> tuple[str, float, TempReport]:
+    """Valida la carpeta y devuelve (carpeta, antigüedad efectiva, informe)."""
     folder = folder or default_temp_folder()
     report = TempReport()
+    edad = min_temp_age_hours(min_age_hours)
     if not folder or not os.path.isdir(folder):
-        return report
+        report.rejected = "La carpeta temporal no existe."
+        return "", edad, report
+    if not is_safe_temp_folder(folder):
+        report.rejected = (
+            f"Por seguridad no se limpia {folder}: es una raíz de unidad, la carpeta "
+            "del sistema o la del perfil. Revisa la variable TEMP."
+        )
+        return "", edad, report
     report.folders = [folder]
-    # Con min_age_hours <= 0 no se filtra por antigüedad.
-    cutoff = time.time() - min_age_hours * 3600 if min_age_hours > 0 else None
+    return folder, edad, report
+
+
+def scan_temp_folder(folder: str | None = None, min_age_hours: float = 1.0) -> TempReport:
+    """Suma el tamaño de los archivos temporales que se pueden borrar."""
+    folder, edad, report = _prepare(folder, min_age_hours)
+    if not folder:
+        return report
+    cutoff = time.time() - edad * 3600
     stack = [folder]
     while stack:
         current = stack.pop()
@@ -159,10 +271,11 @@ def scan_temp_folder(folder: str | None = None, min_age_hours: float = 1.0) -> T
         for entry in entries:
             try:
                 if entry.is_dir(follow_symlinks=False):
-                    stack.append(entry.path)
+                    if not _is_reparse_dir(entry):
+                        stack.append(entry.path)
                     continue
                 stat = entry.stat(follow_symlinks=False)
-                if cutoff is not None and stat.st_mtime > cutoff:
+                if stat.st_mtime > cutoff:
                     report.skipped += 1
                     continue
                 report.total_size += stat.st_size
@@ -179,11 +292,11 @@ def clean_temp_folder(
     should_cancel: Callable[[], bool] | None = None,
 ) -> TempReport:
     """Borra archivos temporales antiguos; informa lo realmente liberado."""
-    folder = folder or default_temp_folder()
-    report = scan_temp_folder(folder, min_age_hours=min_age_hours)
-    if not folder or not os.path.isdir(folder):
+    folder, edad, report = _prepare(folder, min_age_hours)
+    if not folder:
         return report
-    cutoff = time.time() - min_age_hours * 3600 if min_age_hours > 0 else None
+    report = scan_temp_folder(folder, min_age_hours=edad)
+    cutoff = time.time() - edad * 3600
     stack = [folder]
     while stack:
         if should_cancel and should_cancel():
@@ -200,10 +313,11 @@ def clean_temp_folder(
                 break
             try:
                 if entry.is_dir(follow_symlinks=False):
-                    stack.append(entry.path)
+                    if not _is_reparse_dir(entry):
+                        stack.append(entry.path)
                     continue
                 stat = entry.stat(follow_symlinks=False)
-                if cutoff is not None and stat.st_mtime > cutoff:
+                if stat.st_mtime > cutoff:
                     continue
                 os.remove(entry.path)
                 report.freed += stat.st_size
@@ -212,14 +326,18 @@ def clean_temp_folder(
                     progress(report.freed, report.total_size)
             except (PermissionError, FileNotFoundError, OSError):
                 report.skipped += 1
-    # Elimina subcarpetas vacías creadas por temporales
-    for root, _dirs, files in os.walk(folder, topdown=False):
-        if root == folder or files:
+    # Elimina las subcarpetas que hayan quedado vacías de verdad. Se usa `os.rmdir`
+    # y no `shutil.rmtree`: `rmdir` solo borra carpetas vacías, así que una
+    # subcarpeta que todavía tenga contenido (aunque no tenga archivos sueltos y
+    # solo le queden subcarpetas) se queda como está en lugar de desaparecer con
+    # todo lo que hay dentro.
+    for root, _dirs, _files in os.walk(folder, topdown=False):
+        if root == folder:
             continue
         try:
-            shutil.rmtree(root, ignore_errors=False)
+            os.rmdir(root)
         except OSError:
-            pass
+            pass  # no está vacía o está en uso: se deja tal cual
     if progress:
         progress(report.freed, report.total_size)
     return report

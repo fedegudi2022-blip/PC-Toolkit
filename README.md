@@ -4,8 +4,9 @@ Aplicación de escritorio para **optimizar y mantener tu PC**: libera memoria RA
 falta, deja el mantenimiento programado en Windows, muestra métricas en vivo, analiza el espacio
 en disco, reúne accesos directos a las herramientas del sistema y exporta informes.
 
-Construida con **Python + PySide6 + psutil**, con tema oscuro «grafito vivo» (grises cálidos sin
-azul, cada nivel de superficie bien separado del siguiente), acento esmeralda saturado, tarjetas,
+Construida con **Python + PySide6 + psutil**, con tema oscuro «grafito frío» (grises neutros con un
+matiz verde muy leve, cada nivel de superficie bien separado del siguiente), verde de acento para
+las acciones y los estados saludables, ámbar para los avisos y rojo para los errores; tarjetas,
 medidores tipo abanico y navegación lateral.
 
 ![Inicio](capturas/home.png)
@@ -174,9 +175,14 @@ La aplicación trae **dos temas completos** y, por defecto, sigue al sistema:
   escritorio y cambia con él al reiniciar la aplicación. Se lee de
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize` (`AppsUseLightTheme`), que es
   la misma marca que usa Windows.
-- **Oscuro** «grafito vivo»: gris casi negro sin tinte azul, con el texto casi blanco.
-- **Claro** «papel cálido»: blancos sucios de la misma familia y el mismo esmeralda, oscurecido
-  para que el texto siga leyéndose sobre fondo claro.
+- **Oscuro** «grafito frío»: gris muy oscuro con un matiz verde muy leve y el texto casi blanco.
+- **Claro** «niebla verde»: blancos fríos de la misma familia y el mismo verde, oscurecido para
+  que siga leyéndose como texto y como relleno con texto blanco encima.
+
+El color se usa por **significado**: verde para la acción principal, la selección activa y el estado
+saludable; ámbar para lo que pide atención; rojo para errores y estados críticos. Los datos (CPU,
+memoria y disco) llevan tres tonos propios —verde, rosa y turquesa— que se distinguen en la gráfica
+y en la leyenda sin parecer una alerta cuando el valor es normal.
 
 ![Inicio con el tema claro](capturas/inicio_claro.png)
 
@@ -194,12 +200,12 @@ python app.py --tema oscuro     Fuerza el tema oscuro en esta ejecución
 
 Las dos paletas se comprueban con la **fórmula de contraste de la WCAG**: ningún texto baja de
 4,5:1 sobre el fondo en el que se usa, ni siquiera el de la barra lateral seleccionada (que en el
-tema claro usa un esmeralda oscuro en vez del brillante, porque el brillante sobre blanco no se lee).
+tema claro usa un verde oscuro en vez del brillante, porque el brillante sobre blanco no se lee).
 
 ## Teclado y accesibilidad
 
 La aplicación se maneja entera con el teclado y **el foco siempre se ve** (el borde del control se
-ilumina en esmeralda), así que no hay que adivinar dónde está el cursor:
+ilumina en verde), así que no hay que adivinar dónde está el cursor:
 
 | Atajo | Acción |
 | --- | --- |
@@ -210,7 +216,7 @@ ilumina en esmeralda), así que no hay que adivinar dónde está el cursor:
 
 Los textos de ambas paletas se comprueban con la fórmula de contraste de la WCAG: ningún color de
 texto baja de 4,5:1 sobre el fondo en el que se usa. Los controles apagados se pintan apagados
-(incluida una casilla marcada pero deshabilitada, que antes seguía en esmeralda) y no reaccionan al
+(incluida una casilla marcada pero deshabilitada, que antes seguía en verde) y no reaccionan al
 paso del ratón.
 
 Y lo que ocurre se **anuncia en voz alta** cuando hay un lector de pantalla activo: cada mensaje que
@@ -286,8 +292,8 @@ Resultados medidos en este equipo (Windows 11 x64):
 
 | Variante | Resultado | Tamaño | Arranque |
 | --- | --- | --- | --- |
-| Carpeta (`dist\PC Toolkit\`) | `PC Toolkit.exe` + `_internal\` (158 archivos) | 64,7 MB | 0,27 s |
-| Un solo archivo (`--onefile`) | `dist\PC Toolkit.exe` | 46,6 MB | 2,14 s |
+| Carpeta (`dist\PC Toolkit\`) | `PC Toolkit.exe` + `_internal\` (158 archivos) | 64,8 MB | 0,41 s |
+| Un solo archivo (`--onefile`) | `dist\PC Toolkit.exe` | 46,7 MB | 1,94 s |
 
 Notas:
 
@@ -446,7 +452,7 @@ pctoolkit/
     startup.py              Entradas que arrancan con Windows (registro, carpetas y tareas)
     undo.py                 Registro de cambios reversibles («deshacer») con su reversion
   ui/                       Interfaz PySide6
-    theme.py                Paletas «grafito vivo» y «papel cálido», y hoja de estilos
+    theme.py                Paletas «grafito frío» y «niebla verde», y hoja de estilos
     accessibility.py        Anuncios accesibles, y rol y nombre de los widgets propios
     icons.py                Iconos vectoriales dibujados con QPainter
     widgets.py              Tarjetas, medidores de abanico, barras y filas
@@ -464,7 +470,7 @@ pctoolkit/
     tasks_page.py           Página del registro de tareas
     reports_page.py         Página de exportación de informes
 tools/verificar_instalacion.py  Instala de verdad con las rutas del usuario y desinstala al terminar
-tests/smoke_test.py         545 comprobaciones automáticas (núcleo, interfaz, instalador y firma)
+tests/smoke_test.py         564 comprobaciones automáticas (núcleo, interfaz, instalador y firma)
 dist/PC Toolkit/            Programa (carpeta autocontenida, para repartirlo sin instalador)
 dist/PC Toolkit.exe         Programa en un solo archivo (variante para compartir)
 dist/PC Toolkit Setup.exe   Instalador de Windows, con la aplicación dentro (un solo archivo)
@@ -504,7 +510,7 @@ Windows —**sin crear tareas reales**: la creación, la activación y el borrad
 desde la aplicación, y las pruebas solo consultan si existe—.
 
 Con la plataforma gráfica real también verifica el tema (que ningún color caiga en el rango azul,
-que el fondo pintado sea oscuro, que no haya zonas azules en el render y que el acento esmeralda
+que el fondo pintado sea oscuro, que no haya zonas azules en el render y que el acento verde
 aparezca), que la gráfica pinta las tres series en su posición, que el icono y el menú de la
 bandeja se actualizan, que el diálogo guarda los valores, que la limpieza de memoria funciona
 desde la interfaz y que el perfil de muestreo cambia al ocultar la ventana.
@@ -558,8 +564,10 @@ contraseña no aparece en el comando visible y que solo se firman los ejecutable
 firma real (con certificado autofirmado, sello de tiempo y verificación) se prueba con
 `python firmar.py --autoprueba`.
 
-Si no hay pantalla disponible se puede ejecutar en modo sin ventana:
-`set PCTOOLKIT_OFFSCREEN=1` antes de lanzar las pruebas.
+Las pruebas se ejecutan con la plataforma real de Qt, que mide el texto como en pantalla; en un
+equipo sin escritorio se puede usar `set PCTOOLKIT_OFFSCREEN=1`, teniendo en cuenta que entonces las
+comprobaciones de desbordes avisarán de más (la plataforma «offscreen» mide las fuentes de otra
+manera) y no se ejecutan las que necesitan una bandeja de verdad.
 
 ## Notas y limitaciones
 

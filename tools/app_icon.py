@@ -3,6 +3,10 @@
 El dibujo se hace con QPainter (sin ventanas ni recursos externos) y el .ico
 se arma a mano con imágenes PNG, formato que Windows acepta desde Vista.
 
+Los colores salen de `DARK_COLORS`: el icono es una imagen fija, así que se pinta
+siempre con la paleta oscura (la identidad de la aplicación) y no con la que el
+usuario tenga elegida en ese momento en la interfaz.
+
 Uso:
     python tools/app_icon.py [destino.ico]
 """
@@ -20,23 +24,27 @@ if str(ROOT) not in sys.path:
 from PySide6.QtCore import QPointF, QRectF, Qt  # noqa: E402
 from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPen  # noqa: E402
 
+from pctoolkit.core.config import DARK_COLORS  # noqa: E402
+
 BASE = 256
 ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
 DEFAULT_TARGET = ROOT / "assets" / "pc_toolkit.ico"
 
 
 def icon_image(size: int = BASE) -> QImage:
-    """Icono de la app: chip blanco sobre un cuadrado redondeado azul."""
+    """Icono de la app: chip verde sobre un cuadrado redondeado de grafito."""
     image = QImage(BASE, BASE, QImage.Format_ARGB32)
     image.fill(Qt.transparent)
     painter = QPainter(image)
     painter.setRenderHint(QPainter.Antialiasing, True)
 
-    # Fondo con degradado
+    # Fondo con degradado: el mismo grafito de las tarjetas de la aplicación.
     gradient = QLinearGradient(0, 0, BASE, BASE)
-    gradient.setColorAt(0.0, QColor("#3A88FF"))
-    gradient.setColorAt(0.55, QColor("#2F7DF6"))
-    gradient.setColorAt(1.0, QColor("#1B3E86"))
+    # Se queda en los grises de tarjeta y no baja al de fondo: así el cuadrado se
+    # distingue de una barra de tareas oscura en vez de fundirse con ella.
+    gradient.setColorAt(0.0, QColor(DARK_COLORS["panel_alt"]))
+    gradient.setColorAt(0.6, QColor(DARK_COLORS["panel"]))
+    gradient.setColorAt(1.0, QColor(DARK_COLORS["border_soft"]))
     painter.setPen(Qt.NoPen)
     painter.setBrush(gradient)
     radius = BASE * 0.23
@@ -49,18 +57,18 @@ def icon_image(size: int = BASE) -> QImage:
     painter.setBrush(glow)
     painter.drawRoundedRect(QRectF(BASE * 0.04, BASE * 0.04, BASE * 0.92, BASE * 0.55), radius, radius)
 
-    # Chip
+    # Chip, en el verde de acento de la interfaz.
     chip = QRectF(BASE * 0.28, BASE * 0.28, BASE * 0.44, BASE * 0.44)
-    pen = QPen(QColor("#FFFFFF"))
+    pen = QPen(QColor(DARK_COLORS["accent"]))
     pen.setWidthF(BASE * 0.055)
     pen.setJoinStyle(Qt.RoundJoin)
     painter.setPen(pen)
     painter.setBrush(Qt.NoBrush)
     painter.drawRoundedRect(chip, BASE * 0.05, BASE * 0.05)
 
-    # Núcleo interior
+    # Núcleo interior, un poco más claro que las patillas.
     painter.setPen(Qt.NoPen)
-    painter.setBrush(QColor("#FFFFFF"))
+    painter.setBrush(QColor(DARK_COLORS["accent_glow"]))
     painter.drawRoundedRect(
         QRectF(BASE * 0.42, BASE * 0.42, BASE * 0.16, BASE * 0.16), BASE * 0.03, BASE * 0.03
     )

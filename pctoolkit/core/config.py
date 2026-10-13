@@ -7,7 +7,7 @@ from pathlib import Path
 
 APP_NAME = "PC Toolkit"
 APP_TAGLINE = "Herramientas para controlar y mantener tu PC"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 ORG_NAME = "PCToolkit"
 
 IS_WINDOWS = os.name == "nt"
@@ -46,10 +46,19 @@ def config_file() -> Path:
 
 
 # --- Colores de la interfaz -----------------------------------------------
-# Hay **dos paletas completas** con las mismas claves: la oscura «grafito vivo»
-# (grises neutros cálidos, texto casi blanco y acento esmeralda saturado) y la
-# clara «papel cálido» (blancos sucios, texto casi negro y el mismo esmeralda
-# oscurecido para que el texto siga leyéndose).
+# Hay **dos paletas completas** con las mismas claves: la oscura «grafito frío»
+# (grises neutros con un matiz verde muy leve, texto casi blanco y verde de
+# acento) y la clara «niebla verde» (blancos fríos, texto casi negro y el mismo
+# verde oscurecido para que el texto siga leyéndose).
+#
+# El color se usa por **significado**, no por decoración:
+#   verde   → acción principal, selección activa y estado saludable
+#   amarillo→ advertencia o atención necesaria
+#   rojo    → error, peligro o estado crítico
+#   series_*→ datos (CPU, memoria y disco): tres tonos que se distinguen entre sí
+#             sin parecer una alerta cuando el valor es normal. Van solo en la
+#             gráfica, la leyenda y las barras del icono de la bandeja, nunca como
+#             fondo de una tarjeta ni como color de estado.
 #
 # `COLORS` y `SURFACES` son siempre la paleta **activa** y se usan por referencia
 # en toda la interfaz, así que cambiar de tema es reemplazar su contenido con
@@ -60,85 +69,88 @@ def config_file() -> Path:
 #   on_accent    texto e iconos que se pintan encima del acento
 #   on_selected  texto sobre una superficie seleccionada (barra lateral, listas)
 DARK_COLORS = {
-    "bg": "#0F0E0D",
-    "bg_alt": "#171615",
-    "panel": "#1E1C1A",
-    "panel_alt": "#272422",
-    "border": "#3E3934",
-    "border_soft": "#2C2926",
-    "text": "#FFFFFF",
-    "text_muted": "#C8C2B9",
-    "text_dim": "#918A80",
-    "accent": "#1FE3A8",
-    "accent_soft": "#14B98A",
-    "accent_glow": "#6CFFD2",
-    "good": "#3EE693",
-    "warn": "#FFB32B",
-    "bad": "#FF5A73",
-    "magenta": "#FF7BC4",
-    "amber": "#FFC46B",
-    "on_accent": "#04241A",
-    "on_selected": "#6CFFD2",
-    "primary_hover": "#A8FFE2",
-    "primary_disabled_bg": "#26332D",
-    "primary_disabled_border": "#33564A",
-    "primary_disabled_text": "#7FA498",
-    "danger_border": "#4A2A28",
-    "danger_hover": "#2A1815",
-    "warn_alt": "#F97F52",
-    "good_alt": "#8FE07A",
+    "bg": "#0B0F0E",
+    "bg_alt": "#101614",
+    "panel": "#151C19",
+    "panel_alt": "#1B2420",
+    "border": "#29352F",
+    "border_soft": "#1E2823",
+    "text": "#F3F7F4",
+    "text_muted": "#A7B4AC",
+    "text_dim": "#8C9A92",
+    "accent": "#22C55E",
+    "accent_soft": "#1B9E4B",
+    "accent_glow": "#4ADE80",
+    "good": "#34D399",
+    "warn": "#FBBF24",
+    "bad": "#F87171",
+    "series_cpu": "#22C55E",
+    "series_ram": "#F472B6",
+    "series_disk": "#2DD4BF",
+    "on_accent": "#04220F",
+    "on_selected": "#A7F3C2",
+    "primary_hover": "#86EFAC",
+    "primary_disabled_bg": "#1B2320",
+    "primary_disabled_border": "#2A3A32",
+    "primary_disabled_text": "#7E8C85",
+    "danger_border": "#4A2A2C",
+    "danger_hover": "#2A1618",
 }
 
 LIGHT_COLORS = {
-    "bg": "#F1EFEB",
-    "bg_alt": "#E8E4DD",
+    "bg": "#F2F5F3",
+    "bg_alt": "#E8EDEA",
     "panel": "#FFFFFF",
-    "panel_alt": "#F7F4F0",
-    "border": "#CBC4BB",
-    "border_soft": "#E3DDD5",
-    "text": "#17150F",
-    "text_muted": "#4D463F",
-    "text_dim": "#6C6459",
-    "accent": "#0A6B52",
-    "accent_soft": "#085C46",
-    "accent_glow": "#0B7A5D",
-    "good": "#12734B",
-    "warn": "#8F5400",
-    "bad": "#B02640",
-    "magenta": "#9C3F76",
-    "amber": "#8A6118",
+    "panel_alt": "#F5F8F6",
+    "border": "#C6D0CA",
+    "border_soft": "#DCE4DF",
+    "text": "#0F1614",
+    "text_muted": "#414E48",
+    "text_dim": "#5F6D66",
+    # En claro el acento es un verde oscuro porque hace dos trabajos a la vez:
+    # relleno de los botones principales (con texto blanco encima) y color de texto
+    # y de borde sobre blanco. El tono claro no sirve para lo segundo.
+    "accent": "#166534",
+    "accent_soft": "#14532D",
+    "accent_glow": "#15803D",
+    "good": "#047857",
+    "warn": "#96620B",
+    "bad": "#B32424",
+    "series_cpu": "#15803D",
+    "series_ram": "#BE185D",
+    "series_disk": "#0F766E",
     "on_accent": "#FFFFFF",
-    "on_selected": "#085441",
-    "primary_hover": "#0C8A68",
-    "primary_disabled_bg": "#E4DFD8",
-    "primary_disabled_border": "#CFC8BF",
+    "on_selected": "#0B3B22",
+    # El hover del botón principal oscurece (el gradiente va de `primary_hover` a
+    # `accent_glow`): aclarar el verde obligaría a quitar el texto blanco.
+    "primary_hover": "#14532D",
+    "primary_disabled_bg": "#E4EAE7",
+    "primary_disabled_border": "#CBD5D0",
     # El texto de un control apagado queda por debajo de 4,5:1 a propósito (la
     # WCAG exime a los componentes inactivos): tiene que verse apagado, no legible
     # como si estuviera disponible. 3,6:1 se lee sin confundirse con el activo.
-    "primary_disabled_text": "#7A7266",
-    "danger_border": "#E4BFC4",
-    "danger_hover": "#FBEDEF",
-    "warn_alt": "#D2731F",
-    "good_alt": "#3FAE7B",
+    "primary_disabled_text": "#6E7B75",
+    "danger_border": "#E3BDBD",
+    "danger_hover": "#FBEDED",
 }
 
 # Matices de superficie usados en hover/selecciones/filas alternas.
 DARK_SURFACES = {
-    "hover": "#2E2B28",
-    "pressed": "#252220",
-    "selected": "#33473F",
-    "track": "#3E3934",
-    "track_hover": "#544E48",
-    "row": "#211F1D",
+    "hover": "#1C2621",
+    "pressed": "#161E1A",
+    "selected": "#1F3D2C",
+    "track": "#29352F",
+    "track_hover": "#3C4A43",
+    "row": "#121A17",
 }
 
 LIGHT_SURFACES = {
-    "hover": "#ECE7E0",
-    "pressed": "#E2DCD3",
-    "selected": "#D6EDE4",
-    "track": "#CBC4BB",
-    "track_hover": "#B4ABA0",
-    "row": "#FAF8F5",
+    "hover": "#E7EEE9",
+    "pressed": "#DBE5DF",
+    "selected": "#CFEBD9",
+    "track": "#C6D0CA",
+    "track_hover": "#A9B7AF",
+    "row": "#F8FAF9",
 }
 
 THEME_DARK = "dark"

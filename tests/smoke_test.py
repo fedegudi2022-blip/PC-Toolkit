@@ -11,14 +11,19 @@ import json
 import os
 import sys
 import tempfile
+import time
+import warnings
 from pathlib import Path
 
 # Redirige los datos de la app a una carpeta temporal antes de importar nada.
 _TEMP_HOME = tempfile.mkdtemp(prefix="pctoolkit_test_")
 os.environ["APPDATA"] = _TEMP_HOME
 os.environ["LOCALAPPDATA"] = _TEMP_HOME
-# Por defecto se usa la plataforma real (métricas de fuente correctas);
-# PCTOOLKIT_OFFSCREEN=1 permite ejecutar las pruebas sin pantalla.
+# Por defecto se usa la plataforma real de Qt, que es la única con métricas de fuente
+# correctas: la plataforma «offscreen» mide el texto de otra manera y la interfaz parece
+# desbordar cuando en un escritorio de verdad no lo hace. PCTOOLKIT_OFFSCREEN=1 permite
+# ejecutar sin pantalla en un equipo sin escritorio, pero entonces las comprobaciones de
+# desbordes (y la de bandeja) avisarán de problemas que no existen en pantalla.
 if os.environ.get("PCTOOLKIT_OFFSCREEN") == "1":
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
@@ -58,6 +63,16 @@ def build_sample_tree(base: Path) -> Path:
     (base / "docs" / "sub" / "codigo.py").write_bytes(b"0" * 2_000)
     (base / "raiz.zip").write_bytes(b"0" * 20_000)
     return base
+
+
+def envejecer(ruta: Path, horas: float = 48.0) -> None:
+    """Retrasa la fecha de modificación de un archivo para que cuente como antiguo.
+
+    Hace falta porque la limpieza de temporales nunca borra archivos recientes:
+    las pruebas que esperan un borrado tienen que envejecer lo que crean.
+    """
+    marca = time.time() - horas * 3600
+    os.utime(ruta, (marca, marca))
 
 
 def test_metrics() -> None:
@@ -126,15 +141,67 @@ def test_tools() -> None:
     emulated = tools.ToolShortcut("x", "Prueba", "desc", "noexiste.exe", tools.CATEGORY_SISTEMA)
     ok, message = tools.launch(emulated)
     check("Lanzador informa de errores", ok is False and bool(message), message)
+    # --- Antigüedad mínima: por debajo de una hora no se toca nada -----------
+    check(
+        "El suelo de antigüedad no se puede desactivar",
+        tools.min_temp_age_hours(0) >= 1.0
+        and tools.min_temp_age_hours(-5.0) >= 1.0
+        and tools.min_temp_age_hours(24.0) == 24.0,
+        f"0 h -> {tools.min_temp_age_hours(0)} h",
+    )
+    check(
+        "Carpetas peligrosas fuera del alcance de la limpieza",
+        not tools.is_safe_temp_folder("C:\\")
+        and not tools.is_safe_temp_folder(os.path.expanduser("~"))
+        and not tools.is_safe_temp_folder(os.environ.get("SystemRoot", "C:\\Windows")),
+    )
+    rechazado = tools.scan_temp_folder(os.environ.get("SystemRoot", "C:\\Windows"), min_age_hours=24)
+    check(
+        "Una carpeta rechazada se explica y no se analiza",
+        bool(rechazado.rejected) and rechazado.file_count == 0 and rechazado.total_size == 0,
+        rechazado.rejected[:60],
+    )
+
     with tempfile.TemporaryDirectory() as tmp:
         temp_dir = Path(tmp)
+        # Subcarpeta cuyo único contenido son archivos recientes: el error que se
+        # corrigió era borrarla entera por no tener archivos sueltos, sin mirar lo
+        # que había dentro.
+        dentro = temp_dir / "en_curso" / "sub"
+        dentro.mkdir(parents=True)
+        reciente = dentro / "reciente.tmp"
+        reciente.write_bytes(b"0" * 25_000)
         (temp_dir / "viejo.tmp").write_bytes(b"0" * 100_000)
-        old = (temp_dir / "nuevo.tmp")
-        old.write_bytes(b"0" * 50_000)
-        report = tools.scan_temp_folder(str(temp_dir), min_age_hours=0)
-        check("Análisis de temporales", report.file_count == 2, f"{report.file_count} archivos")
-        result = tools.clean_temp_folder(str(temp_dir), min_age_hours=0)
-        check("Limpieza de temporales", result.freed == 150_000 and result.deleted == 2, format_bytes(result.freed))
+        (temp_dir / "nuevo.tmp").write_bytes(b"0" * 50_000)
+        envejecer(temp_dir / "viejo.tmp")
+
+        report = tools.scan_temp_folder(str(temp_dir), min_age_hours=24)
+        check(
+            "Análisis de temporales solo cuenta los antiguos",
+            report.file_count == 1 and report.total_size == 100_000,
+            f"{report.file_count} archivos, {format_bytes(report.total_size)}",
+        )
+
+        result = tools.clean_temp_folder(str(temp_dir), min_age_hours=24)
+        check("Limpieza de temporales", result.freed == 100_000 and result.deleted == 1, format_bytes(result.freed))
+        check("Se borra el temporal antiguo", not (temp_dir / "viejo.tmp").exists())
+        check("Se respeta el temporal reciente", (temp_dir / "nuevo.tmp").exists())
+        check("Se respeta lo reciente dentro de una subcarpeta", reciente.exists())
+        check("La subcarpeta con contenido sigue en pie", dentro.is_dir())
+
+        # Pedir cero horas no desactiva el filtro: manda el suelo de una hora.
+        sin_filtro = tools.clean_temp_folder(str(temp_dir), min_age_hours=0)
+        check(
+            "Pedir cero horas no borra lo recién creado",
+            sin_filtro.deleted == 0 and (temp_dir / "nuevo.tmp").exists() and reciente.exists(),
+            f"{sin_filtro.deleted} archivos borrados",
+        )
+
+        # Ya con todo envejecido sí se vacía, y las subcarpetas vacías se retiran.
+        envejecer(temp_dir / "nuevo.tmp")
+        envejecer(reciente)
+        completo = tools.clean_temp_folder(str(temp_dir), min_age_hours=24)
+        check("Limpieza completa de la carpeta de prueba", completo.deleted == 2, f"{completo.deleted} archivos")
         check("Carpeta temporal vacía", not any(temp_dir.iterdir()))
 
 
@@ -436,6 +503,20 @@ def test_theme() -> None:
         config.active_palette(),
     )
     check("La hoja de estilos usa el acento nuevo", COLORS["accent"] in qss and COLORS["accent_glow"] in qss)
+    # Un color con transparencia se escribe con `rgba(...)`: pegar el alfa al final del
+    # hexadecimal no vale, porque Qt lee `#RRGGBBAA` como `#AARRGGBB` (una insignia de
+    # aviso amarilla salía roja y casi opaca).
+    from PySide6.QtGui import QColor as _QColor
+
+    aviso = theme.with_alpha(COLORS["warn"], 34)
+    tono = _QColor(aviso)
+    esperado = _QColor(COLORS["warn"])
+    check(
+        "El color con transparencia conserva el tono",
+        (tono.red(), tono.green(), tono.blue()) == (esperado.red(), esperado.green(), esperado.blue())
+        and 0 < tono.alpha() < 255,
+        f"{aviso} -> {tono.name()} alfa {tono.alpha()}",
+    )
     check("La hoja de estilos estiliza las listas desplegables", "QDoubleSpinBox" in qss and "QTimeEdit" in qss)
     # La plantilla del QSS se rellena con la paleta activa: si quedara una clave
     # sin sustituir, Qt se saltaría esa regla en silencio.
@@ -841,12 +922,15 @@ def test_maintenance() -> None:
         controllada = Path(tmp)
         (controllada / "viejo.tmp").write_bytes(b"0" * 4_000_000)
         (controllada / "otro.tmp").write_bytes(b"0" * 1_000_000)
+        # Se envejecen: el mantenimiento nunca borra temporales de menos de una hora.
+        envejecer(controllada / "viejo.tmp")
+        envejecer(controllada / "otro.tmp")
         sim = maintenance.run_maintenance(
             MaintenanceSchedule(clean_temp=True, export_report=False),
             dry_run=True,
             register=False,
             temp_folder=str(controllada),
-            min_age_hours=0.0,
+            min_age_hours=24.0,
         )
         check("Simulación con la carpeta indicada", sim.item("limpieza").data["archivos"] == 2, str(sim.item("limpieza").data))
         check(
@@ -860,7 +944,7 @@ def test_maintenance() -> None:
             dry_run=False,
             register=False,
             temp_folder=str(controllada),
-            min_age_hours=0.0,
+            min_age_hours=24.0,
         )
         check("Limpieza real de la carpeta indicada", real_clean.removed_files == 2, str(real_clean.removed_files))
         check("Archivos eliminados de verdad", not any(controllada.iterdir()))
@@ -1156,10 +1240,13 @@ def test_installer() -> None:
             str(resultado.shortcuts),
         )
         objetivo = core.read_shortcut_target(escritorio / "PC Toolkit.lnk")
+        # Se comparan rutas resueltas y no el texto: Windows guarda el destino en su forma
+        # larga aunque se le dé la corta (8.3), y en un servidor de compilación la carpeta
+        # temporal se llama `RUNNER~1`, así que comparar el texto daba un falso negativo.
         check(
             "El acceso directo apunta al programa instalado",
-            objetivo.lower() == str(core.app_executable(destino)).lower(),
-            objetivo,
+            bool(objetivo) and Path(objetivo).resolve() == core.app_executable(destino).resolve(),
+            f"{objetivo} (destino {core.app_executable(destino)})",
         )
         entrada = core.read_uninstall_entry("PCToolkitPruebaTest") or {}
         check("Registrado en «Aplicaciones instaladas»", entrada.get("DisplayName") == "PC Toolkit", str(entrada.get("DisplayName")))
@@ -1194,6 +1281,76 @@ def test_installer() -> None:
         while time_module.time() < limite and destino.exists():
             time_module.sleep(0.5)
         check("Carpeta de programa eliminada", not destino.exists(), str(destino))
+
+        # --- La carpeta de destino la elige el usuario: ni raíces ni perfiles -------
+        raiz_unidad = Path("C:\\")
+        check(
+            "Instalar en la raíz de una unidad se rechaza",
+            "raíz" in core.unsafe_target_reason(raiz_unidad),
+            core.unsafe_target_reason(raiz_unidad),
+        )
+        perfil = Path(os.path.expanduser("~"))
+        check(
+            "Instalar en el perfil se rechaza",
+            bool(core.unsafe_target_reason(perfil)),
+            core.unsafe_target_reason(perfil),
+        )
+        rechazada = core.install(
+            core.InstallOptions(target_dir=raiz_unidad, source=origen, key_name="PCToolkitPruebaTest")
+        )
+        check("Una carpeta peligrosa no llega a copiar nada", not rechazada.ok, rechazada.message)
+        sin_tocar = core.uninstall(target_dir=raiz_unidad, key_name="PCToolkitPruebaTest")
+        check(
+            "La desinstalación tampoco toca una carpeta peligrosa",
+            bool(sin_tocar.warnings)
+            and "conservado la carpeta" in sin_tocar.message
+            and raiz_unidad.is_dir(),
+            f"{sin_tocar.message} | {' | '.join(sin_tocar.warnings)}",
+        )
+
+        # --- El registro de archivos permite desinstalar sin borrar lo ajeno -------
+        conserva = base / "conserva"
+        creada = core.install(
+            core.InstallOptions(
+                target_dir=conserva,
+                source=origen,
+                key_name="PCToolkitPruebaTest",
+                run_value="PCToolkitPruebaTest",
+                desktop=escritorio,
+                start_menu=menu,
+                launch_after=False,
+            )
+        )
+        check("Instalación con registro de archivos", creada.ok, creada.message)
+        registro = core.read_manifest(conserva) or {}
+        check(
+            "El registro deja por escrito lo que se instaló",
+            registro.get("archivos") == core.installed_files(conserva)
+            and "PC Toolkit.exe" in registro.get("archivos", []),
+            f"{len(registro.get('archivos', []))} archivos",
+        )
+        ajeno = conserva / "mis_documentos"
+        ajeno.mkdir()
+        (ajeno / "importante.txt").write_text("no se toca", encoding="utf-8")
+
+        retirada = core.uninstall(
+            target_dir=conserva,
+            key_name="PCToolkitPruebaTest",
+            run_value="PCToolkitPruebaTest",
+            desktop=escritorio,
+            start_menu=menu,
+        )
+        check(
+            "Desinstalar con archivos ajenos avisa de lo que se conserva",
+            any("no instaló PC Toolkit" in aviso for aviso in retirada.warnings),
+            " | ".join(retirada.warnings),
+        )
+        check(
+            "Los archivos del usuario se conservan",
+            (ajeno / "importante.txt").exists() and conserva.is_dir(),
+            str(conserva),
+        )
+        check("Los archivos de la aplicación sí se quitan", not (conserva / "PC Toolkit.exe").exists())
 
         # Con «borrar datos» se lleva también la carpeta de datos del usuario.
         datos = Path(_TEMP_HOME) / "PCToolkit"
@@ -1327,8 +1484,12 @@ def test_interface() -> None:
     # La guardia automática está conectada al bucle de muestreo.
     import time as time_module
 
+    # El umbral se pone por debajo de cualquier uso real de RAM: si se dejara en el 30 %,
+    # en un equipo con poca memoria cargada la muestra no llegaría al umbral y la prueba
+    # dependería de cuánta RAM tenga la máquina. El enfriamiento está activo, así que
+    # aunque se supere el umbral no se libera nada de verdad.
     window.memory_guard.options = MemoryOptions(
-        auto_enabled=True, threshold_percent=30.0, sustained_samples=1, cooldown_minutes=60
+        auto_enabled=True, threshold_percent=1.0, sustained_samples=1, cooldown_minutes=60
     )
     # Con el enfriamiento activo la guardia mira la muestra pero no llega a limpiar,
     # así la prueba comprueba el cableado sin alterar de nuevo los procesos reales.
@@ -1641,12 +1802,12 @@ def test_interface() -> None:
     chart.render(painter, QPoint(0, 0))
     painter.end()
     rect = chart._plot_rect()  # noqa: SLF001
-    hits = {key: 0 for key, _label, _color in SERIES}
+    hits = {key: 0 for key, _label, _color_key in SERIES}
     for sample in demo_samples[-8:]:
         x = int(chart._x_for(sample.timestamp, rect))  # noqa: SLF001
-        for key, _label, color in SERIES:
+        for key, _label, color_key in SERIES:
             y0 = int(chart._y_for(getattr(sample, key), rect))  # noqa: SLF001
-            target = QColor(color)
+            target = QColor(COLORS[color_key])
             best = None
             for y in range(max(0, y0 - 3), min(image.height(), y0 + 4)):
                 pixel = image.pixelColor(x, y)
@@ -1671,8 +1832,16 @@ def test_interface() -> None:
     from pctoolkit.ui.tray import TrayController, status_pixmap, tray_available
 
     check("Icono de bandeja dibujado", not status_pixmap(snap, 32).isNull() and status_pixmap(snap, 32).width() == 32)
-    check("Bandeja disponible en este sistema", tray_available() is True, "sin bandeja: se omite el icono")
-    if tray_available():
+    # Si el sistema tiene bandeja (un escritorio normal), tiene que estar en uso; si no la
+    # tiene (un servidor sin shell), el controlador tiene que quedarse inactivo en vez de
+    # fallar. Comprobar que «hay bandeja» a secas convertía el entorno en el resultado.
+    bandeja_disponible = tray_available()
+    check(
+        "La bandeja se usa solo si el sistema la tiene",
+        window.tray.active == bandeja_disponible,
+        f"bandeja={'sí' if bandeja_disponible else 'no'}; controlador activo={window.tray.active}",
+    )
+    if bandeja_disponible:
         check("Controlador de bandeja activo", window.tray.active is True, str(window.tray.active))
         statuses = {key: action.text() for key, action in window.tray.status_actions.items()}
         check("Menú con el estado actual", statuses[METRIC_CPU].startswith("CPU: ") and "%" in statuses[METRIC_RAM], str(statuses))
@@ -1836,6 +2005,22 @@ def test_interface() -> None:
     from PySide6.QtWidgets import QVBoxLayout as _QVBoxLayout
     from PySide6.QtWidgets import QWidget as _QWidget
 
+    def _borde_con_foco(ventana, widget):  # noqa: ANN001, ANN202
+        """Borde del widget con el foco del teclado puesto.
+
+        Entre el `setFocus` y la captura, el escritorio puede quitarle la activación a
+        la ventana; entonces el estilo no pinta el borde de foco y la comprobación
+        fallaría por el entorno y no por el tema. Se reintenta el montaje —nunca la
+        comprobación— hasta que el widget tenga el foco de verdad.
+        """
+        for _intento in range(5):
+            _activar(app, ventana)
+            widget.setFocus()
+            _settle(app, 200)
+            if widget.hasFocus():
+                break
+        return _borde_superior(widget)
+
     def _borde_superior(widget):  # noqa: ANN001
         imagen = widget.grab().toImage()
         centro = widget.width() // 2
@@ -1870,10 +2055,7 @@ def test_interface() -> None:
         f"{fantasma.height()}x{fantasma.y()} y {principal.height()}x{principal.y()}",
     )
 
-    window.activateWindow()
-    fantasma.setFocus()
-    _settle(app, 250)
-    lateral_con_foco = _borde_superior(fantasma)
+    lateral_con_foco = _borde_con_foco(window, fantasma)
     fantasma.clearFocus()
     window.setFocus()
     _settle(app, 200)
@@ -1883,10 +2065,7 @@ def test_interface() -> None:
         _distancia(lateral_con_foco, lateral_sin_foco) > 25 and _distancia(lateral_con_foco, COLORS["accent"]) < 60,
         f"{lateral_sin_foco.name()} -> {lateral_con_foco.name()}",
     )
-    window.activateWindow()
-    principal.setFocus()
-    _settle(app, 250)
-    principal_con_foco = _borde_superior(principal)
+    principal_con_foco = _borde_con_foco(window, principal)
     principal.clearFocus()
     window.setFocus()
     _settle(app, 200)
@@ -1897,10 +2076,7 @@ def test_interface() -> None:
     )
 
     lateral = window._nav_buttons["disk"]  # noqa: SLF001
-    window.activateWindow()
-    lateral.setFocus()
-    _settle(app, 250)
-    lateral_con_foco = _borde_superior(lateral)
+    lateral_con_foco = _borde_con_foco(window, lateral)
     lateral.clearFocus()
     window.setFocus()
     _settle(app, 200)
@@ -1937,20 +2113,19 @@ def test_interface() -> None:
         listado.addItem(texto)
     panel_lista.resize(280, 180)
     panel_lista.show()
-    QTest.qWaitForWindowActive(panel_lista, 1500)
-    QTest.qWait(200)
+    activo_panel = _activar(app, panel_lista)
     listado.setCurrentRow(0)
     _settle(app, 250)
     seleccion_activa = listado.grab().toImage().pixelColor(20, 20).name()
-    window.activateWindow()
-    QTest.qWaitForWindowActive(window, 1500)
+    activo_ventana = _activar(app, window)
     _settle(app, 350)
     seleccion_apagada = listado.grab().toImage().pixelColor(20, 20).name()
     check(
         "La selección de una lista se apaga en segundo plano",
         QColor(seleccion_activa) == QColor(SURFACES["selected"])
         and QColor(seleccion_apagada) == QColor(COLORS["panel_alt"]),
-        f"activa {seleccion_activa} / inactiva {seleccion_apagada}",
+        f"activa {seleccion_activa} / inactiva {seleccion_apagada}"
+        f" (activación: panel={activo_panel}, ventana={activo_ventana})",
     )
     panel_lista.close()
 
@@ -1958,18 +2133,20 @@ def test_interface() -> None:
     pulsaciones: list[int] = []
     tarjeta.clicked.connect(lambda: pulsaciones.append(1))
     tarjeta.show()
+    # Es una ventana propia: sin activarla, `setFocus` no pinta el borde de foco y la
+    # comprobación dependería de qué ventana tuviera el foco en el escritorio.
+    _activar(app, tarjeta)
     _settle(app, 250)
     check(
         "Las tarjetas pulsables se alcanzan con el tabulador",
         tarjeta.focusPolicy() == Qt.TabFocus,
         str(tarjeta.focusPolicy()),
     )
-    tarjeta.setFocus()
-    _settle(app, 200)
+    borde_tarjeta = _borde_con_foco(tarjeta, tarjeta)
     check(
         "La tarjeta enfocada marca el foco",
-        _distancia(_borde_superior(tarjeta), COLORS["border_soft"]) > 25,
-        _borde_superior(tarjeta).name(),
+        _distancia(borde_tarjeta, COLORS["border_soft"]) > 25,
+        f"{borde_tarjeta.name()} (foco: {tarjeta.hasFocus()})",
     )
     QTest.keyClick(tarjeta, Qt.Key_Return)
     _settle(app, 100)
@@ -1986,8 +2163,7 @@ def test_interface() -> None:
         # Los atajos de ventana solo responden si la ventana es la activa: las
         # tarjetas y casillas sueltas de arriba son ventanas propias y se llevan
         # la activación mientras están abiertas.
-        window.activateWindow()
-        QTest.qWaitForWindowActive(window, 1500)
+        _activar(app, window)
         QTest.keyClick(window, getattr(Qt, f"Key_{indice}"), Qt.ControlModifier)
         _settle(app, 150)
         if window.stack.currentWidget() is not window._pages[clave]:  # noqa: SLF001
@@ -2168,7 +2344,7 @@ def test_interface() -> None:
     # lector no sabe si el widget tiene el foco; sin el rectángulo, no lo encuentra.
     tarjeta_rol = TarjetaPulsable("tool", "Abrir el Administrador de tareas", "Procesos, rendimiento y arranque.")
     tarjeta_rol.show()
-    QTest.qWaitForWindowActive(tarjeta_rol, 1500)
+    _activar(app, tarjeta_rol)
     tarjeta_rol.setFocus()
     _settle(app, 250)
     interfaz = QAccessible.queryAccessibleInterface(tarjeta_rol)
@@ -2233,8 +2409,7 @@ def test_interface() -> None:
     # Las ventanas sueltas de arriba se llevaron la activación: se devuelve a la
     # principal, que es como se usa de verdad (y el estilo apaga lo seleccionado
     # en segundo plano).
-    window.activateWindow()
-    QTest.qWaitForWindowActive(window, 1500)
+    _activar(app, window)
     _settle(app, 250)
 
     # --- Tema claro ---------------------------------------------------------
@@ -2281,7 +2456,7 @@ def test_interface() -> None:
             break
         _settle(app, 100)
     check("La ventana nueva recibe métricas", muestras_listas, clara.dashboard.cpu_gauge.accessibleDescription())
-    clara.activateWindow()
+    _activar(app, clara)
     _settle(app, 150)
     imagen_clara = clara.grab().toImage()
     muestreo = claro_px = oscuro_px = acento_px = 0
@@ -2404,6 +2579,50 @@ def _settle(app, ms: int) -> None:
     QTimer.singleShot(ms, loop.quit)
     loop.exec()
     app.processEvents()
+
+
+def _activar(app, widget) -> bool:
+    """Da la activación a una ventana y espera a que Qt la tenga de verdad.
+
+    Hay comprobaciones que comparan el aspecto de un widget «activo» con el de «en
+    segundo plano» (la selección de una lista, el borde de foco, los atajos). Si la
+    ventana no llega a estar activa, las dos medidas salen iguales y la comprobación
+    falla por el entorno y no por el tema, así que la activación se busca de verdad:
+    primero por la vía normal (`activateWindow` y, en Windows, traer la ventana al
+    frente) y solo si el escritorio se niega —hay otro programa en primer plano, por
+    ejemplo— se recurre a la activación interna de Qt, que existe justamente para las
+    pruebas. Devuelve si la ventana quedó activa, para poder decirlo en el mensaje.
+    """
+    from PySide6.QtTest import QTest
+
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        def traer_al_frente(ventana) -> None:  # noqa: ANN001
+            try:
+                ctypes.windll.user32.SetForegroundWindow(wintypes.HWND(int(ventana.winId())))
+            except (OSError, AttributeError, ValueError):
+                pass
+    else:
+
+        def traer_al_frente(ventana) -> None:  # noqa: ANN001
+            return None
+
+    for _intento in range(10):
+        widget.raise_()
+        widget.activateWindow()
+        traer_al_frente(widget)
+        if widget.isActiveWindow():
+            return True
+        QTest.qWait(50)
+    with warnings.catch_warnings():
+        # Obsoleta para una aplicación normal (ahí se usa `activateWindow`), pero es la
+        # única forma de forzar la activación sin depender del escritorio.
+        warnings.simplefilter("ignore", DeprecationWarning)
+        QApplication.setActiveWindow(widget)
+    QTest.qWait(50)
+    return bool(widget.isActiveWindow())
 
 
 def test_firma() -> None:
@@ -2554,6 +2773,10 @@ def test_firma_en_la_compilacion() -> None:
         check("Firma real en la compilaci\u00f3n (omitida: no hay signtool)", True, "firmar.py --traer-signtool")
         return
 
+    # Estado de los ejecutables reales antes de tocar nada: al final se comprueba que
+    # siguen igual (firmar la copia no puede haberlos tocado).
+    estado_dist_antes = firmar.signature_info(muestra).get("Status")
+
     with tempfile.TemporaryDirectory() as tmp:
         carpeta = Path(tmp)
         clave = carpeta / "clave.txt"
@@ -2591,14 +2814,74 @@ def test_firma_en_la_compilacion() -> None:
             )
             correcta, resumen, _salida = firmar.verify_signature(signtool, copia)
             check("signtool lee la firma creada al compilar", correcta or "ra\u00edz" in resumen, resumen)
+            avisos.clear()
             comprobado = firmar.check_signatures([copia], log=avisos.append)
+            # Distingue «hay firma pero no es de fiar» de «no hay firma»: con un
+            # certificado de prueba lo primero es lo que pasa, y el mensaje tiene que
+            # decirlo para no perder media hora en un servidor de compilación.
             check(
-                "El comprobador de firmas avisa de una firma no confiable",
-                comprobado is False and bool(avisos),
+                "El comprobador de firmas explica que la firma no es de fiar",
+                comprobado is False
+                and bool(avisos)
+                and "hay firma de" in avisos[-1]
+                and "no confía" in avisos[-1],
                 avisos[-1].strip() if avisos else "",
             )
+
+            # --- La función que llama `build_installer.py --firmar` -------------
+            # `sign_executables` firma todo lo que devuelve `firmar.artifacts()`, que son
+            # rutas fijas de `dist\`. Para poder probarla sin tocar los ejecutables de
+            # verdad se apuntan esas rutas a copias, y se restauran al terminar.
+            pequeno = ROOT / "dist" / "PC Toolkit" / "PC Toolkit.exe"
+            if pequeno.exists():
+                import build_installer
+
+                onedir = carpeta / "instalador"
+                onedir.mkdir()
+                objetivos = [
+                    onedir / "PC Toolkit.exe",
+                    onedir / "Desinstalar PC Toolkit.exe",
+                    carpeta / "PC Toolkit Setup.exe",
+                    carpeta / "PC Toolkit (un archivo).exe",
+                ]
+                guardados = (firmar.APP_EXE, firmar.UNINSTALLER_EXE, firmar.SETUP_EXE, firmar.ONEFILE_EXE)
+                try:
+                    for destino_copia in objetivos:
+                        _shutil.copyfile(pequeno, destino_copia)
+                    firmar.APP_EXE, firmar.UNINSTALLER_EXE, firmar.SETUP_EXE, firmar.ONEFILE_EXE = objetivos
+                    check(
+                        "El firmador de la compilación ve los cuatro artefactos",
+                        len(firmar.artifacts()) == 4,
+                        str([ruta.name for ruta in firmar.artifacts()]),
+                    )
+                    firmado_instalador = build_installer.sign_executables(argumentos)
+                    if not firmado_instalador:  # sin red no se puede pedir el sello
+                        firmado_instalador = build_installer.sign_executables(argumentos + ["--sin-sello"])
+                    huellas = [
+                        (firmar.signature_info(ruta).get("Thumbprint") or "").upper() for ruta in objetivos
+                    ]
+                    check(
+                        "build_installer.py firma los cuatro artefactos con el certificado indicado",
+                        firmado_instalador and all(valor == huella.upper() for valor in huellas),
+                        f"{len(huellas)} artefactos · {huellas[0][:12] if huellas else ''}",
+                    )
+                finally:
+                    firmar.APP_EXE, firmar.UNINSTALLER_EXE, firmar.SETUP_EXE, firmar.ONEFILE_EXE = guardados
+            else:
+                check(
+                    "build_installer.py firma los cuatro artefactos (omitida: sin dist\\ compilado)",
+                    True,
+                    "compila con build_installer.py para comprobarlo",
+                )
             if muestra == ROOT / "dist" / "PC Toolkit.exe":
-                check("Los ejecutables de dist/ siguen sin tocar", firmar.signature_info(muestra).get("Status") == "NotSigned")
+                # Se compara con el estado que tenía antes de firmar la copia: así la
+                # comprobación vale tanto si `dist\\` está sin firmar (en local) como si
+                # viene de la compilación firmada del servidor.
+                check(
+                    "Los ejecutables de dist/ no se tocan al firmar una copia",
+                    firmar.signature_info(muestra).get("Status") == estado_dist_antes,
+                    f"antes {estado_dist_antes}, ahora {firmar.signature_info(muestra).get('Status')}",
+                )
         finally:
             firmar._remove_test_certificate(huella)  # noqa: SLF001
 

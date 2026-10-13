@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 from ..core import reports as report_core
 from ..core.config import COLORS, format_bytes, reports_dir
 from ..core.disk import list_drives
-from . import icons
+from . import icons, theme
 from .widgets import Card, IconBadge, Muted, PageHeader, SectionTitle, hline, kv_row
 
 
@@ -51,7 +51,8 @@ class FormatButton(QPushButton):
             }}
             QPushButton:hover {{ border-color: {COLORS['accent_soft']}; color: {COLORS['text']}; }}
             QPushButton:checked {{
-                background: {COLORS['accent']}22; border: 1px solid {COLORS['accent']};
+                background: {theme.with_alpha(COLORS['accent'], 34)};
+                border: 1px solid {COLORS['accent']};
                 color: {COLORS['text']}; font-weight: 600;
             }}
             """

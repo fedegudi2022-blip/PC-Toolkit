@@ -21,10 +21,16 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 from ..core.config import COLORS, SURFACES
 from . import accessibility
 
+# Series de la gráfica: (clave de la muestra, etiqueta, clave de color de la paleta).
+# Se guarda la **clave** y no el color: la paleta cambia al cambiar de tema, y un
+# color copiado aquí al importar el módulo se quedaría con el del tema anterior.
+# Los colores de serie son de datos, no de estado: verde, rosa y turquesa se
+# distinguen entre sí sin parecer una alerta cuando el valor es normal (el amarillo
+# y el rojo quedan reservados para avisos y errores).
 SERIES = (
-    ("cpu", "CPU", COLORS["accent"]),
-    ("ram", "Memoria", COLORS["magenta"]),
-    ("disk", "Disco", COLORS["amber"]),
+    ("cpu", "CPU", "series_cpu"),
+    ("ram", "Memoria", "series_ram"),
+    ("disk", "Disco", "series_disk"),
 )
 
 
@@ -98,9 +104,9 @@ class HistoryChart(QWidget):
 
         painter.save()
         painter.setClipRect(rect)
-        for key, _label, color in SERIES:
+        for key, _label, color_key in SERIES:
             if self._visible.get(key, True):
-                self._paint_series(painter, rect, key, color)
+                self._paint_series(painter, rect, key, COLORS[color_key])
         painter.restore()
         self._paint_hover(painter, rect)
 
@@ -211,11 +217,11 @@ class HistoryChart(QWidget):
         painter.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()))
 
         lines = [datetime.fromtimestamp(sample.timestamp).strftime("%d/%m %H:%M")]
-        for key, label, color in SERIES:
+        for key, label, color_key in SERIES:
             if not self._visible.get(key, True):
                 continue
             y = self._y_for(getattr(sample, key), rect)
-            painter.setBrush(QColor(color))
+            painter.setBrush(QColor(COLORS[color_key]))
             painter.setPen(QPen(QColor(COLORS["bg"]), 1.5))
             painter.drawEllipse(QPointF(x, y), 3.2, 3.2)
             lines.append(f"{label}  {getattr(sample, key):.0f}%")

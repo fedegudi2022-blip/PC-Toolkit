@@ -1,12 +1,13 @@
-# PC Toolkit 1.1.0 — qué es, qué hace y cómo funciona
+# PC Toolkit 1.1.1 — qué es, qué hace y cómo funciona
 
 Aplicación de escritorio para **Windows 10 y 11** que reúne el mantenimiento del equipo en un solo
 sitio: libera memoria RAM cuando hace falta, programa el mantenimiento en el propio Windows, vigila
 la CPU, la memoria y el disco, analiza el espacio ocupado, reúne los accesos rápidos a las
 herramientas del sistema y exporta informes.
 
-Está hecha en **Python + PySide6 + psutil**, con tema oscuro «grafito vivo» (grises cálidos sin azul,
-con más contraste entre fondo, tarjetas y paneles) y acento esmeralda, y se instala con un
+Está hecha en **Python + PySide6 + psutil**, con tema oscuro «grafito frío» (grises neutros con un
+matiz verde muy leve y cada nivel de superficie separado del siguiente), verde para las acciones y
+los estados saludables, ámbar para los avisos y rojo para lo que va mal; y se instala con un
 **instalador propio de Windows** (asistente, accesos directos y desinstalador), sin necesidad de ser
 administrador.
 
@@ -60,6 +61,7 @@ carpeta del usuario y en `HKCU`, no en `Archivos de programa` ni en `HKLM`.
 | --- | --- |
 | Programa y sus librerías | `%LOCALAPPDATA%\Programs\PC Toolkit\` (`PC Toolkit.exe` + `_internal\`) |
 | Desinstalador | `%LOCALAPPDATA%\Programs\PC Toolkit\Desinstalar PC Toolkit.exe` |
+| Registro de lo instalado | `%LOCALAPPDATA%\Programs\PC Toolkit\.pctoolkit_instalacion.json` (lo usa el desinstalador para no borrar nada ajeno) |
 | Acceso directo del escritorio | Escritorio del usuario (`PC Toolkit.lnk`) |
 | Acceso directo del menú Inicio | `…\Start Menu\Programs\PC Toolkit.lnk` |
 | Entrada en «Aplicaciones instaladas» | `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\PCToolkit` |
@@ -76,6 +78,18 @@ sin mostrar la ventana, con solo el icono de la bandeja y una notificación la p
 controla umbrales y limpieza automática de memoria; al hacer clic en el icono se abre la ventana
 completa.
 
+Solo puede haber **una copia abierta a la vez**. Al arrancar, la aplicación se queda con un bloqueo
+(`%APPDATA%\PCToolkit\pctoolkit.lock`); si ya había otra copia, la nueva no llega a abrir nada, le
+pide a la primera que saque su ventana a delante y se cierra. Así el arranque automático más el
+acceso directo no dejan dos iconos de bandeja, dos guardias de memoria automática escribiendo a la
+vez ni el historial duplicado. El bloqueo lo libera la propia aplicación al salir; si una copia se
+cayera sin liberarlo, se considera abandonado a los 30 segundos y la siguiente lo rompe.
+
+El **reinicio con permisos de administrador** (desde «Optimizar memoria» o desde «Programas de
+inicio» cuando Windows deniega un cambio) pide los permisos, lanza la copia nueva con `--esperar` y
+**cierra la actual**: la nueva aguarda hasta 20 segundos a que el bloqueo quede libre en vez de
+darse por vencida y no abrirse.
+
 ### Actualizar y desinstalar
 
 - **Actualizar**: volver a ejecutar el instalador. Detecta la instalación anterior, avisa de la
@@ -84,6 +98,15 @@ completa.
 - **Desinstalar** desde *Configuración → Aplicaciones → Aplicaciones instaladas*, desde el propio
   desinstalador o desde su menú Inicio. Quita accesos directos, la entrada de registro, el arranque
   automático y la **tarea de mantenimiento programado** si existía.
+- **La desinstalación borra solo lo que instaló la aplicación.** Al instalar se deja por escrito en
+  `%LOCALAPPDATA%\Programs\PC Toolkit\.pctoolkit_instalacion.json` la lista exacta de archivos que se
+  copiaron, y el desinstalador se limita a esa lista; si en la carpeta hay otras cosas (tuyas), las
+  conserva, deja la carpeta donde está y lo dice. La carpeta solo se borra cuando queda vacía.
+- **No se puede instalar en según qué carpetas.** El asistente deja elegir la carpeta de destino,
+  pero se rechazan la raíz de una unidad (`C:\`, `D:\`…), el perfil del usuario, el escritorio, la
+  carpeta de descargas y las del sistema o del programa. Es la diferencia entre desinstalar limpio y
+  llevarse por delante medio disco. Si la carpeta tiene archivos ajenos, la instalación avisa y la
+  desinstalación los respeta.
 - **Tus datos se conservan** por defecto (historial, informes y preferencias en
   `%APPDATA%\PCToolkit`); el asistente permite borrarlos marcando una casilla.
 - La carpeta del programa se elimina con un pequeño proceso auxiliar que espera a que el
@@ -226,6 +249,16 @@ escudo y piden UAC; si se cancelan, la aplicación lo indica sin cerrarse.
 La limpieza rápida actúa **solo sobre `%TEMP%` del usuario**, ignora archivos con menos de una hora,
 omite los que están en uso y muestra cuántos archivos y cuántos MB se han liberado.
 
+La antigüedad mínima es una hora de verdad y no se puede desactivar: ni `--antiguedad 0` ni un ajuste
+a cero la bajan, porque un temporal recién escrito puede ser de una instalación en curso. Además:
+
+- **No se siguen los enlaces** (junctions o accesos simbólicos) que haya dentro de `%TEMP%`: si los
+  hubiera, la limpieza se quedaría dentro de `%TEMP%` en vez de borrar al otro lado.
+- **No se toca una carpeta peligrosa.** Si `%TEMP%` apuntara por error a la raíz de una unidad, al
+  perfil del usuario, al escritorio o a una carpeta de Windows, la limpieza se niega y lo explica.
+- **Solo se retiran las subcarpetas que quedan vacías de verdad.** Una carpeta con contenido (aunque
+  no tenga archivos sueltos y solo le queden subcarpetas dentro) se deja como está.
+
 ### 3.6 Tareas e informes
 
 El registro de tareas guarda pendientes con categoría, prioridad, fecha límite y notas, con
@@ -304,7 +337,8 @@ como estaba.
 ### 3.9 Teclado y accesibilidad
 
 La ventana se maneja entera con el teclado y **el foco siempre se ve**: el borde del control
-enfocado se ilumina en esmeralda (en el botón principal, en blanco sobre el propio acento). Antes
+enfocado se ilumina en verde (en el botón principal, que ya es verde, el borde cambia al color de
+contraste del acento: casi negro en oscuro y blanco en claro). Antes
 del cambio, la hoja de estilos quitaba el contorno de todos los controles y con el tabulador no se
 sabía dónde estabas.
 
@@ -323,7 +357,7 @@ Detalles del tema que también se comprueban en las pruebas:
 - Al cambiar de sección, el texto de la barra lateral ya no salta de sitio: los dos estados llevan
   los mismos grosores de borde.
 - Un control deshabilitado se ve apagado y no reacciona al ratón; una casilla marcada pero
-  deshabilitada ya no se queda pintada en esmeralda (parecía activa).
+  deshabilitada ya no se queda pintada en verde (parecía activa).
 - Con la ventana en segundo plano, la selección de una lista se apaga para no confundirla con la de
   verdad.
 
@@ -381,8 +415,8 @@ aplicación seguiría pintando con la paleta vieja.
 | Modo | Qué hace |
 | --- | --- |
 | **Seguir a Windows** (por defecto) | Lee `HKCU\...\Themes\Personalize\AppsUseLightTheme`, la misma marca que usa Windows para el modo claro |
-| **Oscuro** | Paleta «grafito vivo», la del diseño original |
-| **Claro** | Paleta «papel cálido»: blancos sucios y el esmeralda oscurecido para que el texto se lea |
+| **Oscuro** | Paleta «grafito frío»: gris muy oscuro con un matiz verde muy leve y el texto casi blanco |
+| **Claro** | Paleta «niebla verde»: blancos fríos y el mismo verde oscurecido, para que se lea como texto y como relleno con texto blanco encima |
 
 El cambio se hace en **Ajustes y alertas → Apariencia**, y la propia ventana explica en una línea
 qué supone la opción elegida *según cómo esté Windows ahora mismo* («Se usa el mismo modo que
@@ -395,7 +429,8 @@ Con `--tema claro|oscuro|auto` se fuerza el tema **solo para esa ejecución**, s
 es la forma de probarlo o de generar documentación reproducible.
 
 **Comprobado:** el contraste WCAG 4,5:1 de los pares texto/fondo en **las dos paletas**, que el
-acento sea esmeralda en ambas, que cambiar de paleta no reasigne los diccionarios (las referencias
+acento sea verde en ambas y que ningún color de la paleta caiga en el rango azul, que los tres
+tonos de dato se distingan entre sí, que cambiar de paleta no reasigne los diccionarios (las referencias
 ya tomadas siguen valiendo), que la plantilla del QSS no deje claves sin rellenar, que cada paleta
 tenga su marca de verificación (la del tema oscuro es blanca y sobre fondo claro desaparecería), que
 el modo `auto` resuelva al del sistema y que un valor ilegible caiga en `auto`, además del render
@@ -435,7 +470,7 @@ pctoolkit/
   ui/                           Interfaz PySide6: temas (claro y oscuro), anuncios accesibles y
                                 roles de los widgets propios, iconos, tarjetas, gráfica, bandeja,
                                 ventana principal y una página por módulo
-tests/smoke_test.py             545 comprobaciones automáticas (núcleo, interfaz, instalador y firma)
+tests/smoke_test.py             564 comprobaciones automáticas (núcleo, interfaz, instalador y firma)
 tools/
   app_icon.py                   Dibuja el icono de la aplicación
   medir_consumo.py              Mide el consumo de CPU/RAM de cada perfil de muestreo
@@ -445,8 +480,8 @@ capturas/                       Imágenes de la documentación
 
 Al compilar aparecen tres artefactos en `dist\`:
 
-  dist\PC Toolkit\               Programa completo (carpeta autocontenida, 64,7 MB)
-  dist\PC Toolkit.exe            Programa en un solo archivo (46,6 MB)
+  dist\PC Toolkit\               Programa completo (carpeta autocontenida, 64,8 MB)
+  dist\PC Toolkit.exe            Programa en un solo archivo (46,7 MB)
   dist\PC Toolkit Setup.exe      Instalador de Windows con la aplicación dentro (78,9 MB)
 ```
 
@@ -510,10 +545,15 @@ de instalar, ejecutar y desinstalar.
 Pruebas:
 
 ```bat
-.venv\Scripts\python.exe tests\smoke_test.py           545 comprobaciones
+.venv\Scripts\python.exe tests\smoke_test.py           564 comprobaciones
 .venv\Scripts\python.exe tools\verificar_instalacion.py  Instala de verdad y desinstala al terminar
 set PCTOOLKIT_OFFSCREEN=1                               si no hay pantalla disponible
 ```
+
+El total depende del equipo: unas pocas comprobaciones solo se hacen si el sistema tiene bandeja,
+si hay `signtool` disponible o si `dist\` ya está compilado. Con la plataforma real de Qt salen 564;
+en modo sin pantalla son unas cuantas menos, porque las que necesitan una bandeja de verdad no se
+ejecutan (la comprobación de que la bandeja solo se usa si el sistema la tiene sí se hace siempre).
 
 ---
 
@@ -604,20 +644,41 @@ los certificados de firma de código de confianza pública se genere y se use **
 (token USB o HSM), así que las CA ya no entregan un `.pfx` suelto. Desde el **1 de marzo de 2026** la
 validez máxima de estos certificados es de **460 días**.
 
-| Opción | Para qué sirve | Qué implica |
-| --- | --- | --- |
-| **Certificado autofirmado** | Probar el proceso en tus equipos | Gratis; Windows no lo confía. Sirve para la autoprueba, **no para repartir** |
-| **IV / OV / EV** de una CA (Sectigo, DigiCert, SSL.com…) | Distribuir el programa | Validación de identidad (particular o empresa) y **token USB o HSM**: validez de 460 días y renovación |
-| **Azure Artifact Signing** (antes Trusted Signing) | Firmar desde cualquier equipo o CI sin llevar el token | Servicio en la nube: validación de identidad, suscripción de Azure de pago, desde ~9,99 US$/mes (Basic, 5.000 firmas). Public Trust para particulares solo en EE. UU. o Canadá; los certificados duran 72 horas, de ahí la importancia del sello |
-| **DigiCert KeyLocker / SSL.com eSigner** | Clave en HSM remoto con partners ya conocidos | Se firma con la misma sintaxis de signtool usando su proveedor (KSP/CNG) |
+| Opción | Para quién | Precio publicado | Requisitos y plazos |
+| --- | --- | --- | --- |
+| **Certificado autofirmado** | Probar el proceso en tus equipos | Gratis | Windows no lo confía: sirve para la autoprueba, **no para repartir** |
+| **SSL.com IV** (certificado individual) + **eSigner** | Particular, sin necesidad de empresa | **129 US$/año**; eSigner aparte, desde **20 US$/mes** (20 firmas al mes) o **180 US$/año** (240) | Validación de identidad personal (documento oficial), 3–5 días. Con eSigner no hay token: la clave vive en un HSM en la nube |
+| **Sectigo OV** | Particular u organización | Desde **536,25 US$/año** (es el precio de la modalidad a cinco años) | Sectigo emite OV también a personas; la clave va en **token USB o HSM** |
+| **Certum** (Standard / Open Source, en la nube) | Particular, incluida la UE | Open Source desde **58 US$**, Standard desde **249 US$** (la tienda no aclara el periodo) | Identidad y una factura de suministros a su nombre; en la nube no hace falta token |
+| **Azure Artifact Signing** (antes Trusted Signing) | Firmar desde cualquier equipo o CI sin llevar token | **9,99 US$/mes** (Basic, 5.000 firmas; 0,005 US$ cada una de más) o **99,99 US$/mes** (Premium, 100.000) | Validación de identidad. **Public Trust para particulares solo si resides en EE. UU. o Canadá** (las organizaciones también en la UE, Reino Unido, Japón…): 1–20 días hábiles. Los certificados duran 72 horas, de ahí que el sello de tiempo sea imprescindible |
+| **DigiCert KeyLocker** | Organización validada | Desde **83 US$/mes** (996 US$/12 meses) | **Hace falta una organización**: el certificado va a nombre de la empresa. 1.000 firmas por certificado y año |
+| **GlobalSign** | Empresa legalmente registrada | OV desde **529 US$/año**, EV desde **669 US$/año** | Solo se emite a organizaciones; token USB incluido |
+| **SignPath Foundation** | Proyectos de código abierto que cumplan sus condiciones | **Gratis** | Quien aparece como editor es la fundación, no tú, y cada firma se aprueba a mano |
 
 Fuentes: [requisitos del CA/Browser Forum](https://cabforum.org/working-groups/code-signing/requirements/),
-[Azure Artifact Signing](https://learn.microsoft.com/en-us/azure/artifact-signing/quickstart) y
-[precios](https://azure.microsoft.com/en-us/pricing/details/artifact-signing/).
+[precios de Azure Artifact Signing](https://azure.microsoft.com/en-us/pricing/details/artifact-signing/),
+[requisitos y países](https://learn.microsoft.com/en-us/azure/artifact-signing/quickstart),
+[SSL.com](https://www.ssl.com/guide/esigner-pricing-for-code-signing/),
+[Sectigo](https://www.sectigo.com/knowledge-base/detail/OV-Code-Signing-Validation-for-Organizations-and-Individuals),
+[Certum](https://certum.store/buy-a-code-signing-certyficate-store),
+[GlobalSign](https://shop.globalsign.com/en/code-signing) y
+[SignPath](https://signpath.org/). Los precios cambian: confírmalos antes de comprar.
+
+> **Lo que de verdad importa:** firmar no garantiza que SmartScreen deje de avisar la primera vez.
+> Microsoft lo dice así: *«Even when signed, a newly created binary could still show a SmartScreen
+> warning»*, y la reputación puede tardar **semanas y cientos de instalaciones limpias**. Firmar
+> resuelve el «editor **desconocido**» (Windows ya sabe quién publica) y reduce los avisos del
+> antivirus, pero el aviso de «aplicación poco conocida» solo se va con el tiempo. Los certificados
+> **EV** ya no reciben un trato especial: no merecen la pena solo por eso.
+> [Cómo funciona la reputación](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation)
 
 > Firmar un programa para uso propio o interno no necesita ningún certificado de pago: basta con
 > repartirlo tal cual (SmartScreen pedirá «Ejecutar de todas formas») o firmarlo con uno autofirmado y
 > confiar en él **solo en tus equipos**.
+
+La alternativa que evita el aviso sin comprar nada es **publicar como paquete MSIX en Microsoft
+Store**: ahí es Microsoft quien firma el paquete. Un instalador `.exe` distribuido por tu cuenta
+sigue necesitando certificado.
 
 ### 8.5 Cómo se firma en cada caso
 
@@ -699,8 +760,10 @@ un certificado de prueba temporal y firma una **copia** con la misma función qu
 de compilación. Además se ha recorrido el camino completo de la línea de comandos
 (`build_exe.py --onefile --firmar` y `build_installer.py --rebuild --firmar` con un certificado de
 prueba): los cuatro ejecutables de `dist\` salen firmados, con su sello de tiempo RFC 3161, y
-`firmar.py --comprobar` los ve (informa de que la raíz no es de confianza, que es lo esperado con un
-certificado de prueba; con uno de pago la comprobación termina con código 0).
+`firmar.py --comprobar` los ve y avisa de que «hay firma de …, pero la cadena termina en una raíz que
+este equipo no confía» (lo esperado con un certificado de prueba, y con código de salida 1 a
+propósito: en el servidor, ese código 1 tiene que parar la publicación). Con un certificado de
+confianza pública la comprobación termina con código 0.
 
 ### 8.10 Compilar y firmar en un servidor (GitHub Actions)
 
@@ -729,12 +792,12 @@ Qué hay que preparar una sola vez:
    - Variables: `ARTIFACT_SIGNING_ENDPOINT`, `ARTIFACT_SIGNING_ACCOUNT`, `ARTIFACT_SIGNING_PROFILE`.
 
 El flujo, paso a paso: prepara Python y .NET (la biblioteca de firma en la nube lo necesita), instala
-`requirements.txt`, ejecuta la suite de comprobaciones, descarga `signtool` con
-`firmar.py --traer-signtool` (con la versión del SDK fijada en el propio flujo) y la biblioteca
-`Microsoft.ArtifactSigning.Client`, que trae `bin\x64\Azure.CodeSigning.Dlib.dll`; inicia sesión en
-Azure con `azure/login@v3`; escribe el `metadata.json` con la cuenta, el perfil y
-`ExcludeCredentials` (conserva `AzureCliCredential`, que es la sesión que deja el inicio de sesión, y
-descarta las que no existen en un servidor); y compila y firma de una vez:
+`requirements.txt`, descarga `signtool` con `firmar.py --traer-signtool` (con la versión del SDK fijada
+en el propio flujo) y la biblioteca `Microsoft.ArtifactSigning.Client`, que trae
+`bin\x64\Azure.CodeSigning.Dlib.dll`; inicia sesión en Azure con `azure/login@v3`; escribe el
+`metadata.json` con la cuenta, el perfil y `ExcludeCredentials` (conserva `AzureCliCredential`, que es
+la sesión que deja el inicio de sesión, y descarta las que no existen en un servidor); compila y firma
+de una vez; **ejecuta la suite de comprobaciones**; comprueba las firmas y guarda el artefacto:
 
 ```pwsh
 $env:PCTOOLKIT_SIGN_ARGS = "--signtool $signtool --dlib $dlib --metadatos $metadata --sello http://timestamp.acs.microsoft.com"
@@ -747,6 +810,25 @@ Dos detalles que suelen dar problemas: **el signtool del servidor puede ser anti
 en la nube exige una versión reciente y no admite el SDK 20348), por eso el flujo le pasa la ruta
 exacta de `tools\bin\signtool`; y **el sello de tiempo debe ser el de Microsoft**
 (`http://timestamp.acs.microsoft.com`), porque los certificados de este servicio duran 72 horas.
+
+La suite se ejecuta **después** de compilar, no antes: así comprueba los ejecutables de `dist\` que
+acaba de generar el propio flujo (que están los cuatro artefactos, que los accesos directos del
+paquete apuntan donde deben, que la firma se puede leer) en vez de un árbol recién clonado donde
+todavía no hay ninguno. Si algo falla ahí, el trabajo se para y **no se publica ningún artefacto**.
+
+Dos trampas del servidor que ya están resueltas en el flujo y conviene no volver a introducir:
+
+- **No se fuerza `QT_QPA_PLATFORM=offscreen`.** La plataforma «offscreen» de Qt mide el texto con
+  otras métricas de fuente, y la interfaz aparece con desbordes que en un escritorio real no
+existen: eran 15 fallos falsos de la suite. Los servidores Windows de GitHub sí tienen sesión de
+escritorio, así que se dibuja con la plataforma normal. En un equipo sin pantalla se puede usar
+  `PCTOOLKIT_OFFSCREEN=1`, sabiendo que las comprobaciones de desbordes avisarán de más.
+- **Al lanzar Windows PowerShell desde Python hay que quitar `PSModulePath`.** El intérprete hereda
+  la del proceso padre —y en un servidor el padre es PowerShell 7—, con lo que Windows PowerShell
+  5.1 busca sus módulos en el sitio equivocado: el módulo `PKI` no carga y `New-SelfSignedCertificate`
+  falla con un engañoso *«No existe ninguna unidad con el nombre 'Cert'»*. El proyecto lo resuelve en
+  `pctoolkit.core.tools.powershell_environment()`, que usan `firmar.py` y el instalador.
+  [Referencia de Microsoft](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_psmodulepath)
 
 Alternativa: la acción oficial
 [Azure/artifact-signing-action](https://github.com/Azure/artifact-signing-action) hace lo mismo en

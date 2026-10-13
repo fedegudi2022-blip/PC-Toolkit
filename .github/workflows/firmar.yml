@@ -30,9 +30,10 @@ env:
   # Versiones fijadas: cuando Microsoft publique otras, se cambian aquí.
   SDK_BUILDTOOLS_VERSION: 10.0.26100.4188
   SIGNING_CLIENT_VERSION: 1.0.146
-  # Los servidores de compilación no tienen pantalla: la interfaz se dibuja
-  # fuera de pantalla (Qt lo admite) y las capturas de la comprobación siguen saliendo.
-  QT_QPA_PLATFORM: offscreen
+  # No se fuerza `QT_QPA_PLATFORM=offscreen`: la plataforma "offscreen" de Qt mide el
+  # texto con otras métricas de fuente y la interfaz da desbordes que no existen en un
+  # escritorio real (era la causa de 15 de los fallos de la suite en el servidor). Los
+  # servidores de Windows de GitHub tienen sesión de escritorio y pueden dibujar ventanas.
 
 jobs:
   compilar-y-firmar:
@@ -60,9 +61,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-
-      - name: Comprobaciones automáticas
-        run: python tests/smoke_test.py
 
       - name: Descargar signtool (paquete oficial de Microsoft)
         run: python firmar.py --traer-signtool --signtool-version $env:SDK_BUILDTOOLS_VERSION
@@ -158,6 +156,14 @@ jobs:
           # 2. Aplicación completa, desinstalador e instalador; también firmados.
           python build_installer.py --rebuild --firmar
           if ($LASTEXITCODE -ne 0) { throw "Falló la compilación o la firma del instalador (código $LASTEXITCODE)" }
+
+      # La suite va después de compilar, no antes: así comprueba los ejecutables de
+      # `dist\` que se acaban de generar (los cuatro artefactos, los accesos directos
+      # del paquete, las firmas) en vez de un árbol recién clonado donde no hay ninguno.
+      # Si algo falla aquí, el trabajo se para y no se publica ningún artefacto, así que
+      # la firma ya hecha no llega a salir del servidor.
+      - name: Comprobaciones automáticas
+        run: python tests/smoke_test.py
 
       - name: Comprobar que todo quedó firmado
         run: python firmar.py --comprobar

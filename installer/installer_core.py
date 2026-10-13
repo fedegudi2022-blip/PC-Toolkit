@@ -20,6 +20,7 @@ Decisiones de diseño:
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -43,6 +44,11 @@ RUN_VALUE = "PCToolkit"
 
 UNINSTALLER_NAME = "Desinstalar PC Toolkit.exe"
 APP_EXE_NAME = "PC Toolkit.exe"
+
+# Registro de lo que puso aquí el instalador. Es lo que permite que la desinstalación
+# borre **solo** los archivos de la aplicación: sin él, la alternativa sería vaciar la
+# carpeta entera, y esa carpeta la elige el usuario (podría ser D:\ o Documentos).
+MANIFEST_NAME = ".pctoolkit_instalacion.json"
 
 # La aplicación viaja comprimida dentro del propio instalador, así que la descarga es
 # un solo archivo: se extrae a una carpeta temporal al instalar y se borra al terminar.
@@ -322,6 +328,8 @@ def _powershell(script: str, timeout: int = 60) -> subprocess.CompletedProcess:
     # Se fuerza la salida en UTF-8 para que los mensajes y las rutas con acentos
     # lleguen legibles (si no, PowerShell usa la página de códigos de la consola).
     script = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;" + script
+    from pctoolkit.core.tools import powershell_environment
+
     return subprocess.run(
         ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
         capture_output=True,
@@ -330,6 +338,10 @@ def _powershell(script: str, timeout: int = 60) -> subprocess.CompletedProcess:
         errors="replace",
         timeout=timeout,
         creationflags=NO_WINDOW,
+        # El `PSModulePath` heredado (por ejemplo de PowerShell 7) deja a Windows
+        # PowerShell sin poder cargar sus módulos, y con ellos el COM de los accesos
+        # directos o las carpetas del sistema fallan.
+        env=powershell_environment(),
     )
 
 
@@ -394,6 +406,135 @@ def read_shortcut_target(link: Path) -> str:
     except (OSError, subprocess.SubprocessError):
         return ""
     return (result.stdout or "").strip()
+
+
+def _norm(path: str | os.PathLike[str] | None) -> str:
+    if not path:
+        return ""
+    return os.path.normcase(os.path.abspath(str(path)))
+
+
+def unsafe_target_reason(target: Path | None) -> str:
+    """Por qué no se debe instalar (ni borrar) en esa carpeta; cadena vacía si vale.
+
+    La carpeta de destino la elige el usuario, y tanto la instalación como la
+    desinstalación escriben y borran dentro. Apuntar a la raíz de una unidad, al
+    perfil, al escritorio o a una carpeta del sistema sería catastrófico, así que
+    se rechaza de entrada en vez de confiar en que nadie lo haga.
+    """
+    if target is None:
+        return "No se indicó ninguna carpeta de instalación."
+    ruta = Path(target)
+    normal = _norm(ruta)
+    if os.path.splitdrive(normal)[1] in ("", os.sep):
+        return (
+            f"No se puede instalar en {ruta}: es la raíz de una unidad. "
+            "Elige una carpeta dentro, por ejemplo una nueva llamada «PC Toolkit»."
+        )
+    system_root = os.environ.get("SystemRoot") or r"C:\Windows"
+    unidad = os.environ.get("SystemDrive") or os.path.splitdrive(system_root)[0] or "C:"
+    perfil = os.environ.get("USERPROFILE") or str(Path.home())
+    candidatos = [
+        system_root,
+        os.path.join(system_root, "System32"),
+        os.path.join(unidad + os.sep),
+        os.path.join(unidad + os.sep, "Users"),
+        perfil,
+        os.path.join(perfil, "Desktop"),
+        os.path.join(perfil, "Documents"),
+        os.path.join(perfil, "Downloads"),
+        local_app_data(),
+        roaming_app_data(),
+        os.environ.get("ProgramFiles"),
+        os.environ.get("ProgramFiles(x86)"),
+        os.environ.get("ProgramData"),
+    ]
+    prohibidas = {_norm(item) for item in candidatos if item}
+    if normal in prohibidas:
+        return (
+            f"No se puede instalar en {ruta}: es una carpeta del sistema, del perfil o una "
+            "carpeta personal. Elige una carpeta propia, por ejemplo una nueva llamada «PC Toolkit»."
+        )
+    return ""
+
+
+def manifest_path(folder: Path | None = None) -> Path:
+    return Path(folder or default_install_dir()) / MANIFEST_NAME
+
+
+def read_manifest(folder: Path | None = None) -> dict[str, Any] | None:
+    """Registro de los archivos instalados (None si no hay o no se puede leer)."""
+    try:
+        datos = json.loads(manifest_path(folder).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(datos, dict) or not isinstance(datos.get("archivos"), list):
+        return None
+    return datos
+
+
+def installed_files(folder: Path | None = None) -> list[str]:
+    """Rutas relativas de los archivos que hay ahora en la carpeta de la aplicación."""
+    raiz = Path(folder or default_install_dir())
+    if not raiz.is_dir():
+        return []
+    return sorted(
+        item.relative_to(raiz).as_posix()
+        for item in raiz.rglob("*")
+        if item.is_file() and item.name != MANIFEST_NAME
+    )
+
+
+def write_manifest(folder: Path, files: list[str], version: str) -> bool:
+    """Deja por escrito qué se instaló, con escritura atómica."""
+    ruta = manifest_path(folder)
+    contenido = json.dumps(
+        {
+            "version": version,
+            "instalado": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "archivos": sorted(files),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    temporal = ruta.with_name(ruta.name + ".tmp")
+    temporal.write_text(contenido, encoding="utf-8")
+    os.replace(temporal, ruta)
+    return True
+
+
+def _remove_files(folder: Path, relatives: list[str]) -> tuple[int, list[str]]:
+    """Borra los archivos indicados (rutas relativas). Devuelve (borrados, en uso).
+
+    Se ignoran las rutas absolutas y las que se salen de la carpeta: el registro es un
+    archivo de texto y no se le concede el poder de escribir en otro sitio.
+    """
+    borrados = 0
+    fallidos: list[str] = []
+    for relativo in relatives:
+        parte = Path(str(relativo))
+        if parte.is_absolute() or ".." in parte.parts:
+            continue
+        ruta = Path(folder) / parte
+        try:
+            if ruta.is_file():
+                ruta.unlink()
+                borrados += 1
+        except OSError:
+            fallidos.append(str(relativo))
+    return borrados, fallidos
+
+
+def _prune_empty_dirs(folder: Path) -> None:
+    """Retira las subcarpetas que hayan quedado vacías (no toca la carpeta raíz)."""
+    raiz = Path(folder)
+    for root, _dirs, _files in os.walk(raiz, topdown=False):
+        if Path(root) == raiz:
+            continue
+        try:
+            os.rmdir(root)
+        except OSError:
+            pass  # todavía tiene algo o está en uso
 
 
 def remove_path(path: Path) -> bool:
@@ -618,8 +759,14 @@ def _install(
             f"No se encuentra la aplicación en {origin}. Genera antes el ejecutable con «build_exe.bat»."
         )
         return result
-    if Path(options.target_dir).resolve() == Path(origin).resolve():
+    destino = Path(options.target_dir)
+    if destino.resolve() == Path(origin).resolve():
         result.message = "La carpeta de destino es la misma que la de origen."
+        return result
+
+    motivo = unsafe_target_reason(destino)
+    if motivo:
+        result.message = motivo
         return result
 
     running = is_running()
@@ -629,17 +776,47 @@ def _install(
             "instalación quede del todo limpia."
         )
 
+    anterior = read_manifest(destino)
+    if anterior is not None:
+        # Actualización: se quitan antes los archivos de la versión anterior para que no
+        # queden restos (DLL viejas o módulos que ya no se usan) al copiar encima.
+        note("Quitando la versión anterior…")
+        _quitados, bloqueados = _remove_files(
+            destino, [*anterior.get("archivos", []), MANIFEST_NAME]
+        )
+        if bloqueados:
+            result.warnings.append(
+                f"{len(bloqueados)} archivo(s) de la versión anterior estaban en uso; se han sobrescrito."
+            )
+    elif destino.is_dir() and any(item.is_file() for item in destino.rglob("*")):
+        result.warnings.append(
+            f"En {destino} ya había archivos que no puso PC Toolkit: la aplicación se instala "
+            "junto a ellos y al desinstalar se conservarán."
+        )
+
     note("Copiando archivos…")
     try:
-        Path(options.target_dir).mkdir(parents=True, exist_ok=True)
-        shutil.copytree(origin, options.target_dir, dirs_exist_ok=True)
+        destino.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(origin, destino, dirs_exist_ok=True)
     except OSError as exc:
         result.message = f"No se pudieron copiar los archivos: {exc}"
         return result
-    result.bytes, result.files = directory_size(options.target_dir)
+    result.bytes, result.files = directory_size(destino)
     if result.files == 0:
         result.message = "La copia se quedó vacía: revisa los permisos de la carpeta de destino."
         return result
+
+    # El registro se escribe **después** de medir, para que la medida describa lo que se
+    # ha instalado y no se cuente a sí misma.
+    from pctoolkit.core.config import APP_VERSION
+
+    try:
+        write_manifest(destino, installed_files(destino), APP_VERSION)
+    except OSError as exc:
+        result.warnings.append(
+            f"No se pudo dejar el registro de archivos instalados: {exc}. "
+            "La desinstalación conservará la carpeta para no borrar nada ajeno."
+        )
 
     uninstaller = uninstaller_executable(options.target_dir)
     if not uninstaller.exists():
@@ -665,8 +842,6 @@ def _install(
             result.warnings.append(message)
 
     note("Registrando la aplicación…")
-    from pctoolkit.core.config import APP_VERSION
-
     ok, message = write_uninstall_entry(options, version=APP_VERSION, size_bytes=result.bytes)
     if not ok:
         result.warnings.append(message)
@@ -705,6 +880,9 @@ def uninstall(
     folder = Path(target_dir or default_install_dir())
     desktop_path = Path(desktop) if desktop else desktop_dir()
     menu_path = Path(start_menu) if start_menu else start_menu_dir()
+    # La carpeta la eligió el usuario: si apunta al sistema, al perfil o a la raíz de
+    # una unidad, se quitan los accesos directos y el registro pero no se toca nada ahí.
+    motivo = unsafe_target_reason(folder)
 
     for link in (desktop_path / f"{APP_DISPLAY_NAME}.lnk", menu_path / f"{APP_DISPLAY_NAME}.lnk"):
         if link.exists() and remove_path(link):
@@ -736,18 +914,66 @@ def uninstall(
         result.message = "Desinstalado (se ha conservado la carpeta de programa)."
         return result
 
-    note("Eliminando la carpeta de programa…")
-    if schedule_directory_removal(folder):
-        result.removed.append(str(folder))
-        result.message = "Desinstalado por completo."
-    elif remove_path(folder):
-        result.removed.append(str(folder))
-        result.message = "Desinstalado por completo."
-    else:
+    if motivo:
+        result.warnings.append(f"{motivo} La carpeta se ha conservado.")
+        result.message = "Desinstalado; se ha conservado la carpeta indicada."
+        result.ok = True
+        return result
+
+    if not Path(folder).is_dir():
+        result.message = "No se encontró la carpeta de la aplicación; no había archivos que borrar."
+        result.ok = True
+        return result
+
+    note("Eliminando los archivos instalados…")
+    manifest = read_manifest(folder)
+    if manifest is None:
+        # Sin el registro de lo que puso aquí la aplicación, vaciar la carpeta se
+        # llevaria también lo que haya puesto el usuario: se conserva tal cual.
         result.warnings.append(
-            "No se pudo borrar la carpeta del programa; ciérrala y bórrala a mano si queda algo."
+            f"No hay registro de los archivos instalados en {folder}: se han quitado los accesos "
+            "directos, el registro y el arranque automático, pero la carpeta se conserva. "
+            "Bórrala a mano si quieres liberar el espacio."
         )
-        result.message = "Desinstalación incompleta."
+        result.message = "Desinstalación parcial: se ha conservado la carpeta de programa."
+        result.ok = True
+        return result
+
+    borrados, en_uso = _remove_files(folder, [*manifest.get("archivos", []), MANIFEST_NAME])
+    if borrados:
+        result.removed.append(f"{borrados} archivos de {folder}")
+    if en_uso:
+        result.warnings.append(
+            f"{len(en_uso)} archivo(s) seguían en uso (el desinstalador se está ejecutando); "
+            "se quitarán al borrar la carpeta."
+        )
+    _prune_empty_dirs(folder)
+
+    # Lo que quede y no esté en el registro no es nuestro: si lo hay, la carpeta se
+    # queda donde está y se dice qué se ha respetado.
+    instalados = {str(item) for item in manifest.get("archivos", [])}
+    ajenos = [
+        item
+        for item in Path(folder).rglob("*")
+        if item.is_file() and item.relative_to(folder).as_posix() not in instalados
+    ]
+    if ajenos:
+        result.warnings.append(
+            f"Se conservaron {len(ajenos)} archivo(s) que no instaló PC Toolkit ("
+            + ", ".join(sorted(item.name for item in ajenos)[:5])
+            + "). La carpeta no se ha borrado para no llevárselos por delante."
+        )
+        result.message = "Desinstalado; se ha conservado la carpeta con tus archivos."
+    else:
+        note("Eliminando la carpeta de programa…")
+        if remove_path(folder) or schedule_directory_removal(folder):
+            result.removed.append(str(folder))
+            result.message = "Desinstalado por completo."
+        else:
+            result.warnings.append(
+                "No se pudo borrar la carpeta del programa; ciérrala y bórrala a mano si queda algo."
+            )
+            result.message = "Desinstalación incompleta."
     result.ok = True
     if not result.message:
         result.message = result.summary()

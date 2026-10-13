@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 
 from ..core.config import COLORS, format_bytes
 from ..core.history import HistoryStore
-from . import icons
+from . import icons, theme
 from .chart import SERIES, HistoryChart
 from .widgets import (
     ActionCard,
@@ -208,13 +208,13 @@ class DashboardPage(QWidget):
         head.addStretch(1)
 
         self.legend_buttons: dict[str, QPushButton] = {}
-        for key, label, color in SERIES:
+        for key, label, color_key in SERIES:
             button = QPushButton(f"  {label}")
             button.setObjectName("Legend")
             button.setCheckable(True)
             button.setChecked(True)
             button.setCursor(Qt.PointingHandCursor)
-            button.setIcon(icons.icon_from_pixmap(icons.dot_pixmap(color, 9)))
+            button.setIcon(icons.icon_from_pixmap(icons.dot_pixmap(COLORS[color_key], 9)))
             button.toggled.connect(lambda checked, name=key: self._toggle_series(name, checked))
             self.legend_buttons[key] = button
             head.addWidget(button)
@@ -226,11 +226,11 @@ class DashboardPage(QWidget):
         stats = QHBoxLayout()
         stats.setSpacing(16)
         self.history_stats: dict[str, QLabel] = {}
-        for key, label, color in SERIES:
+        for key, label, color_key in SERIES:
             holder = QHBoxLayout()
             holder.setSpacing(6)
             dot = QLabel()
-            dot.setPixmap(icons.dot_pixmap(color, 8))
+            dot.setPixmap(icons.dot_pixmap(COLORS[color_key], 8))
             holder.addWidget(dot)
             text = QLabel(f"{label}: sin datos")
             text.setObjectName("Muted")
@@ -268,7 +268,7 @@ class DashboardPage(QWidget):
         count = len(self._samples)
         if not count:
             self.history_info.setText("Sin datos todavía")
-            for key, label, _color in SERIES:
+            for key, label, _color_key in SERIES:
                 self.history_stats[key].setText(f"{label}: sin datos")
             self.history_range.setText("")
             return
@@ -281,7 +281,7 @@ class DashboardPage(QWidget):
             else f"Datos de las últimas {span_minutes / 60:.1f} h"
         )
         self.history_range.setText(span)
-        for key, label, color in SERIES:
+        for key, label, _color_key in SERIES:
             values = [getattr(sample, key) for sample in self._samples]
             self.history_stats[key].setText(
                 f"{label}: media {sum(values) / len(values):.0f}% · máx {max(values):.0f}%"
@@ -378,6 +378,8 @@ class DashboardPage(QWidget):
 
         throughput = snap.net_down_rate + snap.net_up_rate
         net_ratio = min(100.0, throughput / (125 * 1024 * 1024) * 100.0)  # relativo a 1 Gbps
+        # La red no tiene umbral de aviso: se queda con el color de «normal» y se
+        # distingue por la etiqueta y las cifras, no por el color.
         self.net_gauge.set_value(
             net_ratio,
             COLORS["accent"],
@@ -388,9 +390,11 @@ class DashboardPage(QWidget):
         self.health_meter.set_score(score, snap.health_label)
         self.health_badge.setText(snap.health_label)
         color = COLORS["good"] if score >= 70 else (COLORS["warn"] if score >= 45 else COLORS["bad"])
+        # El relleno y el borde salen del mismo color de estado con transparencia: el
+        # ayudante evita el formato de ocho dígitos, que Qt interpreta al revés.
         self.health_badge.setStyleSheet(
-            f"#HealthBadge {{ background: {color}22; color: {color}; "
-            f"border: 1px solid {color}55; }}"
+            f"#HealthBadge {{ background: {theme.with_alpha(color, 34)}; color: {color}; "
+            f"border: 1px solid {theme.with_alpha(color, 85)}; }}"
         )
         self.health_score.setText(f"Puntuación {score:.0f}/100")
 

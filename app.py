@@ -26,6 +26,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from pctoolkit.core.appearance import MODES  # noqa: E402
 from pctoolkit.core.config import APP_NAME, APP_VERSION  # noqa: E402
 from pctoolkit.core.settings import AppSettings  # noqa: E402
+from pctoolkit.core.single_instance import WAIT_AFTER_RESTART_MS, SingleInstance  # noqa: E402
 from pctoolkit.ui.shell import MainWindow  # noqa: E402
 from pctoolkit.ui.theme import apply_theme  # noqa: E402
 
@@ -123,7 +124,7 @@ def _capture_screens(window, output: Path, analyze_path: str | None = None) -> i
 
 def _run_maintenance(args) -> int:
     """Mantenimiento desatendido: sin ventana y con salida por consola."""
-    from pctoolkit.core import maintenance, memory as memory_core
+    from pctoolkit.core import maintenance, memory as memory_core, tools as tools_core
     from pctoolkit.core.scheduler import MaintenanceSchedule
 
     # QCoreApplication basta: no hay interfaz, pero las clases del núcleo usan Qt.
@@ -134,6 +135,14 @@ def _run_maintenance(args) -> int:
     schedule = MaintenanceSchedule.from_dict(settings.schedule_config.to_dict())
     schedule.enabled = True
     options = memory_core.MemoryOptions.from_dict(settings.memory_options.to_dict())
+    # Perder esto borraría archivos temporales de hace segundos (por ejemplo, los de
+    # una instalación en curso), así que se aplica el mismo suelo que en la interfaz.
+    antiguedad = tools_core.min_temp_age_hours(args.antiguedad)
+    if antiguedad != float(args.antiguedad):
+        print(
+            f"Aviso: la antigüedad mínima es de {tools_core.MIN_TEMP_AGE_HOURS:g} hora(s); "
+            f"se usan {antiguedad:g} en vez de {args.antiguedad:g}."
+        )
     report = maintenance.run_maintenance(
         schedule,
         memory_options=options,
@@ -142,7 +151,7 @@ def _run_maintenance(args) -> int:
         clean=False if args.sin_limpieza else None,
         export=False if args.sin_informe else None,
         release_memory=True if args.liberar_memoria else None,
-        min_age_hours=args.antiguedad,
+        min_age_hours=antiguedad,
         register=not args.sin_registro,
     )
     print(report.summary())
@@ -180,6 +189,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Arranca en segundo plano, solo con el icono de la bandeja (para el inicio automático)",
     )
     parser.add_argument(
+        "--esperar",
+        action="store_true",
+        help=(
+            "Espera a que la copia anterior se cierre antes de arrancar (lo usa el "
+            "reinicio con permisos de administrador)"
+        ),
+    )
+    parser.add_argument(
         "--mantenimiento",
         action="store_true",
         help="Ejecuta el mantenimiento desatendido (limpieza, memoria e informe) y sale",
@@ -193,7 +210,7 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         default=24.0,
         metavar="HORAS",
-        help="Solo borra temporales con más de esas horas",
+        help="Solo borra temporales con más de esas horas (mínimo 1; por debajo se aplica 1)",
     )
     parser.add_argument(
         "--simular",
@@ -216,7 +233,22 @@ def main(argv: list[str] | None = None) -> int:
     settings = AppSettings()
     apply_theme(app, args.tema or settings.theme_mode)
 
+    # Una sola copia a la vez. Sin esto, el arranque automático más el acceso directo
+    # (o el reinicio con permisos) dejan dos iconos de bandeja, dos guardias de memoria
+    # automática y dos procesos anotando en el historial. Las capturas quedan fuera de
+    # la guarda porque su objetivo es justamente abrir una ventana y salir.
+    guarda: SingleInstance | None = None
+    if not args.screenshot:
+        guarda = SingleInstance(app)
+        if not guarda.acquire(WAIT_AFTER_RESTART_MS if args.esperar else 0):
+            # Ya había una copia abierta: se le pide que saque su ventana y esta se va.
+            guarda.notify_existing()
+            print(f"{APP_NAME} ya está abierto; se ha traído su ventana a delante.")
+            return 0
+
     window = MainWindow(settings)
+    if guarda is not None:
+        guarda.listen(window.show_from_another_instance)
     if args.demo:
         _seed_demo_tasks(window)
 
@@ -241,7 +273,12 @@ def main(argv: list[str] | None = None) -> int:
             "Se ha iniciado en segundo plano. Haz clic en el icono para abrir la ventana.",
             warning=False,
         )
-    return app.exec()
+    try:
+        return app.exec()
+    finally:
+        if guarda is not None:
+            guarda.stop_listening()
+            guarda.release()
 
 
 if __name__ == "__main__":

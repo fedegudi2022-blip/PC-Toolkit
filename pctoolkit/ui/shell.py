@@ -271,6 +271,10 @@ class MainWindow(QMainWindow):
         self.dashboard.status.connect(self.set_status)
         self.optimize_page.status.connect(self.set_status)
         self.startup_page.status.connect(self.set_status)
+        # Reiniciar con permisos deja la copia elevada esperando: esta tiene que cerrarse
+        # para soltar el bloqueo de instancia única y que solo quede una ventana abierta.
+        self.optimize_page.restart_requested.connect(self._restart_as_admin)
+        self.startup_page.restart_requested.connect(self._restart_as_admin)
         self.optimize_page.release_requested.connect(lambda: self.release_memory_now("manual"))
         self.optimize_page.settings_changed.connect(self._on_memory_settings)
         self.schedule_page.status.connect(self.set_status)
@@ -299,6 +303,24 @@ class MainWindow(QMainWindow):
         """Sale de verdad (desde la bandeja o al desactivarla)."""
         self._force_quit = True
         self.close()
+
+    def _restart_as_admin(self) -> None:
+        """Cierra esta copia tras lanzar la elevada, para no dejar dos instancias."""
+        self.set_status("Reiniciando con permisos de administrador…")
+        self.quit_application()
+
+    def show_from_another_instance(self) -> None:
+        """Otra copia ha intentado abrirse: se trae esta ventana a delante.
+
+        La segunda instancia no llega a arrancar (el bloqueo la para), así que lo único
+        que se hace aquí es devolver el foco a la que ya estaba.
+        """
+        if self.isMinimized():
+            self.showNormal()
+        elif not self.isVisible():
+            self.show()
+        self.raise_()
+        self.activateWindow()
 
     def open_alert_settings(self) -> None:
         paleta_antes = active_palette()

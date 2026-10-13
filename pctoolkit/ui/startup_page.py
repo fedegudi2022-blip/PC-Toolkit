@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 from ..core import startup as startup_core
 from ..core import undo as undo_core
 from ..core.config import COLORS
-from . import icons
+from . import icons, theme
 from .optimize_page import ElidedLabel, relaunch_elevated
 from .widgets import Card, IconBadge, Muted, PageHeader, SectionTitle, hline
 from .workers import run_in_background
@@ -34,9 +34,13 @@ KIND_ICONS = {
     startup_core.KIND_TAREA: "calendar",
 }
 
+# El coste es una estimación del tipo de entrada, no una alerta: solo el «Medio»
+# (una tarea programada, que Windows lanza aparte) pide atención. El rojo se dejó de
+# usar aquí porque una entrada que ya no arranca no es un estado crítico, y su aviso
+# propio («Ya no existe») ya lo dice en ámbar.
 COST_COLORS = {
     startup_core.COST_MEDIO: COLORS["warn"],
-    startup_core.COST_NULO: COLORS["bad"],
+    startup_core.COST_NULO: COLORS["text_dim"],
     startup_core.COST_LIGERO: COLORS["text_muted"],
 }
 
@@ -47,7 +51,7 @@ def pill(text: str, color: str, parent: QWidget | None = None) -> QLabel:
     """Etiqueta redondeada y coloreada, como las del registro de tareas."""
     label = QLabel(text, parent)
     label.setStyleSheet(
-        f"background: {color}1F; color: {color}; border-radius: 9px;"
+        f"background: {theme.with_alpha(color, 31)}; color: {color}; border-radius: 9px;"
         "padding: 2px 8px; font-size: 11px;"
     )
     return label
@@ -167,6 +171,9 @@ class StartupPage(QWidget):
     """Lista lo que arranca con Windows y permite desactivarlo de forma reversible."""
 
     status = Signal(str)
+    # La ventana tiene que cerrarse tras lanzar la copia con permisos; si no, quedarían
+    # dos instancias con dos iconos de bandeja y dos guardias de memoria.
+    restart_requested = Signal()
 
     def __init__(self, store: undo_core.UndoStore | None = None, launcher=None, parent=None) -> None:
         super().__init__(parent)
@@ -372,7 +379,7 @@ class StartupPage(QWidget):
                 "shield",
                 "Del sistema",
                 str(data["con_admin"]),
-                COLORS["magenta"] if data["con_admin"] else COLORS["text_muted"],
+                COLORS["warn"] if data["con_admin"] else COLORS["text_muted"],
                 "Entradas de todos los usuarios: cambiarlas pide permisos de administrador.",
             ),
         ]
@@ -523,6 +530,7 @@ class StartupPage(QWidget):
         )
         if answer == QMessageBox.Yes and relaunch_elevated():
             self.status.emit("Pidiendo permisos de administrador… la aplicación se reiniciará.")
+            self.restart_requested.emit()
 
     def _undo(self, action: undo_core.UndoAction) -> None:
         ok, message = undo_core.revert_action(self.store, action)
