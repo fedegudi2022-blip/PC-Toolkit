@@ -470,7 +470,7 @@ pctoolkit/
   ui/                           Interfaz PySide6: temas (claro y oscuro), anuncios accesibles y
                                 roles de los widgets propios, iconos, tarjetas, gráfica, bandeja,
                                 ventana principal y una página por módulo
-tests/smoke_test.py             564 comprobaciones automáticas (núcleo, interfaz, instalador y firma)
+tests/smoke_test.py             568 comprobaciones automáticas (núcleo, interfaz, instalador y firma)
 tools/
   app_icon.py                   Dibuja el icono de la aplicación
   medir_consumo.py              Mide el consumo de CPU/RAM de cada perfil de muestreo
@@ -545,13 +545,13 @@ de instalar, ejecutar y desinstalar.
 Pruebas:
 
 ```bat
-.venv\Scripts\python.exe tests\smoke_test.py           564 comprobaciones
+.venv\Scripts\python.exe tests\smoke_test.py           568 comprobaciones
 .venv\Scripts\python.exe tools\verificar_instalacion.py  Instala de verdad y desinstala al terminar
 set PCTOOLKIT_OFFSCREEN=1                               si no hay pantalla disponible
 ```
 
 El total depende del equipo: unas pocas comprobaciones solo se hacen si el sistema tiene bandeja,
-si hay `signtool` disponible o si `dist\` ya está compilado. Con la plataforma real de Qt salen 564;
+si hay `signtool` disponible o si `dist\` ya está compilado. Con la plataforma real de Qt salen 568;
 en modo sin pantalla son unas cuantas menos, porque las que necesitan una bandeja de verdad no se
 ejecutan (la comprobación de que la bandeja solo se usa si el sistema la tiene sí se hace siempre).
 
@@ -582,7 +582,7 @@ RFC 3161**, y después **verifica** cada firma con `signtool verify /pa /v`:
 ```bat
 firmar.bat                     Firma con el certificado disponible en el almacén
 firmar.bat --estado            Informe: signtool, certificados y firmas actuales
-firmar.bat --traer-signtool    Descarga signtool del paquete oficial de Microsoft
+firmar.bat --traer-signtool    Descarga signtool del paquete oficial de Microsoft y termina ahí
 firmar.bat --huella 1A2B3C…    Certificado del almacén de Windows por huella
 firmar.bat --sujeto "Mi SL"    Certificado del almacén por nombre
 firmar.bat --pfx llave.pfx     Archivo PFX
@@ -633,9 +633,11 @@ sin instalar nada desde el paquete oficial de Microsoft
 python firmar.py --traer-signtool
 ```
 
-Eso descarga el paquete (unos 21 MB) y deja `signtool.exe` en `tools\bin\signtool\` (esa carpeta no se
-versiona). La herramienta busca signtool, por este orden: `--signtool`, el `PATH`, `tools\bin`,
-el Windows SDK y la caché de NuGet.
+Eso descarga el paquete (unos 21 MB), deja `signtool.exe` en `tools\bin\signtool\` (esa carpeta no se
+versiona) y **termina**: descargar no es firmar, así que no sigue al firmado salvo que se pida algo
+más. Ese es justo el uso del servidor de compilación, que lo ejecuta antes de generar los
+ejecutables, cuando `dist\` todavía está vacío. La herramienta busca signtool, por este orden:
+`--signtool`, el `PATH`, `tools\bin`, el Windows SDK y la caché de NuGet.
 
 ### 8.4 Qué certificado se puede usar hoy
 
@@ -792,8 +794,9 @@ Qué hay que preparar una sola vez:
    - Variables: `ARTIFACT_SIGNING_ENDPOINT`, `ARTIFACT_SIGNING_ACCOUNT`, `ARTIFACT_SIGNING_PROFILE`.
 
 El flujo, paso a paso: prepara Python y .NET (la biblioteca de firma en la nube lo necesita), instala
-`requirements.txt`, descarga `signtool` con `firmar.py --traer-signtool` (con la versión del SDK fijada
-en el propio flujo) y la biblioteca `Microsoft.ArtifactSigning.Client`, que trae
+`requirements.txt`, descarga `signtool` con `firmar.py --traer-signtool` (con la versión del SDK
+fijada en el propio flujo; ese paso descarga y termina, sin intentar firmar nada todavía) y la
+biblioteca `Microsoft.ArtifactSigning.Client`, que trae
 `bin\x64\Azure.CodeSigning.Dlib.dll`; inicia sesión en Azure con `azure/login@v3`; escribe el
 `metadata.json` con la cuenta, el perfil y `ExcludeCredentials` (conserva `AzureCliCredential`, que es
 la sesión que deja el inicio de sesión, y descarta las que no existen en un servidor); compila y firma

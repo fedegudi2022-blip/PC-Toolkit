@@ -8,7 +8,7 @@ que el archivo no se ha modificado desde que se firmó.
 Uso habitual (después de compilar con build_exe.bat y build_installer.bat):
 
     python firmar.py --estado                  Informe: signtool, certificados y firmas actuales
-    python firmar.py --traer-signtool          Descarga signtool (SDK BuildTools) a tools\\bin
+    python firmar.py --traer-signtool          Descarga signtool (SDK BuildTools) a tools\\bin y sale
     python firmar.py --huella ABC123…          Firma con un certificado de tu almacén de Windows
     python firmar.py --pfx llave.pfx           Firma con un archivo PFX
     python firmar.py --sujeto "Mi Empresa SL"  Firma buscando el certificado por nombre
@@ -598,6 +598,19 @@ def build_spec(args) -> CertificateSpec:
     return CertificateSpec(modo="auto")
 
 
+def hay_otra_tarea(args) -> bool:
+    """¿Además de descargar signtool se pidió otra cosa?
+
+    `--traer-signtool` es un paso previo: se descarga y se termina, salvo que se haya
+    pedido además firmar, comprobar o ver el informe. Es justo lo que necesita el
+    servidor de compilación, que lo ejecuta **antes** de generar nada, cuando todavía
+    no hay ningún ejecutable en `dist\\`.
+    """
+    if args.estado or args.comprobar or args.autoprueba or args.archivos:
+        return True
+    return build_spec(args).modo != "auto"
+
+
 def sign_artifacts(signtool: Path, cert: CertificateSpec, files: list[Path], sello: str, descripcion: str) -> bool:
     """Firma los archivos y verifica el resultado."""
     print(f"Firmando con {cert.describe()}")
@@ -879,6 +892,11 @@ def main(argv: list[str] | None = None) -> int:
         if not destino:
             return 1
         print(f"signtool disponible en {destino}")
+        # Descargar no es firmar: si no se pidió nada más, aquí termina el trabajo con
+        # código 0. Sin esta salida se seguiría al firmado, y con `dist\` vacío el
+        # proceso acabaría con código 1 justo después de haber descargado bien.
+        if not hay_otra_tarea(args):
+            return 0
 
     signtool = find_signtool(args.signtool)
     if args.estado:

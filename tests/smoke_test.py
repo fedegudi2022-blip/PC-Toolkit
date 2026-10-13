@@ -2683,6 +2683,28 @@ def test_firma() -> None:
     opciones = parser.parse_args(["--pfx", "llave.pfx", "--sin-sello", "dist\\PC Toolkit.exe"])
     check("Opciones de firma reconocidas", opciones.pfx == "llave.pfx" and opciones.sin_sello and opciones.archivos)
 
+    # `--traer-signtool` es un paso previo, no una firma: tiene que terminar ahí mismo
+    # (el servidor de compilación lo ejecuta antes de generar los ejecutables, cuando
+    # `dist\\` todavía está vacío). Se ejecuta `main` con la descarga sustituida para no
+    # bajar el paquete de 21 MB en cada pasada de la suite.
+    descarga_real = firmar.fetch_signtool
+    firmar.fetch_signtool = lambda **_argumentos: Path("tools") / "bin" / "signtool" / "signtool.exe"
+    try:
+        codigo = firmar.main(["--traer-signtool"])
+        pedido = [
+            firmar.hay_otra_tarea(parser.parse_args(["--traer-signtool", extra]))
+            for extra in ("--estado", "--comprobar", "--pfx llave.pfx", "dist\\PC Toolkit.exe")
+        ]
+        sigue = firmar.main(["--traer-signtool", "--pfx", "no_existe.pfx"])
+        firmar.fetch_signtool = lambda **_argumentos: None
+        codigo_fallo = firmar.main(["--traer-signtool"])
+    finally:
+        firmar.fetch_signtool = descarga_real
+    check("\u00ab--traer-signtool\u00bb a secas termina bien (no sigue al firmado)", codigo == 0, f"c\u00f3digo {codigo}")
+    check("\u00ab--traer-signtool\u00bb con otra tarea pedida no se corta", all(pedido), str(pedido))
+    check("Descargar signtool no firma por su cuenta", sigue != 0, f"c\u00f3digo {sigue}")
+    check("Si la descarga falla, el c\u00f3digo de salida es 1", codigo_fallo == 1, f"c\u00f3digo {codigo_fallo}")
+
 
 def test_firma_en_la_compilacion() -> None:
     """Firma integrada en los scripts de compilación (`--firmar`).
