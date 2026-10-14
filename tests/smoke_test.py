@@ -3458,6 +3458,42 @@ def test_firma() -> None:
     check("Si la descarga falla, el c\u00f3digo de salida es 1", codigo_fallo == 1, f"c\u00f3digo {codigo_fallo}")
 
 
+def strip_pe_signature(path: Path) -> bool:
+    """Deja un ejecutable como si nunca se hubiera firmado (tabla de certificados a cero).
+
+    La suite necesita una copia **sin firma** para poder comprobar que la firma que acaba
+    en el archivo es la del certificado de prueba. Y no siempre la tiene: con `dist\\`
+    compilado los artefactos pueden venir firmados por el flujo de compilación, y sin
+    `dist\\` la muestra es `where.exe`, firmado por Microsoft. `signtool remove` no sirve
+    para eso (falla con el error 0x57 en binarios del sistema), así que se vacía la
+    entrada de la tabla de certificados del propio PE, que es de donde Windows lee la
+    firma. Devuelve si había algo que quitar.
+    """
+    datos = bytearray(path.read_bytes())
+    if datos[:2] != b"MZ":
+        return False
+    cabecera = int.from_bytes(datos[0x3C:0x40], "little")
+    if datos[cabecera:cabecera + 4] != b"PE\0\0":
+        return False
+    inicio_opcional = cabecera + 24
+    magia = int.from_bytes(datos[inicio_opcional:inicio_opcional + 2], "little")
+    bases = {0x10B: inicio_opcional + 96, 0x20B: inicio_opcional + 112}  # PE32 y PE32+
+    if magia not in bases:
+        return False
+    entrada = bases[magia] + 4 * 8  # la cuarta entrada de datos es la tabla de certificados
+    if entrada + 8 > len(datos):
+        return False
+    inicio_firma = int.from_bytes(datos[entrada:entrada + 4], "little")
+    tamano_firma = int.from_bytes(datos[entrada + 4:entrada + 8], "little")
+    if not inicio_firma or not tamano_firma:
+        return False  # ya estaba sin firma
+    datos[entrada:entrada + 8] = b"\0" * 8
+    if inicio_firma + tamano_firma <= len(datos):
+        datos[inicio_firma:inicio_firma + tamano_firma] = b"\0" * tamano_firma
+    path.write_bytes(datos)
+    return True
+
+
 def test_firma_en_la_compilacion() -> None:
     """Firma integrada en los scripts de compilación (`--firmar`).
 
@@ -3567,13 +3603,35 @@ def test_firma_en_la_compilacion() -> None:
         clave.write_text(password + "\n", encoding="utf-8")
         pfx = carpeta / "prueba.pfx"
         huella, mensaje = firmar._create_test_certificate(pfx, password)  # noqa: SLF001
+        # Solo se anota si falla: así el recuento de las guías no cambia por crear el
+        # certificado, que es lo que se hace aquí antes de cualquier firma.
         if not huella:
             check("Certificado de prueba para firmar en la compilaci\u00f3n", False, mensaje)
             return
         try:
+            if not (ROOT / "dist" / "PC Toolkit.exe").exists():
+                # Sin `dist\` no hay muestra válida para firmar de verdad. La única
+                # candidata sería `where.exe`, y los binarios del sistema van firmados por
+                # **catálogo**: Windows los da por buenos por el catálogo de Microsoft
+                # aunque se les ponga encima la firma de prueba (y `signtool remove` no
+                # puede quitarla: falla con el error 0x57), así que comprobarían lo que no
+                # es. Se anotan omitidas, como el resto de las que piden los ejecutables.
+                for nombre in (
+                    "Firma real al compilar (omitida: sin dist\\ compilado)",
+                    "El certificado con el que se firmó (omitida: sin dist\\ compilado)",
+                    "signtool lee la firma creada (omitida: sin dist\\ compilado)",
+                    "El comprobador de firmas explica que la firma no es de fiar (omitida: sin dist\\ compilado)",
+                    "build_installer.py firma los cuatro artefactos (omitida: sin dist\\ compilado)",
+                ):
+                    check(nombre, True, "compila con build_installer.py para comprobarlo")
+                return
             argumentos = ["--pfx", str(pfx), "--password-file", str(clave)]
             copia = carpeta / "muestra.exe"
             _shutil.copyfile(muestra, copia)
+            # La copia tiene que llegar sin firma: si no, las comprobaciones de abajo
+            # —que esperan la firma del certificado de prueba y que este equipo no se fíe
+            # de ella— estarían mirando la firma que ya traía el archivo.
+            strip_pe_signature(copia)
             # La salida de signtool se guarda: en la suite solo se muestra si algo falla.
             salida = io.StringIO()
             with contextlib.redirect_stdout(salida):
@@ -3582,6 +3640,7 @@ def test_firma_en_la_compilacion() -> None:
             if not firmada:  # sin red el sello de tiempo no se puede pedir
                 copia = carpeta / "muestra_sin_sello.exe"
                 _shutil.copyfile(muestra, copia)
+                strip_pe_signature(copia)
                 with contextlib.redirect_stdout(salida):
                     firmada = build_exe.sign_executables([copia], argumentos + ["--sin-sello"])
                 info = firmar.signature_info(copia)
