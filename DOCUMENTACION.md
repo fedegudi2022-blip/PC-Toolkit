@@ -841,7 +841,9 @@ Se ejecuta a mano (Actions → *Compilar y firmar (Windows)* → Run workflow) y
 Qué hay que preparar una sola vez:
 
 1. **En Azure**: una cuenta de Artifact Signing y un **perfil de certificado** (*Public Trust* o
-   *Private Trust*, según para quién firmes). La cuenta vive en una región concreta y el `Endpoint`
+   *Private Trust*, según para quién firmes). La cuenta vive dentro de una **suscripción de Azure**,
+   con su método de pago: sin suscripción no se puede crear, y sin ella no hay firma posible (en el
+   equipo no hace falta nada de Azure, solo en el servidor). Está en una región concreta y el `Endpoint`
    tiene que ser el de esa región (`https://weu.codesigning.azure.net` para Europa Occidental,
    `https://eus.codesigning.azure.net` para Este de EE. UU., etc.; la tabla completa está en la
    [documentación oficial](https://learn.microsoft.com/en-us/azure/artifact-signing/quickstart)).
@@ -853,7 +855,13 @@ Qué hay que preparar una sola vez:
    - Secretos: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`.
    - Variables: `ARTIFACT_SIGNING_ENDPOINT`, `ARTIFACT_SIGNING_ACCOUNT`, `ARTIFACT_SIGNING_PROFILE`.
 
-El flujo, paso a paso: prepara Python y .NET (la biblioteca de firma en la nube lo necesita), instala
+Si esos seis valores no están puestos, el flujo se para en el primer paso diciendo cuáles faltan
+(antes `azure/login` fallaba con *«Not all values are present. Ensure 'client-id' and 'tenant-id' are
+supplied.»*, que no explica nada). Y la compilación va **después** del inicio de sesión: sin la
+configuración de Azure no se construye nada —no es que queden ejecutables sin firmar, es que no hay
+ninguno— y el release de la etiqueta no llega a crearse.
+
+El flujo, paso a paso: comprueba que la configuración de Azure está puesta, prepara Python y .NET (la biblioteca de firma en la nube lo necesita), instala
 `requirements.txt`, descarga `signtool` con `firmar.py --traer-signtool` (con la versión del SDK
 fijada en el propio flujo; ese paso descarga y termina, sin intentar firmar nada todavía) y la
 biblioteca `Microsoft.ArtifactSigning.Client`, que trae

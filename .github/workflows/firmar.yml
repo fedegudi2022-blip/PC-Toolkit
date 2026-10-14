@@ -49,6 +49,42 @@ jobs:
       - name: Descargar el código
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      # La configuración de Azure se comprueba antes que nada. Si falta, `azure/login`
+      # fallaba con «Not all values are present. Ensure 'client-id' and 'tenant-id' are
+      # supplied.», que no dice ni qué falta ni qué hacer, y encima después de descargar
+      # signtool y las herramientas de firma. Con esto el trabajo se para en segundos y
+      # el mensaje lleva a DOCUMENTACION.md, apartado 8.10.
+      - name: Comprobar la configuración de firma
+        shell: pwsh
+        env:
+          CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          CUENTA: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          PERFIL: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $faltan = @()
+          foreach ($par in @(
+            @('secreto AZURE_CLIENT_ID', $env:CLIENT_ID),
+            @('secreto AZURE_TENANT_ID', $env:TENANT_ID),
+            @('secreto AZURE_SUBSCRIPTION_ID', $env:SUBSCRIPTION_ID),
+            @('variable ARTIFACT_SIGNING_ENDPOINT', $env:ENDPOINT),
+            @('variable ARTIFACT_SIGNING_ACCOUNT', $env:CUENTA),
+            @('variable ARTIFACT_SIGNING_PROFILE', $env:PERFIL)
+          )) {
+            if (-not $par[1]) { $faltan += $par[0] }
+          }
+          if ($faltan.Count -gt 0) {
+            Write-Host 'Falta la configuración de firma con Azure (Settings -> Secrets and variables -> Actions):'
+            $faltan | ForEach-Object { Write-Host "  - $_" }
+            Write-Host 'Se prepara una sola vez y está explicado paso a paso en DOCUMENTACION.md, apartado 8.10.'
+            Write-Host 'Sin ella no se compila ni se publica nada: la compilación va después del inicio de sesión.'
+            throw "Falta la configuración de firma con Azure ($($faltan -join ', '))."
+          }
+          Write-Host 'Configuración de firma presente.'
+
       - name: Preparar Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
