@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
 
 from . import undo
+from .tools import powershell_environment
 
 IS_WINDOWS = os.name == "nt"
 
@@ -67,6 +68,13 @@ APPROVED_ROOT = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupAppr
 APPROVED_RUN = APPROVED_ROOT + r"\Run"
 APPROVED_RUN32 = APPROVED_ROOT + r"\Run32"
 APPROVED_FOLDER = APPROVED_ROOT + r"\StartupFolder"
+
+# Claves en las que PC Toolkit escribe marcas de activado/desactivado. La lista es cerrada
+# a propósito: de dónde se escribe llega en los datos de la entrada y esos datos vienen
+# también de `deshacer.jsonl`, un archivo de texto que cualquier proceso del usuario puede
+# editar. Sin esta lista, un apunte retocado a mano haría que PC Toolkit escribiera en
+# otra rama del registro (por ejemplo en `Run`, donde arrancaría otra cosa).
+APPROVED_PATHS = (APPROVED_RUN, APPROVED_RUN32, APPROVED_FOLDER)
 
 STARTUP_FOLDER = r"%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
 COMMON_STARTUP_FOLDER = r"%ProgramData%\Microsoft\Windows\Start Menu\Programs\Startup"
@@ -239,30 +247,103 @@ def folder_sources() -> tuple[FolderSource, ...]:
 
 
 # --- Interpretación de un comando ----------------------------------------
-def command_target(command: str) -> str:
-    """Ruta del ejecutable que hay dentro de una línea de comando.
+def _argv_windows(text: str) -> list[str]:
+    """Parte la línea con `CommandLineToArgvW`, la misma función que usa Windows."""
+    try:
+        shell32 = ctypes.windll.shell32  # type: ignore[attr-defined]
+        shell32.CommandLineToArgvW.restype = ctypes.POINTER(ctypes.c_wchar_p)
+        shell32.CommandLineToArgvW.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
+        cuenta = ctypes.c_int(0)
+        argv = shell32.CommandLineToArgvW(str(text), ctypes.byref(cuenta))
+        if not argv:
+            return []
+        try:
+            return [str(argv[indice]) for indice in range(max(0, cuenta.value))]
+        finally:
+            ctypes.windll.kernel32.LocalFree(ctypes.cast(argv, ctypes.c_void_p))  # type: ignore[attr-defined]
+    except (AttributeError, OSError, ValueError):
+        return []
 
-    Puede venir entre comillas (`"C:\\Program Files\\...\\app.exe" --flag`) o
-    suelta, y no siempre es un ejecutable: `rundll32`, `cmd /c` o un `shell:`
-    devuelven algo que no es un archivo, y eso también es información.
+
+def _split_like_windows(text: str) -> list[str]:
+    """Separación de reserva (sin Windows): por espacios, respetando las comillas."""
+    partes: list[str] = []
+    actual = ""
+    entre_comillas = False
+    for caracter in text:
+        if caracter == '"':
+            entre_comillas = not entre_comillas
+            continue
+        if caracter == " " and not entre_comillas:
+            if actual:
+                partes.append(actual)
+                actual = ""
+            continue
+        actual += caracter
+    if actual:
+        partes.append(actual)
+    return partes
+
+
+def command_arguments(command: str) -> list[str]:
+    """Parte una línea de comando como lo haría el propio Windows.
+
+    Con esto una ruta entre comillas que lleva espacios sigue siendo un solo argumento,
+    sin tener que adivinar dónde termina el programa.
     """
     text = (command or "").strip()
     if not text:
+        return []
+    argv = _argv_windows(text) if IS_WINDOWS else []
+    return argv or _split_like_windows(text)
+
+
+def _is_executable(path: str) -> bool:
+    r"""¿Termina en una extensión de programa?
+
+    Se compara el **final** de la cadena. Buscar la extensión por dentro daba falsos
+    positivos: `.com` encaja dentro de `.company`, así que una ruta como
+    `C:\Program Files\App.Company\app.exe` se cortaba en `C:\Program Files\App.com` y
+    la entrada parecía apuntar a un archivo que ya no existe.
+    """
+    return path.lower().endswith(_EXECUTABLE_EXTENSIONS)
+
+
+def command_target(command: str) -> str:
+    """Ruta del programa que hay dentro de una línea de comando.
+
+    Puede venir entre comillas (`"C:\\Program Files\\...\\app.exe" --flag`) o suelta.
+    Las líneas sin comillas con espacios son el caso difícil: Windows las corta por el
+    primer espacio, así que el primer argumento no dice dónde está el programa. Para
+    esas se prueban prefijos cada vez más largos —primero los que existen como archivo,
+    que es la respuesta segura, y si no el primero con pinta de programa, que es lo que
+    hay que enseñar cuando el archivo ya no está—.
+
+    No siempre es un ejecutable: `rundll32`, `cmd /c` o un `shell:` devuelven algo que no
+    es un archivo, y eso también es información.
+    """
+    partes = command_arguments(command)
+    if not partes:
         return ""
-    if text.startswith('"'):
-        end = text.find('"', 1)
-        return (text[1:end] if end > 0 else text.strip('"')).strip()
-    lowered = text.lower()
-    limit: int | None = None
-    for extension in _EXECUTABLE_EXTENSIONS:
-        index = lowered.find(extension)
-        if index != -1:
-            candidate = index + len(extension)
-            if limit is None or candidate < limit:
-                limit = candidate
-    if limit is not None:
-        return text[:limit].strip()
-    return text.split(" ", 1)[0].strip()
+    primero = partes[0]
+    if len(partes) == 1 or _is_executable(primero):
+        return primero
+    candidatos: list[str] = []
+    for cantidad in range(2, len(partes) + 1):
+        candidato = " ".join(partes[:cantidad])
+        if not _is_executable(candidato) and not os.path.isfile(candidato):
+            continue
+        if os.path.isfile(candidato):
+            return candidato
+        candidatos.append(candidato)
+    if candidatos:
+        return candidatos[0]
+    # No existe ningún prefijo con pinta de programa: se devuelve la ruta entera sin los
+    # argumentos (lo que empieza por guion o barra), que es la lectura más razonable.
+    for indice in range(1, len(partes)):
+        if partes[indice].startswith(("-", "/")):
+            return " ".join(partes[:indice])
+    return " ".join(partes)
 
 
 def _target_state(command: str) -> tuple[str, bool | None]:
@@ -296,15 +377,29 @@ class StartupEntry:
     can_toggle: bool = True
     note: str = ""
     data: dict[str, Any] = field(default_factory=dict)
+    # Ruta y existencia del programa, ya resueltas (no se serializan: se recalculan).
+    _target: tuple[str, bool | None] | None = field(default=None, init=False, repr=False, compare=False)
 
     # --- Datos derivados (se calculan a partir del comando) --------------
+    def resolve_target(self) -> tuple[str, bool | None]:
+        """Ruta del programa y si existe, calculadas **una sola vez**.
+
+        Se llama al leer las entradas, que es cuando corre el hilo de lectura: preguntar
+        por un archivo en cada acceso (y se accede en cada repintado de la lista) puede
+        quedarse esperando por una unidad de red o un disco apagado, y eso se notaría en
+        la ventana.
+        """
+        if self._target is None:
+            self._target = _target_state(self.command)
+        return self._target
+
     @property
     def target_path(self) -> str:
-        return _target_state(self.command)[0]
+        return self.resolve_target()[0]
 
     @property
     def target_exists(self) -> bool | None:
-        return _target_state(self.command)[1]
+        return self.resolve_target()[1]
 
     @property
     def origin_folder(self) -> str:
@@ -469,32 +564,34 @@ def read_registry_entries(sources: Sequence[RegistrySource] | None = None) -> li
             if not clean:
                 continue
             enabled = approval_enabled(approved.get(clean)) if source.approved_path else True
-            entries.append(
-                StartupEntry(
-                    id=f"{source.id}|{clean}",
-                    name=clean,
-                    command=str(command or "").strip(),
-                    source=source.label,
-                    location=source.location,
-                    kind=KIND_REGISTRO,
-                    enabled=enabled,
-                    needs_admin=source.needs_admin,
-                    can_toggle=source.can_toggle,
-                    note=source.note
-                    or (
-                        "La desactiva el propio Windows; la entrada se queda donde está."
-                        if source.approved_path
-                        else ""
-                    ),
-                    data={
-                        "clave": source.id,
-                        "hive": _hive_value(source.hive),
-                        "run_path": source.run_path,
-                        "approved_path": source.approved_path,
-                        "valor": clean,
-                    },
-                )
+            entrada = StartupEntry(
+                id=f"{source.id}|{clean}",
+                name=clean,
+                command=str(command or "").strip(),
+                source=source.label,
+                location=source.location,
+                kind=KIND_REGISTRO,
+                enabled=enabled,
+                needs_admin=source.needs_admin,
+                can_toggle=source.can_toggle,
+                note=source.note
+                or (
+                    "La desactiva el propio Windows; la entrada se queda donde está."
+                    if source.approved_path
+                    else ""
+                ),
+                data={
+                    "clave": source.id,
+                    "hive": _hive_value(source.hive),
+                    "run_path": source.run_path,
+                    "approved_path": source.approved_path,
+                    "valor": clean,
+                },
             )
+            # La ruta y su existencia se resuelven ahora, en el hilo que lee el registro,
+            # y no cada vez que la lista se repinta.
+            entrada.resolve_target()
+            entries.append(entrada)
     return entries
 
 
@@ -523,30 +620,33 @@ def read_folder_entries(sources: Sequence[FolderSource] | None = None) -> list[S
             if os.path.isdir(full):
                 continue
             display = os.path.splitext(name)[0]
-            entries.append(
-                StartupEntry(
-                    id=f"{source.id}|{name}",
-                    name=display,
-                    command=full,
-                    source=source.label,
-                    location=path,
-                    kind=KIND_CARPETA,
-                    enabled=approval_enabled(approved.get(name)) if source.can_toggle else True,
-                    needs_admin=source.needs_admin,
-                    can_toggle=source.can_toggle,
-                    note="Es un acceso directo de la carpeta de inicio.",
-                    data={
-                        "clave": source.id,
-                        "hive": _hive_value(source.hive),
-                        "approved_path": source.approved_path,
-                        "valor": name,
-                    },
-                )
+            entrada = StartupEntry(
+                id=f"{source.id}|{name}",
+                name=display,
+                command=full,
+                source=source.label,
+                location=path,
+                kind=KIND_CARPETA,
+                enabled=approval_enabled(approved.get(name)) if source.can_toggle else True,
+                needs_admin=source.needs_admin,
+                can_toggle=source.can_toggle,
+                note="Es un acceso directo de la carpeta de inicio.",
+                data={
+                    "clave": source.id,
+                    "hive": _hive_value(source.hive),
+                    "approved_path": source.approved_path,
+                    "valor": name,
+                },
             )
+            entrada.resolve_target()
+            entries.append(entrada)
     return entries
 
 
 TASKS_SCRIPT = (
+    # La salida se lee como UTF-8: sin esto, PowerShell escribe en la página del sistema
+    # y los nombres y rutas con acentos llegan corruptos.
+    "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
     "$ErrorActionPreference='SilentlyContinue';"
     "$lista = Get-ScheduledTask | Where-Object {"
     "$_.TaskPath -notlike '\\Microsoft\\*' -and "
@@ -614,10 +714,16 @@ def read_task_entries(timeout: int = 60) -> list[StartupEntry]:
             errors="replace",
             timeout=timeout,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            env=powershell_environment(),
         )
     except (OSError, subprocess.SubprocessError):
         return []
-    return task_entries_from_output(result.stdout or "")
+    entradas = task_entries_from_output(result.stdout or "")
+    for entrada in entradas:
+        # La ruta del programa y su existencia se resuelven aquí, en el hilo que consulta
+        # el Programador de tareas, y no al pintar la lista.
+        entrada.resolve_target()
+    return entradas
 
 
 SOURCES_ORDER = (
@@ -657,14 +763,72 @@ def read_entries(
 
 # --- Cambios --------------------------------------------------------------
 def _hive_from(value: Any) -> Any:
-    """Recupera la raíz del registro guardada en los datos de la entrada."""
+    """Recupera la raíz del registro guardada en los datos de la entrada.
+
+    Solo se aceptan los dos nombres que escribe la propia aplicación (`usuario` y
+    `sistema`): lo que no esté en esa lista no se escribe, aunque venga en un apunte.
+    """
     if winreg is None:
         return None
-    if value == HIVE_USER or value == 1:
+    if value == HIVE_USER:
         return winreg.HKEY_CURRENT_USER
-    if value == HIVE_MACHINE or value == 2:
+    if value == HIVE_MACHINE:
         return winreg.HKEY_LOCAL_MACHINE
     return None
+
+
+def _safe_value_name(name: str) -> str:
+    """Nombre de valor del registro, si se puede usar dentro de su clave.
+
+    Una barra invertida en el nombre escribiría en otra rama del registro, así que se
+    rechaza: lo que se espera aquí es el nombre de la entrada (`Discord`, `PruebaApp`…).
+    """
+    limpio = str(name or "").strip()
+    if not limpio or limpio in (".", ".."):
+        return ""
+    if any(separador in limpio for separador in ("\\", "/", ":")):
+        return ""
+    return limpio
+
+
+def _safe_task_name(name: str) -> str:
+    """Nombre de tarea del Programador, si PC Toolkit puede tocarla.
+
+    Devuelve el nombre con su ruta (como lo espera `schtasks`) o vacío cuando no se debe
+    tocar: las tareas de Microsoft son parte del propio Windows y aquí no se desactivan.
+    """
+    limpio = str(name or "").strip().replace("/", "\\").lstrip("\\")
+    if not limpio or ".." in limpio:
+        return ""
+    if limpio.lower() == "microsoft" or limpio.lower().startswith("microsoft\\"):
+        return ""
+    return "\\" + limpio
+
+
+def _validated_registry_target(entry: StartupEntry) -> tuple[Any, str, str, str]:
+    """Clave, nombre y raíz del registro de una entrada, comprobados de antemano.
+
+    Devuelve `(hive, approved_path, valor, problema)`: el problema va vacío cuando todo
+    está en orden. Los datos se validan antes de escribir porque no se sabe de dónde
+    vienen (la lista de entradas y los apuntes de deshacer se guardan en archivos de
+    texto que el usuario puede editar).
+    """
+    hive = _hive_from(entry.data.get("hive"))
+    approved = str(entry.data.get("approved_path") or "")
+    valor = _safe_value_name(entry.data.get("valor") or entry.name)
+    if hive is None:
+        return None, "", "", "El apunte no dice de qué parte del registro se trata."
+    if approved not in APPROVED_PATHS:
+        return (
+            None,
+            "",
+            "",
+            "El apunte manda escribir en una clave que PC Toolkit no usa "
+            f"({approved or 'sin clave'}); no se toca nada.",
+        )
+    if not valor:
+        return None, "", "", "El apunte trae un nombre de valor que no se puede usar."
+    return hive, approved, valor, ""
 
 
 def set_enabled(entry: StartupEntry, enabled: bool) -> tuple[bool, str]:
@@ -675,11 +839,9 @@ def set_enabled(entry: StartupEntry, enabled: bool) -> tuple[bool, str]:
         return _set_task_enabled(entry, enabled)
     if not entry.can_toggle:
         return False, f"«{entry.name}» no se puede cambiar desde aquí. {entry.note}".strip()
-    hive = _hive_from(entry.data.get("hive"))
-    approved = str(entry.data.get("approved_path") or "")
-    value_name = str(entry.data.get("valor") or entry.name)
-    if hive is None or not approved:
-        return False, "Faltan datos para cambiar esta entrada."
+    hive, approved, value_name, problema = _validated_registry_target(entry)
+    if problema:
+        return False, problema
     try:
         _write_approval(hive, approved, value_name, enabled, _approved_view(hive))
     except PermissionError:
@@ -694,14 +856,21 @@ def _set_task_enabled(entry: StartupEntry, enabled: bool) -> tuple[bool, str]:
     """Activa o desactiva una tarea programada con `schtasks`."""
     if not IS_WINDOWS:
         return False, "El Programador de tareas solo existe en Windows."
-    task = str(entry.data.get("tarea") or entry.name)
+    task = _safe_task_name(entry.data.get("tarea") or entry.name)
+    if not task:
+        return False, (
+            f"«{entry.name}» es una tarea de Windows o trae un nombre que no se puede usar: "
+            "PC Toolkit no toca las tareas de Microsoft."
+        )
     arguments = ["/Change", "/TN", task, "/ENABLE" if enabled else "/DISABLE"]
     try:
         result = subprocess.run(
             ["schtasks", *arguments],
             capture_output=True,
             text=True,
-            encoding="cp1252",
+            # `schtasks` responde en la página OEM de la consola (la 850 en español); leerla
+            # como cp1252 corrompía los nombres con acentos.
+            encoding="oem",
             errors="replace",
             timeout=40,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),

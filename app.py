@@ -24,6 +24,7 @@ from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from pctoolkit.core.appearance import MODES  # noqa: E402
+from pctoolkit.core import logs  # noqa: E402
 from pctoolkit.core.config import APP_NAME, APP_VERSION  # noqa: E402
 from pctoolkit.core.settings import AppSettings  # noqa: E402
 from pctoolkit.core.single_instance import WAIT_AFTER_RESTART_MS, SingleInstance  # noqa: E402
@@ -165,6 +166,10 @@ def _run_maintenance(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # El registro se prepara antes que nada: así queda anotado lo que falle incluso en el
+    # modo desatendido, que no tiene interfaz donde contarlo.
+    logs.setup()
+    logs.logger().info("Inicio de %s %s", APP_NAME, APP_VERSION)
     parser = argparse.ArgumentParser(description=f"{APP_NAME} {APP_VERSION}")
     parser.add_argument("--analizar", metavar="RUTA", help="Analiza esa carpeta al abrir")
     parser.add_argument(
@@ -248,7 +253,9 @@ def main(argv: list[str] | None = None) -> int:
 
     window = MainWindow(settings)
     if guarda is not None:
-        guarda.listen(window.show_from_another_instance)
+        # El identificador de la ventana se pasa para poder admitir el aviso aunque esta
+        # copia corra como administrador y la nueva venga del acceso directo normal.
+        guarda.listen(window.show_from_another_instance, window.winId())
     if args.demo:
         _seed_demo_tasks(window)
 

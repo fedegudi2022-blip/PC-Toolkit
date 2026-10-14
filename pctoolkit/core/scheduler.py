@@ -23,7 +23,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Sequence
 
-from .tools import MIN_TEMP_AGE_HOURS
+from .tools import MIN_TEMP_AGE_HOURS, powershell_environment
 
 IS_WINDOWS = __import__("os").name == "nt"
 
@@ -378,12 +378,18 @@ def _hidden_flags() -> int:
 
 
 def run_schtasks(arguments: Sequence[str], timeout: int = 40) -> subprocess.CompletedProcess:
-    """Ejecuta `schtasks` sin abrir ninguna ventana."""
+    """Ejecuta `schtasks` sin abrir ninguna ventana.
+
+    La consola de Windows habla en su página de códigos OEM (la 850 en un Windows en
+    español), no en cp1252: leerla con la página equivocada convertía las rutas con
+    acentos en signos raros. `encoding="oem"` usa la página real del sistema y
+    `errors="replace"` deja pasar cualquier byte suelto sin romper la lectura.
+    """
     return subprocess.run(
         ["schtasks", *arguments],
         capture_output=True,
         text=True,
-        encoding="cp1252",
+        encoding="oem",
         errors="replace",
         timeout=timeout,
         creationflags=_hidden_flags(),
@@ -472,6 +478,9 @@ def run_task_now() -> TaskOperation:
 
 
 STATUS_SCRIPT = (
+    # La salida se lee como UTF-8: sin esto, PowerShell escribe en la página del sistema
+    # y las rutas con acentos (por ejemplo «C:\Users\José Luis\…») llegan corruptas.
+    "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
     "$ErrorActionPreference='Stop';"
     "$t = Get-ScheduledTask -TaskPath '\\{folder}\\' -TaskName '{name}' -ErrorAction Stop;"
     "$i = $t | Get-ScheduledTaskInfo;"
@@ -502,6 +511,7 @@ def task_status() -> TaskStatus:
             errors="replace",
             timeout=45,
             creationflags=_hidden_flags(),
+            env=powershell_environment(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return TaskStatus(exists=False, message=f"No se pudo consultar la tarea: {exc}")

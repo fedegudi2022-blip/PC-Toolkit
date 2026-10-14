@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import psutil
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QGridLayout,
@@ -15,7 +16,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.config import COLORS, format_bytes
+from ..core.alerts import METRIC_CPU, METRIC_DISK, METRIC_RAM, AlertConfig
+from ..core.config import COLORS, format_bytes, format_integer
 from ..core.history import HistoryStore
 from . import icons, theme
 from .chart import SERIES, HistoryChart
@@ -49,6 +51,7 @@ class DashboardPage(QWidget):
         metrics,
         tool_launcher,
         history: HistoryStore | None = None,
+        alert_config: AlertConfig | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -56,8 +59,32 @@ class DashboardPage(QWidget):
         self.launch_tool = tool_launcher
         self.history = history
         self._samples: list = []
+        self._alerts = alert_config if alert_config is not None else AlertConfig()
+        # Muestras seguidas por encima del umbral, por métrica: la misma regla (y los
+        # mismos números) con la que el motor de alertas decide cuándo avisa.
+        self._streaks: dict[str, int] = {METRIC_CPU: 0, METRIC_RAM: 0, METRIC_DISK: 0}
+        self._net_peak = 0.0
+        self.chips: dict[str, QLabel] = {}
         self._build()
         self.reload_history()
+        self._sync_threshold_marks()
+
+    # ------------------------------------------------------------------
+    def set_alert_config(self, config: AlertConfig) -> None:
+        """Umbrales vigentes (los cambia el diálogo de «Ajustes y alertas»)."""
+        self._alerts = config if config is not None else AlertConfig()
+        self._sync_threshold_marks()
+
+    def _sync_threshold_marks(self) -> None:
+        """Marca en cada medidor el umbral de aviso que tenga configurado."""
+        if not self.chips:
+            return  # todavía no se ha construido la interfaz
+        for metric, medidor in (
+            (METRIC_CPU, self.cpu_gauge),
+            (METRIC_RAM, self.ram_gauge),
+            (METRIC_DISK, self.disk_gauge),
+        ):
+            medidor.set_threshold(self._alerts.threshold_for(metric))
 
     # ------------------------------------------------------------------
     def _build(self) -> None:
@@ -97,16 +124,16 @@ class DashboardPage(QWidget):
         grid = QGridLayout()
         grid.setSpacing(16)
         self.cpu_card, self.cpu_gauge = self._metric_card(
-            "CPU", "cpu", "Rendimiento del procesador", "Ver detalle"
+            "CPU", "cpu", "Rendimiento del procesador", "Ver detalle", "series_cpu"
         )
         self.ram_card, self.ram_gauge = self._metric_card(
-            "Memoria", "memory", "Uso de memoria RAM", "Ver detalle"
+            "Memoria", "memory", "Uso de memoria RAM", "Ver detalle", "series_ram"
         )
         self.disk_card, self.disk_gauge = self._metric_card(
-            "Almacenamiento", "disk", "Uso del disco del sistema", "Ver detalle"
+            "Almacenamiento", "disk", "Uso del disco del sistema", "Ver detalle", "series_disk"
         )
         self.net_card, self.net_gauge = self._metric_card(
-            "Red", "network", "Tráfico de red actual", "Ver detalle"
+            "Red", "network", "Tráfico de red actual", "Ver detalle", "series_net"
         )
         grid.addWidget(self.cpu_card, 0, 0)
         grid.addWidget(self.ram_card, 0, 1)
@@ -160,7 +187,9 @@ class DashboardPage(QWidget):
         layout.addWidget(self.health_score)
         return card
 
-    def _metric_card(self, title: str, icon_name: str, subtitle: str, button_text: str):
+    def _metric_card(
+        self, title: str, icon_name: str, subtitle: str, button_text: str, color_key: str
+    ):
         card = Card(name=title)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(18, 16, 18, 16)
@@ -168,17 +197,28 @@ class DashboardPage(QWidget):
 
         head = QHBoxLayout()
         head.setSpacing(10)
-        head.addWidget(IconBadge(icon_name, 32, 17, COLORS["text_dim"]))
+        # El icono y el título llevan el color de la serie de la tarjeta: el mismo del
+        # medidor, la barra y la leyenda de la gráfica.
+        head.addWidget(IconBadge(icon_name, 32, 17, COLORS[color_key]))
         texts = QVBoxLayout()
         texts.setSpacing(0)
         title_label = QLabel(title)
         title_label.setObjectName("CardTitle")
+        title_label.setStyleSheet(f"color: {COLORS[color_key]};")
         self_subtitle = QLabel(subtitle)
         self_subtitle.setObjectName("CardSubtitle")
         texts.addWidget(title_label)
         texts.addWidget(self_subtitle)
         head.addLayout(texts)
         head.addStretch(1)
+        # El aviso por umbral va con un chip de texto: el color solo no basta ni para
+        # quien no distingue colores ni para saber qué pasa de un vistazo.
+        chip = QLabel()
+        chip.setObjectName("HealthBadge")
+        chip.setWordWrap(True)
+        chip.setVisible(False)
+        head.addWidget(chip)
+        self.chips[color_key] = chip
         layout.addLayout(head)
 
         gauge = ArcGauge(title, "%", "")
@@ -274,7 +314,7 @@ class DashboardPage(QWidget):
             return
 
         span_minutes = max(0.0, (self._samples[-1].timestamp - self._samples[0].timestamp) / 60.0)
-        self.history_info.setText(f"{count:,} muestras")
+        self.history_info.setText(f"{format_integer(count)} muestras")
         span = (
             f"Datos de los últimos {span_minutes:.0f} min"
             if span_minutes < 120
@@ -359,7 +399,12 @@ class DashboardPage(QWidget):
 
     # ------------------------------------------------------------------
     def update_snapshot(self, snap, system_info: dict) -> None:
-        cpu_acc = self._accent_for(snap.cpu_percent)
+        # Cada medidor lleva el color de **su** serie de datos (los mismos que usa la
+        # gráfica del historial), así que la CPU se reconoce por el azul, la memoria por
+        # el cian y el disco por el naranja sin mirar el título. El ámbar y el rojo
+        # quedan para cuando el valor alcanza el umbral de aviso configurado.
+        self._update_streaks(snap)
+        cpu_acc = self._accent_for(snap.cpu_percent, "series_cpu")
         freq = f"{snap.cpu_freq_mhz / 1000:.2f} GHz" if snap.cpu_freq_mhz else "—"
         self.cpu_gauge.set_value(
             snap.cpu_percent,
@@ -369,22 +414,31 @@ class DashboardPage(QWidget):
 
         self.ram_gauge.set_value(
             snap.ram_percent,
-            self._accent_for(snap.ram_percent),
+            self._accent_for(snap.ram_percent, "series_ram"),
             f"{format_bytes(snap.ram_used)} de {format_bytes(snap.ram_total)}",
         )
 
         disk_subtitle = f"{format_bytes(snap.disk_free)} libres en {snap.disk_mount.rstrip(chr(92))}"
-        self.disk_gauge.set_value(snap.disk_percent, self._accent_for(snap.disk_percent), disk_subtitle)
+        self.disk_gauge.set_value(
+            snap.disk_percent, self._accent_for(snap.disk_percent, "series_disk"), disk_subtitle
+        )
+        self._update_chip("series_cpu", snap.cpu_percent)
+        self._update_chip("series_ram", snap.ram_percent)
+        self._update_chip("series_disk", snap.disk_percent)
 
         throughput = snap.net_down_rate + snap.net_up_rate
-        net_ratio = min(100.0, throughput / (125 * 1024 * 1024) * 100.0)  # relativo a 1 Gbps
-        # La red no tiene umbral de aviso: se queda con el color de «normal» y se
-        # distingue por la etiqueta y las cifras, no por el color.
+        self._net_peak = max(self._net_peak, throughput)
+        escala = self._net_scale()
+        net_ratio = min(100.0, throughput / escala * 100.0)
+        # La red no se mide en porcentaje: enseña la velocidad real, porque un «0 %» con
+        # tráfico no dice nada. El abanico se llena contra la velocidad del enlace (o
+        # contra el pico reciente si Windows no la declara), así que significa algo.
         self.net_gauge.set_value(
             net_ratio,
-            COLORS["accent"],
-            f"↓ {_speed(snap.net_down_rate)}   ↑ {_speed(snap.net_up_rate)}",
+            COLORS["series_net"],
+            f"↓ {_speed(snap.net_down_rate)}   ↑ {_speed(snap.net_up_rate)} · enlace {_speed(escala)}",
         )
+        self.net_gauge.set_display(_speed(throughput))
 
         score = snap.health_score
         self.health_meter.set_score(score, snap.health_label)
@@ -422,12 +476,78 @@ class DashboardPage(QWidget):
             item.setToolTip(name)
             self.process_list.addItem(item)
 
-    def _accent_for(self, percent: float) -> str:
-        if percent >= 85:
-            return COLORS["bad"]
-        if percent >= 65:
-            return COLORS["warn"]
-        return COLORS["accent"]
+    _METRIC_BY_SERIES = {
+        "series_cpu": METRIC_CPU,
+        "series_ram": METRIC_RAM,
+        "series_disk": METRIC_DISK,
+    }
+
+    def _accent_for(self, percent: float, series: str = "accent") -> str:
+        """Color del medidor: el de su serie, o el de aviso al pasar el umbral real.
+
+        El umbral es el de las alertas (`AlertConfig`), el que se configura en «Ajustes
+        y alertas»; aquí no hay ningún número inventado. El rojo se reserva para cuando
+        la racha sostenida supera el umbral, igual que el motor de alertas: un pico
+        suelto se queda en ámbar.
+        """
+        metric = self._METRIC_BY_SERIES.get(series)
+        if metric is None:
+            return COLORS[series]
+        if percent >= self._alerts.threshold_for(metric):
+            sostenido = self._streaks.get(metric, 0) >= max(1, self._alerts.sustained_samples)
+            return COLORS["bad"] if sostenido else COLORS["warn"]
+        return COLORS[series]
+
+    def _update_streaks(self, snap) -> None:
+        """Cuenta muestras seguidas por encima del umbral (misma regla que las alertas)."""
+        for metric, percent in (
+            (METRIC_CPU, snap.cpu_percent),
+            (METRIC_RAM, snap.ram_percent),
+            (METRIC_DISK, snap.disk_percent),
+        ):
+            if percent >= self._alerts.threshold_for(metric):
+                self._streaks[metric] = self._streaks.get(metric, 0) + 1
+            else:
+                self._streaks[metric] = 0
+
+    def _update_chip(self, color_key: str, percent: float) -> None:
+        """Chip de texto junto al título en cuanto se alcanza el umbral de aviso."""
+        chip = self.chips.get(color_key)
+        metric = self._METRIC_BY_SERIES.get(color_key)
+        if chip is None or metric is None:
+            return
+        threshold = self._alerts.threshold_for(metric)
+        if percent < threshold:
+            chip.setVisible(False)
+            return
+        sostenido = self._streaks.get(metric, 0) >= max(1, self._alerts.sustained_samples)
+        color = COLORS["bad"] if sostenido else COLORS["warn"]
+        chip.setText(
+            f"{'Crítico' if sostenido else 'Aviso'} · {percent:.0f} % (umbral {threshold:.0f} %)"
+        )
+        chip.setStyleSheet(
+            f"#HealthBadge {{ background: {theme.with_alpha(color, 34)}; color: {color}; "
+            f"border: 1px solid {theme.with_alpha(color, 85)}; }}"
+        )
+        chip.setVisible(True)
+
+    def _net_scale(self) -> float:
+        """Velocidad de enlace de la red activa, en bytes por segundo.
+
+        `psutil.net_if_stats` da la velocidad negociada en Mbps; si el sistema no la
+        declara (0), se usa el pico reciente de esta sesión como escala, con un suelo de
+        1 MB/s para que el abanico no se dispare con el primer paquete.
+        """
+        velocidad = 0.0
+        try:
+            for datos in psutil.net_if_stats().values():
+                if datos.isup and datos.speed > 0:
+                    velocidad = max(velocidad, float(datos.speed))
+        except (AttributeError, OSError):
+            velocidad = 0.0
+        if velocidad > 0:
+            return velocidad * 1000 * 1000 / 8.0
+        return max(self._net_peak, 1024 * 1024)
 
     @staticmethod
     def _uptime(seconds: float) -> str:

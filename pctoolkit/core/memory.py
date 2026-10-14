@@ -57,6 +57,13 @@ CRITICAL_NAMES = frozenset(
         "dwm.exe",
         "audiodg.exe",
         "msmpeng.exe",
+        # El escritorio y sus compañeros: recortarles el conjunto de trabajo provoca
+        # microcortes (parpadeo del escritorio, menús que tardan en aparecer) y no
+        # devuelve nada aprovechable, porque vuelven a cargar lo mismo enseguida.
+        "explorer.exe",
+        "sihost.exe",
+        "ctfmon.exe",
+        "searchhost.exe",
     }
 )
 CRITICAL_PIDS = frozenset({0, 4})
@@ -103,17 +110,24 @@ def select_targets(
     *,
     include_own: bool = False,
     own_pid: int | None = None,
+    foreground_pid: int | None = None,
 ) -> list[ProcessTarget]:
     """Filtra la lista de procesos y devuelve los que merecen la pena.
 
     Separado de psutil a propósito: recibe tuplas `(pid, nombre, rss)` para
     poder probarse con datos sintéticos y sin depender del equipo real.
+
+    Con `foreground_pid` se deja fuera el proceso de la ventana en primer plano: es la que
+    el usuario está usando y la que notaría el recorte. Quien limpia de verdad lo averigua
+    con `current_foreground_pid()`.
     """
     own = os.getpid() if own_pid is None else own_pid
     minimum = max(0.0, float(min_mb)) * 1024 * 1024
     targets: list[ProcessTarget] = []
     for pid, name, rss in processes:
         if not include_own and pid == own:
+            continue
+        if foreground_pid and pid == foreground_pid:
             continue
         if is_critical(pid, name):
             continue
@@ -122,6 +136,27 @@ def select_targets(
         targets.append(ProcessTarget(pid=pid, name=name or f"PID {pid}", rss=int(rss)))
     targets.sort(key=lambda item: item.rss, reverse=True)
     return targets
+
+
+def current_foreground_pid() -> int:
+    """PID del proceso de la ventana que el usuario tiene delante (0 si no se sabe).
+
+    Recortar el conjunto de trabajo de la ventana en uso se nota de inmediato: es la que
+    el usuario está mirando y a la que va a volver en el siguiente clic, así que se deja
+    en paz. `GetForegroundWindow` da la ventana y `GetWindowThreadProcessId`, su proceso.
+    """
+    if not IS_WINDOWS:
+        return 0
+    try:
+        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+        ventana = user32.GetForegroundWindow()
+        if not ventana:
+            return 0
+        pid = ctypes.c_ulong(0)
+        user32.GetWindowThreadProcessId(ventana, ctypes.byref(pid))
+        return int(pid.value)
+    except (AttributeError, OSError, ValueError):
+        return 0
 
 
 def collect_processes() -> list[tuple[int, str, int]]:
@@ -313,7 +348,15 @@ def has_standby_privilege() -> bool:
 
 @dataclass
 class MemoryOptions:
-    """Configuración de la liberación de memoria."""
+    """Configuración de la liberación de memoria.
+
+    Lo que viene activado de fábrica es lo que no puede hacer daño: recortar procesos.
+    Las dos operaciones sobre la memoria del sistema —vaciar la caché y purgar por
+    completo la lista de espera— van apagadas y se ofrecen como opción, porque son las
+    que obligan a ejecutar como administrador y las que más se nota que se han hecho
+    (Windows vuelve a llenar esa caché leyendo del disco). La purga suave solo vacía las
+    páginas de baja prioridad, que es la versión intermedia.
+    """
 
     auto_enabled: bool = False
     threshold_percent: float = 85.0
@@ -321,8 +364,9 @@ class MemoryOptions:
     sustained_samples: int = 3
     min_process_mb: float = 30.0
     trim_processes: bool = True
-    empty_system_cache: bool = True
-    purge_standby: bool = True
+    empty_system_cache: bool = False
+    purge_standby: bool = False
+    purge_standby_low_priority: bool = False
     include_own_process: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -335,6 +379,7 @@ class MemoryOptions:
             "recortar_procesos": bool(self.trim_processes),
             "vaciado_sistema": bool(self.empty_system_cache),
             "lista_espera": bool(self.purge_standby),
+            "lista_espera_suave": bool(self.purge_standby_low_priority),
             "incluir_propio": bool(self.include_own_process),
         }
 
@@ -356,6 +401,9 @@ class MemoryOptions:
             trim_processes=as_flag(data.get("recortar_procesos"), defaults.trim_processes),
             empty_system_cache=as_flag(data.get("vaciado_sistema"), defaults.empty_system_cache),
             purge_standby=as_flag(data.get("lista_espera"), defaults.purge_standby),
+            purge_standby_low_priority=as_flag(
+                data.get("lista_espera_suave"), defaults.purge_standby_low_priority
+            ),
             include_own_process=as_flag(data.get("incluir_propio"), defaults.include_own_process),
         )
 
@@ -470,6 +518,8 @@ def release_memory(
             collect_processes(),
             options.min_process_mb,
             include_own=options.include_own_process,
+            # La ventana que el usuario tiene delante se queda como está.
+            foreground_pid=current_foreground_pid(),
         )
 
     trimmed = 0
@@ -498,7 +548,8 @@ def release_memory(
 
     # Las dos operaciones sobre la memoria del sistema comparten privilegio:
     # o se conceden las dos o se informa una sola vez de que hacen falta permisos.
-    if (options.empty_system_cache or options.purge_standby) and not dry_run:
+    purga_suave = options.purge_standby_low_priority and not options.purge_standby
+    if (options.empty_system_cache or options.purge_standby or purga_suave) and not dry_run:
         if not enable_privilege(SE_PROFILE_SINGLE_PROCESS):
             result.standby_message = (
                 "La caché del sistema y la lista de espera requieren ejecutar PC Toolkit "
@@ -519,9 +570,20 @@ def release_memory(
                 )
                 if not result.standby_purged:
                     result.errors.append(result.standby_message)
+            elif purga_suave:
+                # Solo las páginas de baja prioridad: libera menos, pero sin vaciar de golpe
+                # todo lo que Windows tenía cacheado para volver a leer del disco.
+                result.standby_purged = purge_standby_list(low_priority=True)
+                result.standby_message = (
+                    "Caché en espera purgada (solo páginas de baja prioridad)."
+                    if result.standby_purged
+                    else "El sistema rechazó la purga suave de la caché en espera."
+                )
+                if not result.standby_purged:
+                    result.errors.append(result.standby_message)
     elif dry_run:
         result.system_cache_empty = bool(options.empty_system_cache)
-        result.standby_purged = bool(options.purge_standby)
+        result.standby_purged = bool(options.purge_standby or purga_suave)
 
     result.processes_trimmed = trimmed
     result.processes_skipped = skipped

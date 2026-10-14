@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -45,11 +46,14 @@ from pctoolkit.core.metrics import PROFILE_ECO, PROFILE_FULL, MetricsService  # 
 from pctoolkit.core.scheduler import MaintenanceSchedule  # noqa: E402
 from pctoolkit.core.tasks import TaskStore  # noqa: E402
 
-CHECKS: list[tuple[str, bool, str]] = []
+# Las comprobaciones se cuentan en `tests/_checks.py`, que también usan las guardas de
+# documentación (así el total que citan las guías es el de la pasada completa).
+_TESTS_DIR = Path(__file__).resolve().parent
+if str(_TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TESTS_DIR))
 
-
-def check(name: str, condition: bool, detail: str = "") -> None:
-    CHECKS.append((name, bool(condition), detail))
+from _checks import CHECKS, check, report  # noqa: E402
+from documentacion import verificar_documentacion  # noqa: E402
 
 
 def build_sample_tree(base: Path) -> Path:
@@ -133,6 +137,22 @@ def test_tasks() -> None:
     removed = reloaded.clear_completed()
     check("Limpieza de completadas", removed == 1, str(removed))
     check("Añadida desde plantilla", any(t.title == "Vaciar la papelera" for t in reloaded.all()))
+
+    # --- Dos copias a la vez -------------------------------------------------
+    # El mantenimiento desatendido es otro proceso y escribe el mismo archivo: la copia
+    # que guarda tiene que releer el disco antes de volcar, o la tarea añadida desde la
+    # otra ventana desaparece sin que nadie se entere.
+    otra_copia = TaskStore()
+    de_la_ventana = reloaded.add("Copia de seguridad", "Copias de seguridad", "")
+    de_la_tarea = otra_copia.add("Revisar el disco", "Hardware", "")
+    guardadas = {tarea.id for tarea in TaskStore().all()}
+    check(
+        "Guardar desde dos procesos no pierde tareas",
+        {de_la_ventana.id, de_la_tarea.id} <= guardadas,
+        f"{len(guardadas)} tareas guardadas de las dos",
+    )
+    restos = store.path.with_name(store.path.name + ".tmp")
+    check("El guardado no deja el archivo a medias ni temporales sueltos", not restos.exists(), str(restos))
 
 
 def test_tools() -> None:
@@ -392,15 +412,151 @@ def test_history() -> None:
         check("Archivo de historial en la carpeta de datos", HistoryStore().path.parent.name == "PCToolkit", str(HistoryStore().path))
 
 
+# --- Diferenciación de color con daltonismo (D2) ----------------------------
+# Las mismas cuentas con las que se eligió la paleta: simulación de Machado (2009) a
+# severidad 1.0 sobre RGB lineal y CIEDE2000 para medir la diferencia. La suite las
+# repite para que un retoque de color no rompa sin avisar la separación entre series y
+# estados, que es justo lo que costó medir.
+_MACHADO = {
+    "protanopia": (
+        (0.152286, 1.052583, -0.204868),
+        (0.114503, 0.786281, 0.099216),
+        (-0.003882, -0.048116, 1.051998),
+    ),
+    "deuteranopia": (
+        (0.367322, 0.860646, -0.227968),
+        (0.280085, 0.672501, 0.047413),
+        (-0.011820, 0.042940, 0.968881),
+    ),
+    "tritanopia": (
+        (1.255528, -0.076749, -0.178779),
+        (-0.078411, 0.930809, 0.147602),
+        (0.004733, 0.691367, 0.303900),
+    ),
+}
+_VISTAS = ("normal", "protanopia", "deuteranopia", "tritanopia")
+
+
+def _canales(color: str) -> tuple[int, int, int]:
+    return tuple(int(color[i : i + 2], 16) for i in (1, 3, 5))  # type: ignore[return-value]
+
+
+def _a_lineal(canal: float) -> float:
+    valor = canal / 255.0
+    return valor / 12.92 if valor <= 0.04045 else ((valor + 0.055) / 1.055) ** 2.4
+
+
+def _de_lineal(canal: float) -> int:
+    valor = max(0.0, min(1.0, canal))
+    comprimido = 12.92 * valor if valor <= 0.0031308 else 1.055 * valor ** (1 / 2.4) - 0.055
+    return round(max(0.0, min(1.0, comprimido)) * 255)
+
+
+def _simula(color: str, tipo: str) -> str:
+    """Color tal como lo vería alguien con ese tipo de daltonismo (Machado 1.0)."""
+    rojo, verde, azul = (_a_lineal(canal) for canal in _canales(color))
+    salida = [sum(fila[i] * (rojo, verde, azul)[i] for i in range(3)) for fila in _MACHADO[tipo]]
+    return "#{:02X}{:02X}{:02X}".format(*(_de_lineal(canal) for canal in salida))
+
+
+def _lab(color: str) -> tuple[float, float, float]:
+    import math
+
+    rojo, verde, azul = (_a_lineal(canal) for canal in _canales(color))
+    equis = 0.4124564 * rojo + 0.3575761 * verde + 0.1804375 * azul
+    igriega = 0.2126729 * rojo + 0.7151522 * verde + 0.0721750 * azul
+    zeta = 0.0193339 * rojo + 0.1191920 * verde + 0.9503041 * azul
+
+    def ajusta(valor: float) -> float:
+        delta = (6 / 29) ** 3
+        return valor ** (1 / 3) if valor > delta else valor / (3 * (6 / 29) ** 2) + 4 / 29
+
+    fx, fy, fz = ajusta(equis / 0.95047), ajusta(igriega), ajusta(zeta / 1.08883)
+    return (116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz))
+
+
+def _ciede2000(uno: tuple[float, float, float], otro: tuple[float, float, float]) -> float:
+    """CIEDE2000 según Sharma, Wu y Dalal (2005)."""
+    import math
+
+    l1, a1, b1 = uno
+    l2, a2, b2 = otro
+    c1, c2 = math.hypot(a1, b1), math.hypot(a2, b2)
+    c_medio = (c1 + c2) / 2
+    g = 0.5 * (1 - math.sqrt(c_medio**7 / (c_medio**7 + 25**7)))
+    a1p, a2p = (1 + g) * a1, (1 + g) * a2
+    c1p, c2p = math.hypot(a1p, b1), math.hypot(a2p, b2)
+    h1p = math.degrees(math.atan2(b1, a1p)) % 360
+    h2p = math.degrees(math.atan2(b2, a2p)) % 360
+    dlp, dcp = l2 - l1, c2p - c1p
+    if c1p * c2p == 0:
+        dhp = 0.0
+    else:
+        dhp = h2p - h1p
+        if dhp > 180:
+            dhp -= 360
+        elif dhp < -180:
+            dhp += 360
+    dh = 2 * math.sqrt(c1p * c2p) * math.sin(math.radians(dhp) / 2)
+    l_medio, c_medio_p = (l1 + l2) / 2, (c1p + c2p) / 2
+    if c1p * c2p == 0:
+        h_medio = h1p + h2p
+    else:
+        diferencia = abs(h1p - h2p)
+        suma = h1p + h2p
+        if diferencia <= 180:
+            h_medio = suma / 2
+        elif suma < 360:
+            h_medio = (suma + 360) / 2
+        else:
+            h_medio = (suma - 360) / 2
+    t = (
+        1
+        - 0.17 * math.cos(math.radians(h_medio - 30))
+        + 0.24 * math.cos(math.radians(2 * h_medio))
+        + 0.32 * math.cos(math.radians(3 * h_medio + 6))
+        - 0.20 * math.cos(math.radians(4 * h_medio - 63))
+    )
+    theta = 30 * math.exp(-(((h_medio - 275) / 25) ** 2))
+    rc = 2 * math.sqrt(c_medio_p**7 / (c_medio_p**7 + 25**7))
+    sl = 1 + (0.015 * (l_medio - 50) ** 2) / math.sqrt(20 + (l_medio - 50) ** 2)
+    sc = 1 + 0.045 * c_medio_p
+    sh = 1 + 0.015 * c_medio_p * t
+    rt = -math.sin(math.radians(2 * theta)) * rc
+    return math.sqrt(
+        (dlp / sl) ** 2 + (dcp / sc) ** 2 + (dh / sh) ** 2 + rt * (dcp / sc) * (dh / sh)
+    )
+
+
+def _delta(uno: str, otro: str, vista: str) -> float:
+    """ΔE00 entre dos colores tal como los vería `vista` (normal o un daltonismo)."""
+    primero = uno if vista == "normal" else _simula(uno, vista)
+    segundo = otro if vista == "normal" else _simula(otro, vista)
+    return _ciede2000(_lab(primero), _lab(segundo))
+
+
+def _peor_par(paleta: dict[str, str]) -> tuple[float, float, str]:
+    """Peor ΔE00 de los pares exigidos: (tres visiones, cuatro visiones, culpable)."""
+    series = ("series_cpu", "series_ram", "series_disk", "series_net")
+    estados = ("good", "warn", "bad")
+    pares = [(series[i], series[j]) for i in range(len(series)) for j in range(i + 1, len(series))]
+    pares += [(serie, estado) for serie in series for estado in estados]
+    minimo_tres, minimo_cuatro, culpable = 999.0, 999.0, ""
+    for uno, otro in pares:
+        valores = [_delta(paleta[uno], paleta[otro], vista) for vista in _VISTAS]
+        if min(valores[:3]) < minimo_tres:
+            minimo_tres, culpable = min(valores[:3]), f"{uno}/{otro}"
+        minimo_cuatro = min(minimo_cuatro, min(valores))
+    return minimo_tres, minimo_cuatro, culpable
+
+
 def test_theme() -> None:
-    """Las dos paletas (oscura y clara): contraste, acento violeta y coherencia.
+    """Las dos paletas D2 (oscura y clara): contraste, neutralidad y daltonismo.
 
     El contraste se calcula con la fórmula de la WCAG sobre los pares de texto y
     fondo que la interfaz usa de verdad, no sobre una lista inventada: si alguien
     retoca un color y el texto deja de leerse, aquí salta.
     """
-    from itertools import combinations
-
     from pctoolkit.core import appearance, config
     from pctoolkit.ui import theme
 
@@ -449,33 +605,43 @@ def test_theme() -> None:
         ("oscura", config.DARK_COLORS, config.DARK_SURFACES),
         ("clara", config.LIGHT_COLORS, config.LIGHT_SURFACES),
     ):
-        # El verde no se usa en ninguna parte: ni acento, ni estado, ni dato. Se mira el
-        # matiz (y no un valor exacto) para que valga cualquier tono futuro, pero no
-        # cualquier verde: los grises neutros no cuentan (apenas tienen matiz).
-        verdes = [
-            name
-            for name, value in {**paleta, **superficies}.items()
-            if 80.0 <= hue(value) <= 170.0 and max(channels(value)) - min(channels(value)) > 20
-        ]
-        check(f"Ningún color de la paleta {nombre} es verde", not verdes, ", ".join(verdes))
+        # D2: el acento es **neutro** (casi blanco en oscuro, tinta en claro), no un
+        # color saturado. Se mide la diferencia entre canales, que es lo que distingue un
+        # gris de un tono.
         accent = channels(paleta["accent"])
         check(
-            f"El acento de la paleta {nombre} es violeta/índigo",
-            250.0 <= hue(paleta["accent"]) <= 290.0 and accent[2] > accent[0] and accent[2] > accent[1],
+            f"El acento de la paleta {nombre} es neutro (D2)",
+            max(accent) - min(accent) <= 16,
             paleta["accent"],
         )
-        # Los tres tonos de dato se distinguen entre sí de un vistazo: cada uno en su franja
-        # de color y ninguno verde, para que el dato no se confunda con una alerta.
-        tonos = {clave: hue(paleta[clave]) for clave in ("series_cpu", "series_ram", "series_disk")}
-        separacion = min(
-            min(abs(uno - otro), 360 - abs(uno - otro))
-            for uno, otro in combinations(tonos.values(), 2)
+        # Del diseño anterior no puede quedar ni un violeta ni un magenta: cualquier
+        # tono frío y saturado en esa franja sería un resto de la paleta vieja.
+        violetas = [
+            llave
+            for llave, valor in {**paleta, **superficies}.items()
+            if 250.0 <= hue(valor) <= 330.0 and max(channels(valor)) - min(channels(valor)) > 20
+        ]
+        check(
+            f"Ningún color de la paleta {nombre} es violeta o magenta",
+            not violetas,
+            ", ".join(violetas),
+        )
+        # Las cuatro series se distinguen entre sí y de los colores de estado incluso sin
+        # color: se simula el daltonismo y se mide con CIEDE2000. Los mínimos son los
+        # aprobados para D2 (20 en la clara y 15 en la oscura para visión normal,
+        # protanopia y deuteranopia; 8 contando también la tritanopia), no un número
+        # elegido aquí.
+        minimo_tres, minimo_cuatro, culpable = _peor_par(paleta)
+        limite = 19.5 if nombre == "clara" else 15.0
+        check(
+            f"Los datos y los estados de la paleta {nombre} se distinguen con daltonismo",
+            minimo_tres >= limite,
+            f"peor par {culpable}: {minimo_tres:.1f} en normal, protanopia y deuteranopia",
         )
         check(
-            f"Los tonos de dato de la paleta {nombre} se distinguen",
-            separacion >= 40 and not any(80.0 <= valor <= 170.0 for valor in tonos.values()),
-            ", ".join(f"{clave} {valor:.0f}°" for clave, valor in tonos.items())
-            + f"; separación mínima {separacion:.0f}°",
+            f"Ningún par de la paleta {nombre} es irreconocible (tritanopia incluida)",
+            minimo_cuatro >= 8.0,
+            f"peor par {culpable}: {minimo_cuatro:.1f} contando la tritanopia",
         )
         for name, value in paleta.items():
             check(f"Color válido ({nombre}): {name}", len(value) == 7 and value.startswith("#"), value)
@@ -496,6 +662,36 @@ def test_theme() -> None:
         }
         bajos = [f"{etiqueta} ({contrast(*par):.2f})" for etiqueta, par in pares.items() if contrast(*par) < 4.5]
         check(f"Pares de textos y fondos legibles en la paleta {nombre}", not bajos, ", ".join(bajos))
+        # Los estados hacen de texto (chips, insignias): 4,5:1 sobre el panel. Las
+        # series, el foco y el borde de selección son elementos gráficos: 3:1.
+        estados = {
+            "bien sobre panel": (paleta["good"], paleta["panel"]),
+            "aviso sobre panel": (paleta["warn"], paleta["panel"]),
+            "mal sobre panel": (paleta["bad"], paleta["panel"]),
+        }
+        bajos_estado = [
+            f"{etiqueta} ({contrast(*par):.2f})" for etiqueta, par in estados.items() if contrast(*par) < 4.5
+        ]
+        check(
+            f"Los estados se leen sobre el panel en la paleta {nombre}",
+            not bajos_estado,
+            ", ".join(bajos_estado),
+        )
+        graficos = {
+            "foco sobre panel": (paleta["accent"], paleta["panel"]),
+            "foco sobre el fondo": (paleta["accent"], paleta["bg"]),
+            "borde de selección sobre seleccionado": (paleta["text_muted"], superficies["selected"]),
+        }
+        for clave in ("series_cpu", "series_ram", "series_disk", "series_net"):
+            graficos[f"{clave} sobre panel"] = (paleta[clave], paleta["panel"])
+        flojos_grafico = [
+            f"{etiqueta} ({contrast(*par):.2f})" for etiqueta, par in graficos.items() if contrast(*par) < 3.0
+        ]
+        check(
+            f"Elementos gráficos visibles en la paleta {nombre} (WCAG 3:1)",
+            not flojos_grafico,
+            ", ".join(flojos_grafico),
+        )
         # El texto de un control apagado se exime de 4,5:1 (WCAG, componentes
         # inactivos), pero tiene que distinguirse del fondo para poder leerse.
         apagado = contrast(paleta["primary_disabled_text"], paleta["primary_disabled_bg"])
@@ -569,14 +765,24 @@ def test_theme() -> None:
     check("El diálogo explica el modo forzado", "Siempre" in appearance.describe_mode("light"), appearance.describe_mode("light"))
 
     legacy = (
-        "#2F7DF6", "#0A0D14", "#0E131C", "#1F2735", "#5AA0FF", "#8B7BF7",
-        "#35D07F", "#F5B54A", "#F0654E", "#1E4FA8", "#121826", "#161D2C", "#8A94A8",
+        # La paleta violeta anterior (negro con acento #8B5CF6 y series cian/violeta/
+        # naranja): si alguno de estos colores siguiera en el código, aquí salta. Incluye
+        # los grises del diseño anterior, que tampoco deben volver por su cuenta.
+        "#8B5CF6", "#7C3AED", "#A78BFA", "#0B0714", "#E9E4FF", "#B9A2FF",
+        "#22D3EE", "#FBBF24", "#F87171", "#FB923C", "#0A0A0A", "#121212",
+        "#1A1A1A", "#2E2E33", "#1F1F23", "#F4F4F6", "#A9A9B2", "#8E8E97",
+        "#16161A", "#2A2A31", "#6C6C76", "#4A2A2C", "#2A1618", "#2A2140",
+        "#1C1C21", "#151519", "#3F3F46", "#0E0E11",
+        "#6D28D9", "#5B21B6", "#0E7490", "#96620B", "#B32424", "#C2410C",
+        "#2E1065", "#E6E6EB", "#D0D0D8", "#7B7B85", "#E3BDBD", "#FBEDED",
+        "#F5F5F7", "#EBEBEF", "#F7F7F9", "#C9C9D2", "#E0E0E6", "#111114",
+        "#4B4B54", "#63636D", "#EDEDF2", "#DFDFE6", "#E7E0FB", "#B2B2BC", "#FAFAFC",
     )
     hits: list[str] = []
     for path in sorted((ROOT / "pctoolkit").rglob("*.py")):
         text = path.read_text(encoding="utf-8")
         hits += [f"{path.name}:{color}" for color in legacy if color in text]
-    check("Sin restos de la paleta azul anterior", not hits, ", ".join(hits[:4]))
+    check("Sin restos de la paleta violeta anterior", not hits, ", ".join(hits[:4]))
 
 
 def test_memory() -> None:
@@ -600,6 +806,59 @@ def test_memory() -> None:
         target.pid == own for target in memory.select_targets(synthetic, min_mb=20.0, include_own=True, own_pid=own)
     ))
     check("Identificación de procesos críticos", memory.is_critical(4, "System") and not memory.is_critical(4242, "chrome.exe"))
+    check(
+        "El escritorio y sus compañeros no se tocan",
+        all(
+            nombre in memory.CRITICAL_NAMES
+            for nombre in ("explorer.exe", "sihost.exe", "ctfmon.exe", "searchhost.exe")
+        ),
+        f"{len(memory.CRITICAL_NAMES)} nombres críticos",
+    )
+    con_ventana_delante = memory.select_targets(synthetic, min_mb=20.0, own_pid=own, foreground_pid=4242)
+    check(
+        "El programa de la ventana en primer plano no se recorta",
+        [target.name for target in con_ventana_delante] == [],
+        str([target.name for target in con_ventana_delante]),
+    )
+    check(
+        "La ventana en primer plano se pregunta a Windows",
+        isinstance(memory.current_foreground_pid(), int),
+        str(memory.current_foreground_pid()),
+    )
+
+    # --- Lo agresivo viene apagado -----------------------------------------
+    por_defecto = MemoryOptions()
+    check(
+        "La caché del sistema y la lista de espera no vienen activadas",
+        not por_defecto.empty_system_cache
+        and not por_defecto.purge_standby
+        and not por_defecto.purge_standby_low_priority
+        and por_defecto.trim_processes,
+        str(por_defecto.to_dict()),
+    )
+    guardadas = MemoryOptions.from_dict({"vaciado_sistema": True, "lista_espera": True})
+    check(
+        "Lo que un usuario ya tenía activado se respeta",
+        guardadas.empty_system_cache and guardadas.purge_standby,
+        str(guardadas.to_dict()),
+    )
+    suave = MemoryOptions.from_dict({"lista_espera_suave": True})
+    check(
+        "La purga suave es una opción propia",
+        suave.purge_standby_low_priority and not suave.purge_standby,
+        str(suave.to_dict()),
+    )
+    check(
+        "La purga suave usa la orden de baja prioridad de Windows",
+        memory.MEMORY_PURGE_LOW_PRIORITY_STANDBY_LIST == 5 and memory.MEMORY_PURGE_STANDBY_LIST == 4,
+        f"{memory.MEMORY_PURGE_LOW_PRIORITY_STANDBY_LIST} / {memory.MEMORY_PURGE_STANDBY_LIST}",
+    )
+    solo_suave = memory.release_memory(MemoryOptions(purge_standby_low_priority=True), dry_run=True)
+    check(
+        "En simulación se ve que la purga suave está pedida",
+        solo_suave.standby_purged and MemoryOptions().purge_standby_low_priority is False,
+        solo_suave.summary(),
+    )
 
     options = MemoryOptions(auto_enabled=True, threshold_percent=70.0, cooldown_minutes=5, min_process_mb=42.0)
     restored = MemoryOptions.from_dict(options.to_dict())
@@ -760,6 +1019,10 @@ def test_startup() -> None:
     )
     almacen = undo.UndoStore(Path(_TEMP_HOME) / "deshacer_prueba.jsonl")
     almacen.clear()
+    # La clave de prueba vive fuera de las de Windows, así que se añade a la lista cerrada
+    # mientras dura la prueba: el mismo mecanismo, en un sitio que no toca nada del equipo.
+    claves_permitidas = startup.APPROVED_PATHS
+    startup.APPROVED_PATHS = (*claves_permitidas, approved_path)
     try:
         with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, run_path, 0, winreg.KEY_SET_VALUE) as clave:
             winreg.SetValueEx(clave, "PruebaApp", 0, winreg.REG_SZ, f'"{sys.executable}" --version')
@@ -866,8 +1129,184 @@ def test_startup() -> None:
         almacen.clear()
         check("El almacén se vacía", almacen.count() == 0 and almacen.pending() == [])
     finally:
+        startup.APPROVED_PATHS = claves_permitidas
         _borrar_clave_registro(winreg.HKEY_CURRENT_USER, base)
     check("La clave de prueba del registro se elimina", not _existe_clave_registro(winreg.HKEY_CURRENT_USER, base))
+
+    # --- Interpretación de la línea de comando -----------------------------
+    # Buscar la extensión por dentro de la cadena daba falsos positivos: `.com` encaja
+    # dentro de `.company` y la entrada parecía apuntar a un archivo que ya no existe.
+    check(
+        "Una extensión no se confunde dentro de otra (.com en .company)",
+        startup.command_target(r"C:\Program Files\App.Company\launcher.exe --oculto")
+        == r"C:\Program Files\App.Company\launcher.exe"
+        and startup.command_target(r"C:\Program Files\Foo.Company\start")
+        == r"C:\Program Files\Foo.Company\start",
+        startup.command_target(r"C:\Program Files\Foo.Company\start"),
+    )
+    with tempfile.TemporaryDirectory(prefix="con espacios ") as tmp:
+        programa = Path(tmp) / "mi programa.exe"
+        programa.write_bytes(b"0")
+        check(
+            "Una ruta con espacios y sin comillas encuentra el programa",
+            startup.command_target(f"{programa} --bandeja") == str(programa),
+            startup.command_target(f"{programa} --bandeja"),
+        )
+        # La existencia se resuelve al leer las entradas, no en cada repintado.
+        entrada_cache = startup.StartupEntry(
+            id="cache",
+            name="Cache",
+            command=str(programa),
+            source="Prueba",
+            location="Prueba",
+            kind=startup.KIND_REGISTRO,
+            enabled=True,
+        )
+        antes = entrada_cache.target_exists
+        entrada_cache.resolve_target()
+        programa.unlink()
+        nueva = startup.StartupEntry(
+            id="nueva",
+            name="Nueva",
+            command=str(programa),
+            source="Prueba",
+            location="Prueba",
+            kind=startup.KIND_REGISTRO,
+            enabled=True,
+        )
+        check(
+            "La existencia del programa se resuelve una sola vez, al leer",
+            antes is True and entrada_cache.target_exists is True and nueva.target_exists is False,
+            f"antes {antes}, tras borrarlo (memorizado) {entrada_cache.target_exists}, nueva {nueva.target_exists}",
+        )
+
+    # --- Lo que llega de `deshacer.jsonl` no se da por bueno ----------------
+    # El archivo es texto que cualquier proceso del usuario puede editar: si alguien cambia
+    # la clave de destino, la raíz del registro o el nombre del valor, PC Toolkit escribiría
+    # en otra rama del registro. Estas comprobaciones son las que lo impiden.
+    check(
+        "Solo se escribe en las tres claves de «StartupApproved» de Windows",
+        startup.APPROVED_PATHS == (startup.APPROVED_RUN, startup.APPROVED_RUN32, startup.APPROVED_FOLDER),
+        ", ".join(startup.APPROVED_PATHS),
+    )
+    otra_rama = base + r"\OtraRama"
+    fuera_de_lista = startup.StartupEntry(
+        id="falsa",
+        name="Falsa",
+        command="",
+        source="Prueba",
+        location="Prueba",
+        kind=startup.KIND_REGISTRO,
+        enabled=True,
+        data={"hive": startup.HIVE_USER, "approved_path": otra_rama, "valor": "OtraApp"},
+    )
+    ok, mensaje = startup.set_enabled(fuera_de_lista, False)
+    check(
+        "Una clave fuera de la lista se rechaza",
+        ok is False and "no usa" in mensaje,
+        mensaje,
+    )
+    raiz_rara = startup.StartupEntry(
+        id="rara",
+        name="Rara",
+        command="",
+        source="Prueba",
+        location="Prueba",
+        kind=startup.KIND_REGISTRO,
+        enabled=True,
+        data={"hive": "HKEY_LOCAL_MACHINE", "approved_path": startup.APPROVED_RUN, "valor": "OtraApp"},
+    )
+    ok, mensaje = startup.set_enabled(raiz_rara, False)
+    check("Una raíz del registro desconocida se rechaza", ok is False and "registro" in mensaje, mensaje)
+    valor_raro = startup.StartupEntry(
+        id="valor",
+        name="Valor",
+        command="",
+        source="Prueba",
+        location="Prueba",
+        kind=startup.KIND_REGISTRO,
+        enabled=True,
+        data={"hive": startup.HIVE_USER, "approved_path": startup.APPROVED_RUN, "valor": r"Otra\Rama"},
+    )
+    ok, mensaje = startup.set_enabled(valor_raro, False)
+    check("Un nombre de valor con separadores se rechaza", ok is False and "valor" in mensaje, mensaje)
+    check(
+        "No se escribió nada en la rama prohibida",
+        not _existe_clave_registro(winreg.HKEY_CURRENT_USER, otra_rama),
+        otra_rama,
+    )
+    tarea_de_microsoft = startup.StartupEntry(
+        id="tarea",
+        name="MicrosoftEdgeUpdateTask",
+        command="",
+        source=startup.SOURCE_TAREA,
+        location="Programador de tareas",
+        kind=startup.KIND_TAREA,
+        enabled=True,
+        data={"clave": "tarea", "tarea": r"\Microsoft\Windows\EdgeUpdate"},
+    )
+    ok, mensaje = startup.set_enabled(tarea_de_microsoft, False)
+    check(
+        "Las tareas de Microsoft no se tocan",
+        ok is False and "Microsoft" in mensaje,
+        mensaje,
+    )
+    check(
+        "Una tarea propia sí se puede preparar",
+        startup._safe_task_name(r"\PCToolkit\Mantenimiento") == r"\PCToolkit\Mantenimiento",  # noqa: SLF001
+        startup._safe_task_name(r"\Microsoft\Windows\X") or "(rechazada)",  # noqa: SLF001
+    )
+
+    # --- Codificación de lo que se lee de Windows ---------------------------
+    # PowerShell escribía en la página del sistema y se leía como UTF-8: las rutas con
+    # acentos llegaban corruptas. Ahora los dos scripts lo fijan al principio.
+    prefijo = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+    check(
+        "Los scripts de PowerShell fijan la salida en UTF-8",
+        startup.TASKS_SCRIPT.startswith(prefijo) and scheduler.STATUS_SCRIPT.startswith(prefijo),
+        "TASKS_SCRIPT y STATUS_SCRIPT",
+    )
+    ejecucion_real = subprocess.run
+    capturado: dict[str, object] = {}
+
+    def _falso_run(comando, **kwargs):
+        capturado.update(kwargs)
+        capturado["comando"] = comando
+        return subprocess.CompletedProcess(comando, 0, stdout="", stderr="")
+
+    try:
+        subprocess.run = _falso_run  # type: ignore[assignment]
+        scheduler.run_schtasks(["/Query", "/TN", "x"])
+        en_scheduler = str(capturado.get("encoding"))
+        capturado.clear()
+        startup.read_task_entries(timeout=5)
+        entorno = capturado.get("env") or {}
+        con_entorno = "PSModulePath" not in entorno and bool(entorno)
+        capturado.clear()
+        tarea_propia = startup.StartupEntry(
+            id="tarea-propia",
+            name="Mantenimiento",
+            command="",
+            source=startup.SOURCE_TAREA,
+            location="Programador de tareas",
+            kind=startup.KIND_TAREA,
+            enabled=True,
+            data={"clave": "tarea", "tarea": r"\PCToolkit\Mantenimiento"},
+        )
+        startup._set_task_enabled(tarea_propia, True)  # noqa: SLF001
+        en_startup = str(capturado.get("encoding"))
+    finally:
+        subprocess.run = ejecucion_real  # type: ignore[assignment]
+    check(
+        "`schtasks` se lee en la página OEM de la consola",
+        en_scheduler == "oem" and en_startup == "oem",
+        f"scheduler={en_scheduler!r}, startup={en_startup!r}",
+    )
+    check(
+        "PowerShell se lanza con su propio entorno (sin PSModulePath heredado)",
+        con_entorno,
+        f"variables: {len(entorno)}",
+    )
 
 
 def test_scheduler() -> None:
@@ -1049,6 +1488,45 @@ def test_installer() -> None:
     check(
         "Carpeta desconocida usa la ruta prevista",
         core.known_folder("CarpetaQueNoExiste", Path("C:/respaldo")) == Path("C:/respaldo"),
+    )
+    # El desinstalador se compila **sin PySide6** (`--exclude-module PySide6` en
+    # `build_installer.py`): así pesa 7 MB en vez de 50, pero cualquier import que acabe
+    # en `pctoolkit` —aunque esté dentro de una función— lo deja muerto en el equipo del
+    # usuario. Aquí se reproduce en un proceso aparte con PySide6 bloqueado, que es la
+    # única forma de notarlo: la propia suite importa PySide6 para la interfaz.
+    sonda = Path(tempfile.gettempdir()) / "pctoolkit_sonda_ligera.py"
+    sonda.write_text(
+        "import sys\n"
+        f"sys.path.insert(0, r'{ROOT}')\n"
+        "class BloqueaPySide6:\n"
+        "    def find_spec(self, nombre, ruta=None, destino=None):\n"
+        "        if nombre.split('.')[0] == 'PySide6':\n"
+        "            raise ImportError('PySide6 bloqueado a propósito')\n"
+        "        return None\n"
+        "sys.meta_path.insert(0, BloqueaPySide6())\n"
+        "from installer import installer_core\n"
+        "print(installer_core.desktop_dir())\n"
+        "print(installer_core.start_menu_dir())\n"
+        "print(installer_core._powershell('Write-Output listo').returncode)\n"
+        "print('PySide6' in sys.modules)\n",
+        encoding="utf-8",
+    )
+    ligera = subprocess.run(
+        [sys.executable, str(sonda)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=str(ROOT),
+    )
+    salida_ligera = (ligera.stdout or "").strip().splitlines()
+    check(
+        "El instalador ligero funciona sin PySide6 (como el desinstalador compilado)",
+        ligera.returncode == 0
+        and len(salida_ligera) == 4
+        and salida_ligera[-2] == "0"
+        and salida_ligera[-1] == "False",
+        (ligera.stdout or ligera.stderr or "").strip()[-200:],
     )
     check("Medida de carpetas", core.directory_size(ROOT / "pctoolkit")[0] > 10_000, str(core.directory_size(ROOT / "pctoolkit")))
 
@@ -1371,6 +1849,51 @@ def test_installer() -> None:
         )
         check("Los archivos de la aplicación sí se quitan", not (conserva / "PC Toolkit.exe").exists())
 
+        # --- Instalar sobre una carpeta que ya tenía archivos del usuario ---------
+        # El registro tiene que anotar lo que copia la instalación, no lo que hay en la
+        # carpeta: si anota también lo ajeno, al desinstalar se lo lleva por delante
+        # aunque la instalación haya prometido conservarlo.
+        con_ajenos = base / "con_ajenos"
+        (con_ajenos / "otros").mkdir(parents=True)
+        documento = con_ajenos / "otros" / "importante.docx"
+        documento.write_text("no se toca", encoding="utf-8")
+        puesta = core.install(
+            core.InstallOptions(
+                target_dir=con_ajenos,
+                source=origen,
+                key_name="PCToolkitPruebaTest",
+                run_value="PCToolkitPruebaTest",
+                desktop=escritorio,
+                start_menu=menu,
+                launch_after=False,
+            )
+        )
+        check("Instalación sobre una carpeta con archivos ajenos", puesta.ok, puesta.message)
+        check(
+            "La instalación promete conservar lo que ya estaba",
+            any("se conservarán" in aviso for aviso in puesta.warnings),
+            " | ".join(puesta.warnings),
+        )
+        registro_ajeno = core.read_manifest(con_ajenos) or {}
+        anotados = list(registro_ajeno.get("archivos") or [])
+        check(
+            "El registro no anota los archivos que ya estaban",
+            "otros/importante.docx" not in anotados and "PC Toolkit.exe" in anotados,
+            f"{len(anotados)} archivos anotados",
+        )
+        retirada_ajena = core.uninstall(
+            target_dir=con_ajenos,
+            key_name="PCToolkitPruebaTest",
+            run_value="PCToolkitPruebaTest",
+            desktop=escritorio,
+            start_menu=menu,
+        )
+        check(
+            "Desinstalar no borra el archivo que ya estaba",
+            documento.exists() and documento.read_text(encoding="utf-8") == "no se toca",
+            f"{documento.exists()} · {retirada_ajena.message}",
+        )
+
         # Con «borrar datos» se lleva también la carpeta de datos del usuario.
         datos = Path(_TEMP_HOME) / "PCToolkit"
         datos.mkdir(parents=True, exist_ok=True)
@@ -1424,6 +1947,25 @@ def test_interface() -> None:
     snap = window.metrics.poll()
     window._on_sample(snap)  # noqa: SLF001
     check("Ventana creada", window.centralWidget() is not None)
+
+    # --- La guarda de instancia única ---------------------------------------
+    # Con la copia abierta como administrador y el acceso directo lanzado normal, Windows
+    # descarta los mensajes entre niveles de integridad distintos: la ventana se quedaría
+    # detrás. Se admite ese mensaje concreto y se comprueba que Windows lo acepta.
+    from pctoolkit.core import single_instance as guarda_instancia
+
+    guarda = guarda_instancia.SingleInstance()
+    check("La guarda se queda con el bloqueo de instancia única", guarda.acquire(), guarda_instancia.lock_path())
+    escucha = guarda.listen(window.show_from_another_instance, window.winId())
+    admite = guarda_instancia.allow_message_window(int(window.winId())) if os.name == "nt" else True
+    check(
+        "El aviso de la otra copia se admite desde un proceso normal",
+        escucha and admite,
+        f"escucha={escucha}, ventana={int(window.winId())}",
+    )
+    guarda.stop_listening()
+    guarda.release()
+    check("El bloqueo se suelta al terminar", not guarda.held, "bloqueo liberado")
     check("Ocho páginas cargadas", window.stack.count() == 8, str(window.stack.count()))
     # Arrancar no debe lanzar trabajo en segundo plano (una consulta del
     # Programador de tareas son varios segundos de PowerShell): el estado real se
@@ -1631,6 +2173,10 @@ def test_interface() -> None:
     fuente_ui = startup_core_ui.RegistrySource(
         "prueba-ui", "Prueba", "HKCU\\Prueba", ruta_run, _winreg.HKEY_CURRENT_USER, ruta_marca
     )
+    # La clave de prueba vive fuera de las de Windows: se añade a la lista cerrada mientras
+    # dura la prueba para ejercitar el mismo camino, sin tocar nada del equipo.
+    claves_ui = startup_core_ui.APPROVED_PATHS
+    startup_core_ui.APPROVED_PATHS = (*claves_ui, ruta_marca)
     try:
         with _winreg.CreateKeyEx(_winreg.HKEY_CURRENT_USER, ruta_run, 0, _winreg.KEY_SET_VALUE) as clave:
             _winreg.SetValueEx(clave, "PruebaUI", 0, _winreg.REG_SZ, f'"{sys.executable}" --version')
@@ -1654,6 +2200,7 @@ def test_interface() -> None:
             check("Deshacer desde la pantalla lo deja como estaba", devuelta.enabled, devuelta.status_label)
             check("El apunte queda marcado como deshecho", arranque.store.pending() == [])
     finally:
+        startup_core_ui.APPROVED_PATHS = claves_ui
         _borrar_clave_registro(_winreg.HKEY_CURRENT_USER, base_ui)
     arranque.store.clear()
     arranque.refresh(with_tasks=False)
@@ -1976,8 +2523,9 @@ def test_interface() -> None:
     window.resize(1360, 860)
     _settle(app, 250)
 
-    # Aspecto del render real: fondo negro, sin restos del verde anterior y con el acento
-    # violeta a la vista. Se mide sobre la pantalla de verdad, no sobre el texto del estilo.
+    # Aspecto del render real: fondo oscuro D2, sin restos del violeta anterior y con el
+    # acento neutro a la vista. Se mide sobre la pantalla de verdad, no sobre el texto del
+    # estilo.
     window.navigate("home")
     _settle(app, 300)
     image = window.grab().toImage()
@@ -1990,7 +2538,7 @@ def test_interface() -> None:
     step = 2
     sampled = dark = accent = 0
     totals: dict[tuple[int, int], int] = {}
-    verdes: dict[tuple[int, int], int] = {}
+    violetas: dict[tuple[int, int], int] = {}
     for y in range(0, image.height(), step):
         for x in range(0, image.width(), step):
             colour = image.pixelColor(x, y)
@@ -1998,10 +2546,16 @@ def test_interface() -> None:
             sampled += 1
             if red + green + blue_channel < 190:
                 dark += 1
-            # El verde del diseño anterior (el acento esmeralda): si quedara algún resto,
-            # llenaría bloques enteros en vez de dejar píxeles sueltos.
-            if green > red + 40 and green > blue_channel + 20 and green > 90:
-                verdes[(x // block, y // block)] = verdes.get((x // block, y // block), 0) + 1
+            # El violeta y el magenta del diseño anterior: si quedara algún resto,
+            # llenaría bloques enteros en vez de dejar píxeles sueltos. Los tonos fríos
+            # legítimos de la paleta (series_cpu, series_ram) tienen menos azul relativo,
+            # así que no entran en el filtro.
+            if (
+                blue_channel > red + 24
+                and red >= green - 8
+                and (max(red, green, blue_channel) - min(red, green, blue_channel)) > 40
+            ):
+                violetas[(x // block, y // block)] = violetas.get((x // block, y // block), 0) + 1
             if (
                 (red - acento.red()) ** 2
                 + (green - acento.green()) ** 2
@@ -2010,16 +2564,17 @@ def test_interface() -> None:
                 accent += 1
             key = (x // block, y // block)
             totals[key] = totals.get(key, 0) + 1
-    # Lo esperable es que no haya ni un bloque verde, así que el caso vacío es el bueno y
-    # no un error: sin `default` la comprobación saltaba con `max()` sobre una secuencia vacía.
-    worst = max((count / totals[key] for key, count in verdes.items()), default=0.0)
+    # Lo esperable es que no haya ni un bloque violeta, así que el caso vacío es el bueno
+    # y no un error: sin `default` la comprobación saltaba con `max()` sobre una secuencia
+    # vacía.
+    worst = max((count / totals[key] for key, count in violetas.items()), default=0.0)
     check("Fondo oscuro en pantalla", dark / sampled > 0.5, f"{dark / sampled:.0%} de píxeles oscuros")
     check(
-        "Sin restos verdes en el render",
+        "Sin restos del violeta anterior en el render",
         worst < 0.35,
-        f"{len(verdes)} bloques verdosos, el mayor al {worst:.0%}",
+        f"{len(violetas)} bloques violáceos, el mayor al {worst:.0%}",
     )
-    check("Acento violeta pintado", accent > 200, f"{accent} píxeles de acento")
+    check("El acento del tema está pintado", accent > 200, f"{accent} píxeles de acento")
 
     # --- Foco del teclado, alineación y controles apagados -------------------
     # El tema no puede dejar el foco invisible al tabular, ni que dos botones de la
@@ -2190,12 +2745,19 @@ def test_interface() -> None:
     for indice, clave in enumerate(secciones, start=1):
         # Los atajos de ventana solo responden si la ventana es la activa: las
         # tarjetas y casillas sueltas de arriba son ventanas propias y se llevan
-        # la activación mientras están abiertas.
-        _activar(app, window)
-        QTest.keyClick(window, getattr(Qt, f"Key_{indice}"), Qt.ControlModifier)
-        _settle(app, 150)
-        if window.stack.currentWidget() is not window._pages[clave]:  # noqa: SLF001
-            fallos_atajo.append(f"Ctrl+{indice} no abrió {clave}")
+        # la activación mientras están abiertas. El escritorio puede quitársela
+        # justo después de dársela (otro programa pasa a primer plano), así que se
+        # reintenta una vez antes de darlo por fallo: si no, una pulsación perdida
+        # se cuenta como que el atajo no funciona.
+        activa = False
+        for _reintento in range(2):
+            activa = _activar(app, window)
+            QTest.keyClick(window, getattr(Qt, f"Key_{indice}"), Qt.ControlModifier)
+            _settle(app, 150)
+            if window.stack.currentWidget() is window._pages[clave]:  # noqa: SLF001
+                break
+        else:
+            fallos_atajo.append(f"Ctrl+{indice} no abrió {clave} (ventana activa: {activa})")
     check("Los atajos Ctrl+1…Ctrl+8 cambian de sección", not fallos_atajo, "; ".join(fallos_atajo))
 
     # --- Anuncios para lectores de pantalla --------------------------------
@@ -2242,11 +2804,123 @@ def test_interface() -> None:
         medidores["CPU"].accessibleName() == "CPU",
         medidores["CPU"].accessibleName(),
     )
-    descripciones = [medidor.accessibleDescription() for medidor in medidores.values()]
+    # Cada medidor lleva el color de su serie de datos y solo cambia al alcanzar el umbral
+    # real de las alertas; el rojo, además, exige que el valor se sostenga (la misma regla
+    # que aplica el motor de alertas). Nada de umbrales inventados en la prueba.
+    import dataclasses as _dataclasses
+
+    from pctoolkit.core.alerts import AlertConfig as _AlertConfig
+    from pctoolkit.core.metrics import MetricsSnapshot as _MetricsSnapshot
+
+    tablero = window.dashboard
+    tablero.set_alert_config(_AlertConfig())  # por defecto: umbral 90 % y racha de 3
+    check(
+        "Cada medidor usa el color de su serie por debajo del umbral",
+        tablero._accent_for(10.0, "series_cpu") == COLORS["series_cpu"]  # noqa: SLF001
+        and tablero._accent_for(10.0, "series_ram") == COLORS["series_ram"]  # noqa: SLF001
+        and tablero._accent_for(10.0, "series_disk") == COLORS["series_disk"]  # noqa: SLF001
+        and tablero._accent_for(10.0, "series_net") == COLORS["series_net"],  # noqa: SLF001
+        f"normal {tablero._accent_for(10.0, 'series_cpu')}",  # noqa: SLF001
+    )
+    instantaneo = window.metrics.poll()
+    pico = _dataclasses.replace(instantaneo, cpu_percent=95.0, ram_percent=95.0, disk_percent=95.0)
+    tablero._streaks.update(dict.fromkeys(tablero._streaks, 0))  # noqa: SLF001
+    tablero._update_streaks(pico)  # noqa: SLF001
+    check(
+        "Un pico por encima del umbral, sin sostenerse, se queda en aviso",
+        tablero._accent_for(95.0, "series_cpu") == COLORS["warn"]  # noqa: SLF001
+        and tablero._accent_for(95.0, "series_ram") == COLORS["warn"],  # noqa: SLF001
+        tablero._accent_for(95.0, "series_cpu"),  # noqa: SLF001
+    )
+    tablero._update_streaks(pico)  # noqa: SLF001
+    tablero._update_streaks(pico)  # noqa: SLF001
+    check(
+        "Sostenido por encima del umbral, el medidor pasa a rojo",
+        tablero._accent_for(95.0, "series_disk") == COLORS["bad"],  # noqa: SLF001
+        tablero._accent_for(95.0, "series_disk"),  # noqa: SLF001
+    )
+    # Los chips de texto acompañan a la alerta y desaparecen al bajar del umbral.
+    tablero.set_alert_config(
+        _AlertConfig(thresholds={"cpu": 20.0, "ram": 20.0, "disk": 20.0}, sustained_samples=1)
+    )
+    tablero.update_snapshot(pico, {})
+    check(
+        "El chip de texto avisa al alcanzar el umbral",
+        "Crítico · 95 % (umbral 20 %)" == tablero.chips["series_cpu"].text(),
+        tablero.chips["series_cpu"].text(),
+    )
+    tablero.update_snapshot(_MetricsSnapshot(cpu_percent=5.0, ram_percent=5.0, disk_percent=5.0), {})
+    check(
+        "Sin superar el umbral no hay chip",
+        tablero.chips["series_cpu"].isHidden(),
+        tablero.chips["series_cpu"].text(),
+    )
+    tablero.set_alert_config(window.settings.alert_config)
+    # La marca del umbral se pinta en el abanico y se recorta a la escala del medidor.
+    medidor = tablero.cpu_gauge
+    from PySide6.QtCore import QPoint as _Punto
+    from PySide6.QtGui import QColor as _ColorMedidor, QImage as _Imagen, QPainter as _Pintor
+
+    def _pixeles_marca() -> int:
+        lienzo = _Imagen(medidor.size(), _Imagen.Format_ARGB32)
+        lienzo.fill(_ColorMedidor(COLORS["panel"]))
+        pintor = _Pintor(lienzo)
+        medidor.render(pintor, _Punto(0, 0))
+        pintor.end()
+        objetivo = _ColorMedidor(COLORS["text_muted"])
+        total = 0
+        for y in range(0, lienzo.height(), 2):
+            for x in range(0, lienzo.width(), 2):
+                tono = lienzo.pixelColor(x, y)
+                if (
+                    abs(tono.red() - objetivo.red())
+                    + abs(tono.green() - objetivo.green())
+                    + abs(tono.blue() - objetivo.blue())
+                ) <= 21:
+                    total += 1
+        return total
+
+    medidor.set_threshold(None)
+    sin_marca = _pixeles_marca()
+    medidor.set_threshold(90.0)
+    check(
+        "La marca del umbral se pinta en el medidor",
+        _pixeles_marca() > sin_marca,
+        f"{sin_marca} píxeles sin marca",
+    )
+    medidor.set_threshold(150.0)
+    check(
+        "El umbral se recorta a la escala del medidor",
+        medidor._threshold == 100.0,  # noqa: SLF001
+        str(medidor._threshold),  # noqa: SLF001
+    )
+    medidor.set_threshold(None)
+    window._on_sample(window.metrics.poll())  # noqa: SLF001
+    check(
+        "El medidor de red enseña velocidad, no un porcentaje",
+        bool(tablero.net_gauge._display) and "/s" in str(tablero.net_gauge._display),  # noqa: SLF001
+        str(tablero.net_gauge._display),  # noqa: SLF001
+    )
+    check(
+        "El medidor de red mide contra la velocidad del enlace",
+        tablero._net_scale() > 0  # noqa: SLF001
+        and tablero.net_gauge._accent == COLORS["series_net"],  # noqa: SLF001
+        f"escala {tablero._net_scale():.0f} B/s",  # noqa: SLF001
+    )
+    caja_lateral = window.auto_log_check
+    check(
+        "El texto de la casilla de la barra lateral no se corta",
+        caja_lateral.sizeHint().width() <= caja_lateral.width(),
+        f"necesita {caja_lateral.sizeHint().width()} px y tiene {caja_lateral.width()}",
+    )
+    descripciones = {nombre: medidor.accessibleDescription() for nombre, medidor in medidores.items()}
+    # Los tres medidores que miden un porcentaje lo dicen; el de red mide velocidad, así que
+    # describe «…/s» (un «0 %» con tráfico no decía nada).
     check(
         "Cada indicador describe su valor",
-        all(texto and "%" in texto for texto in descripciones),
-        " | ".join(descripciones),
+        all("%" in descripciones[nombre] for nombre in ("CPU", "RAM", "Disco"))
+        and "/s" in descripciones["Red"],
+        " | ".join(descripciones.values()),
     )
     check(
         "El medidor de salud describe la puntuación",
@@ -2487,8 +3161,8 @@ def test_interface() -> None:
     _activar(app, clara)
     _settle(app, 150)
     imagen_clara = clara.grab().toImage()
-    # El acento de la paleta activa **ahora**: en claro es el violeta oscurecido, no el
-    # brillante del tema oscuro.
+    # El acento de la paleta activa **ahora**: en claro es la tinta oscura, no el casi
+    # blanco del tema oscuro.
     acento_claro = _Color(COLORS["accent"])
     muestreo = claro_px = oscuro_px = acento_px = 0
     for y in range(0, imagen_clara.height(), 4):
@@ -2509,7 +3183,7 @@ def test_interface() -> None:
                 acento_px += 1
     check("Fondo claro en pantalla", claro_px / muestreo > 0.85, f"{claro_px / muestreo:.0%} de píxeles claros")
     check("Texto oscuro sobre el fondo claro", oscuro_px / muestreo > 0.005, f"{oscuro_px / muestreo:.2%} de píxeles oscuros")
-    check("El acento violeta sigue ahí en claro", acento_px > 200, f"{acento_px} píxeles de acento")
+    check("El acento del tema sigue ahí en claro", acento_px > 200, f"{acento_px} píxeles de acento")
 
     # Se vuelve al tema oscuro para el resto de comprobaciones.
     app_settings.theme_mode = "dark"
@@ -2942,159 +3616,99 @@ def test_firma_en_la_compilacion() -> None:
         finally:
             firmar._remove_test_certificate(huella)  # noqa: SLF001
 
+def test_config() -> None:
+    """Números y carpetas personales: como los tenga el sistema, no como supongamos."""
+    from PySide6.QtCore import QLocale
 
-def test_documentacion() -> None:
-    """La documentación no se queda atrás: versión, capturas y recuentos.
+    from pctoolkit.core import config, disk
 
-    Las capturas llevan dentro la versión del programa (en la barra lateral de cada página y
-    en el asistente de instalación) y las guías citan el total de comprobaciones, así que al
-    subir de versión o al añadir pruebas hay cosas que rehacer. Aquí se comprueba lo que la
-    suite puede saber de verdad: que las guías hablan de la versión actual, que cada captura
-    citada existe, que su fondo es el de la paleta de hoy y que `capturas\\estado.json` dice
-    que se generó con esta versión. El recuento va el último, cuando ya se sabe el total.
-    """
-    from collections import Counter
-
-    from PySide6.QtGui import QImage
-
-    import firmar
-    from pctoolkit.core import config
-    from pctoolkit.ui.tray import tray_available
-    from tools import capturas
-
-    guias = {
-        nombre: (ROOT / nombre).read_text(encoding="utf-8") for nombre in ("README.md", "DOCUMENTACION.md")
-    }
-
-    # --- Las capturas de la documentación ---------------------------------
-    # Todas las imágenes de `capturas\` son documentación (unas salen en la portada y otras
-    # en el detalle), así que se miran todas; y cualquier ruta que citen las guías tiene que
-    # existir de verdad.
-    imagenes = sorted((ROOT / "capturas").glob("*.png"))
-    citadas = sorted(
-        {
-            ruta
-            for texto in guias.values()
-            for ruta in re.findall(r"capturas[/\\][\w./\\-]+\.(?:png|html)", texto)
-        }
-    )
-    faltan = [ruta for ruta in citadas if not (ROOT / ruta.replace("\\", "/")).exists()]
-    invalidas = [archivo.name for archivo in imagenes if archivo.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n"]
+    sistema = QLocale.system()
     check(
-        "Las capturas de la documentación existen y son PNG",
-        bool(imagenes) and not faltan and not invalidas,
-        f"{len(imagenes)} capturas y {len(citadas)} enlaces de las guías"
-        if not (faltan or invalidas)
-        else "faltan o no son PNG: " + ", ".join(faltan + invalidas),
+        "Los números se escriben como en el sistema",
+        config.format_number(140493, 0) == sistema.toString(140493.0, "f", 0)
+        and config.format_number(1531.4, 1) == sistema.toString(1531.4, "f", 1),
+        f"{config.format_number(140493, 0)} archivos · {config.format_number(1531.4, 1)} ({sistema.name()})",
     )
-
-    # --- El fondo de las capturas es el de la paleta actual ---------------
-    fondos = {
-        config.DARK_COLORS["bg"].lower(),
-        config.DARK_COLORS["bg_alt"].lower(),
-        config.LIGHT_COLORS["bg"].lower(),
-        config.LIGHT_COLORS["bg_alt"].lower(),
-    }
-    dominantes: dict[str, str] = {}
-    for archivo in imagenes:
-        imagen = QImage(str(archivo))
-        cuenta: Counter = Counter()
-        for y in range(0, imagen.height(), 4):
-            for x in range(0, imagen.width(), 4):
-                cuenta[imagen.pixelColor(x, y).name()] += 1
-        dominantes[archivo.name] = cuenta.most_common(1)[0][0] if cuenta else "sin píxeles"
-    ajenas = {nombre: color for nombre, color in dominantes.items() if color not in fondos}
     check(
-        "Las capturas se ven con la paleta actual",
-        bool(dominantes) and not ajenas,
-        ", ".join(f"{nombre} ({color})" for nombre, color in ajenas.items())
-        or f"{len(dominantes)} capturas con el fondo de la paleta activa",
+        "Los recuentos y los tamaños usan el mismo formato",
+        config.format_integer(140493) == sistema.toString(140493.0, "f", 0)
+        and config.format_bytes(531.4 * 1024**3).startswith(sistema.toString(531.4, "f", 1)),
+        f"{config.format_integer(140493)} archivos · {config.format_bytes(531.4 * 1024**3)}",
     )
 
-    # --- Cada captura está anotada con la versión con la que se generó ----
-    # Lo anotan las propias herramientas de capturas (`tools\\capturas.py`), así que si una
-    # imagen se hizo con otra versión —o se cambió a mano— se sabe por la anotación.
-    anotado = capturas.leer()
-    problemas = []
-    for archivo in imagenes:
-        ficha = anotado.get(archivo.name) or {}
-        if not ficha:
-            problemas.append(f"{archivo.name}: sin anotar")
-        elif ficha.get("version") != APP_VERSION:
-            problemas.append(f"{archivo.name}: se hizo con la {ficha.get('version')}")
-        elif ficha.get("sha256") != capturas.sha256(archivo):
-            problemas.append(f"{archivo.name}: cambió desde que se anotó")
+    # Las carpetas personales pueden estar redirigidas (OneDrive, políticas de empresa): se
+    # comprueba contra lo que responde Windows por otra vía, no contra `Path.home()`.
+    from installer import installer_core
+
+    documentos = config.user_folder("Documents")
+    de_windows = installer_core.known_folder("MyDocuments", documentos)
     check(
-        "Las capturas se generaron con la versión actual",
-        not problemas,
-        "; ".join(problemas)
-        or f"{len(imagenes)} capturas de la {APP_VERSION} (tools\\capturar_documentacion.py)",
+        "Las carpetas personales son las que dice Windows",
+        documentos.is_absolute() and str(documentos) == str(de_windows),
+        f"{documentos} (Windows: {de_windows})",
     )
-
-    # --- El informe de muestra --------------------------------------------
-    # Es un documento generado (no una captura), así que se mira lo que lleva dentro: la
-    # versión con la que se hizo y el acento de la paleta clara, que es con la que se pinta.
-    informe = ROOT / "capturas" / "informe_muestra.html"
-    texto_informe = informe.read_text(encoding="utf-8") if informe.exists() else ""
-    ficha_informe = anotado.get(informe.name) or {}
-    problemas_informe = []
-    if not texto_informe:
-        problemas_informe.append(f"no existe {informe.name}")
-    else:
-        if f"PC Toolkit {APP_VERSION}" not in texto_informe:
-            problemas_informe.append("no dice la versión actual")
-        if config.LIGHT_COLORS["accent"] not in texto_informe:
-            problemas_informe.append(f"no lleva el acento de hoy ({config.LIGHT_COLORS['accent']})")
-        if ficha_informe.get("version") != APP_VERSION:
-            problemas_informe.append(f"anotado como {ficha_informe.get('version') or 'sin anotar'}")
-        elif ficha_informe.get("sha256") != capturas.sha256(informe):
-            problemas_informe.append("cambió desde que se anotó")
     check(
-        "El informe de muestra es de la versión y la paleta actuales",
-        not problemas_informe,
-        "; ".join(problemas_informe) or f"informe_muestra.html con la {APP_VERSION} y el acento claro",
+        "La carpeta de informes cuelga de los documentos reales",
+        str(config.reports_dir()).startswith(str(documentos)),
+        str(config.reports_dir()),
     )
-
-    # --- Las guías hablan de la versión actual ----------------------------
-    esperados = [
-        f"PC-Toolkit-{APP_VERSION}-Setup.exe",
-        f"PC-Toolkit-{APP_VERSION}-portable.exe",
-    ]
-    descargas = [objetivo for objetivo in esperados if objetivo in guias["README.md"]]
-    otras = sorted(set(re.findall(r"PC-Toolkit-(\d+\.\d+\.\d+)-", guias["README.md"])) - {APP_VERSION})
-    portada = re.search(r"^# PC Toolkit (\d+\.\d+\.\d+)", guias["DOCUMENTACION.md"], re.M)
+    candidatas = disk.quick_candidates()
     check(
-        "Las guías hablan de la versión actual",
-        len(descargas) == len(esperados) and not otras and bool(portada) and portada.group(1) == APP_VERSION,
-        f"README: {len(descargas)}/2 descargas"
-        + (f", versiones sueltas: {', '.join(otras)}" if otras else "")
-        + f"; DOCUMENTACION: {portada.group(1) if portada else 'sin versión en el título'}",
+        "El análisis rápido ofrece las carpetas del usuario que existen",
+        bool(candidatas) and all(os.path.isdir(ruta) for ruta in candidatas),
+        f"{len(candidatas)} carpetas: " + ", ".join(os.path.basename(ruta) for ruta in candidatas),
     )
 
-    # --- El recuento de comprobaciones ------------------------------------
-    # Esta es la última comprobación de la suite a propósito: necesita el total definitivo,
-    # que es el número de comprobaciones ya hechas más esta misma.
-    total = len(CHECKS) + 1
-    documentados = [
-        int(numero)
-        for texto in guias.values()
-        for numero in re.findall(r"(\d+)\s+comprobaciones", texto) + re.findall(r"salen (\d+)", texto)
-    ]
-    # Sin bandeja, sin signtool o sin `dist\\` compilado se omiten unas cuantas, así que en un
-    # equipo incompleto la guía puede pedir un número mayor. En uno completo tiene que ser el
-    # mismo: si no, alguien añadió pruebas (o quitó) sin actualizar la documentación.
-    completo = tray_available() and firmar.find_signtool() is not None and bool(firmar.artifacts())
-    coinciden = bool(documentados) and len(set(documentados)) == 1
-    documentado = documentados[0] if coinciden else 0
+    # Propiedades del ejecutable: llevan la licencia y el autor de verdad.
+    import build_exe
+
+    with tempfile.TemporaryDirectory() as tmp:
+        destino = Path(tmp) / "version_info.txt"
+        build_exe.write_version_file(destino)
+        texto = destino.read_text(encoding="utf-8")
     check(
-        "Los recuentos de las guías coinciden con esta pasada",
-        coinciden and (documentado == total if completo else documentado >= total),
-        f"guías: {sorted(set(documentados))}; esta pasada: {total}; equipo completo: {'sí' if completo else 'no'}",
+        "Las propiedades del ejecutable llevan la licencia y el autor",
+        "MIT" in texto
+        and "Federico" in texto
+        and "Uso libre" not in texto
+        and APP_VERSION in texto,
+        "version_info.txt",
     )
 
 
-def main() -> int:
+def test_registro() -> None:
+    """El registro en archivo: lo que falla queda escrito sin molestar al usuario."""
+    from pctoolkit.core import logs
+
+    ruta = logs.setup()
+    check("El registro se prepara en una carpeta del usuario", bool(ruta), str(ruta))
+    if ruta:
+        check(
+            "El archivo de registro vive en los datos locales del usuario",
+            str(ruta).startswith(_TEMP_HOME) and ruta.name == logs.FILE_NAME,
+            str(ruta),
+        )
+    logs.warning("Prueba de registro", OSError("fallo de mentira"))
+    texto = ruta.read_text(encoding="utf-8") if ruta and ruta.exists() else ""
+    check(
+        "Un aviso queda escrito con su motivo",
+        "Prueba de registro" in texto and "fallo de mentira" in texto,
+        f"{len(texto)} caracteres en {ruta}",
+    )
+    check(
+        "El registro se recorta antes de crecer sin límite",
+        logs.MAX_BYTES <= 1024 * 1024 and logs.BACKUP_COUNT >= 1,
+        f"{logs.MAX_BYTES} bytes, {logs.BACKUP_COUNT} copias",
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    argumentos = list(sys.argv[1:] if argv is None else argv)
+    # Las guardas de documentación se pueden dejar fuera: si una captura está por rehacer,
+    # no tiene por qué impedir comprobar un cambio de código.
+    sin_documentacion = "--sin-documentacion" in argumentos
     test_metrics()
+    test_config()
     test_theme()
     test_disk()
     test_tasks()
@@ -3110,19 +3724,15 @@ def main() -> int:
     test_firma()
     test_firma_en_la_compilacion()
     test_interface()
-    # La última: comprueba, entre otras cosas, que el recuento de las guías es el de esta
-    # misma pasada, así que necesita que ya estén todas hechas.
-    test_documentacion()
+    test_registro()
+    if sin_documentacion:
+        print("Guardas de documentación omitidas (--sin-documentacion).")
+    else:
+        # La última: comprueba, entre otras cosas, que el recuento de las guías es el de
+        # esta misma pasada, así que necesita que ya estén todas hechas.
+        verificar_documentacion()
 
-    failures = [name for name, ok, _ in CHECKS if not ok]
-    for name, ok, detail in CHECKS:
-        mark = "OK  " if ok else "FALLO"
-        print(f"[{mark}] {name}" + (f"  ->  {detail}" if detail else ""))
-    print(f"\n{len(CHECKS) - len(failures)}/{len(CHECKS)} comprobaciones correctas")
-    if failures:
-        print("Fallos: " + ", ".join(failures))
-        return 1
-    return 0
+    return report()
 
 
 if __name__ == "__main__":

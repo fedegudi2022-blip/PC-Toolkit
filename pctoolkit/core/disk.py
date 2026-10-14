@@ -18,6 +18,8 @@ from typing import Callable, Iterable
 import psutil
 from PySide6.QtCore import QThread, Signal
 
+from . import logs
+
 CATEGORIES: dict[str, tuple[str, ...]] = {
     "Vídeo": (".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".mpg", ".mpeg", ".ts"),
     "Imágenes": (".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff", ".webp", ".heic", ".raw", ".svg", ".psd"),
@@ -112,8 +114,10 @@ def list_drives() -> list[DriveInfo]:
                 usage.free,
                 usage.percent,
             )
-        except OSError:
-            pass
+        except OSError as exc:
+            # Sin la medida de la unidad del sistema el informe sale sin datos de disco:
+            # conviene poder saber después por qué.
+            logs.warning(f"No se pudo medir la unidad {fallback}", exc)
         info.label = _volume_label(fallback)
         drives.append(info)
     drives.sort(key=lambda d: d.mount)
@@ -149,16 +153,24 @@ def category_for(name: str) -> str:
 
 
 def quick_candidates(root: str | None = None) -> list[str]:
-    """Carpetas recomendadas para analizar rápidamente."""
-    home = os.path.expanduser("~")
-    root = root or (os.environ.get("SystemDrive", "C:") + "\\")
+    r"""Carpetas recomendadas para analizar rápidamente.
+
+    Son las carpetas personales **reales** del usuario: se preguntan a Windows
+    (`config.user_folder`) porque con OneDrive o una política de empresa están
+    redirigidas y `%USERPROFILE%\Downloads` no es la carpeta que el usuario ve.
+    """
+    from .config import user_folder
+
+    local = os.environ.get("LOCALAPPDATA") or os.path.join(
+        os.path.expanduser("~"), "AppData", "Local"
+    )
     options = [
-        os.path.join(home, "Downloads"),
-        os.path.join(home, "Desktop"),
-        os.path.join(home, "Documents"),
-        os.path.join(home, "Videos"),
-        os.path.join(home, "Pictures"),
-        os.path.join(home, "AppData", "Local", "Temp"),
+        str(user_folder("Downloads")),
+        str(user_folder("Desktop")),
+        str(user_folder("Documents")),
+        str(user_folder("Videos")),
+        str(user_folder("Pictures")),
+        os.path.join(local, "Temp"),
     ]
     return [path for path in options if os.path.isdir(path)]
 

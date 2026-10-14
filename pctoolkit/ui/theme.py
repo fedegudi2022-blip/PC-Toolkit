@@ -1,11 +1,11 @@
 """Tema visual de PC Toolkit: dos paletas y una hoja de estilos QSS.
 
-La oscura «negro mate» es fondo negro con superficies en grises neutros; la clara
-«papel» usa blancos y grises fríos con el mismo violeta oscurecido. En las dos, un
-único violeta manda en las acciones, el foco y la selección, el cian queda para el
-estado saludable, el ámbar para los avisos y el rojo para los errores, y todos los
-matices de superficie (hover, pulsado, selección, pistas) salen de
-`COLORS`/`SURFACES`, así que el conjunto se reajusta desde un solo sitio.
+La oscura «grafito» es fondo casi negro con superficies en grises fríos; la clara
+«papel» usa blancos y grises fríos con el mismo acento tinta. En las dos, el acento es
+**neutro** (casi blanco en oscuro, tinta en claro) y manda en los botones principales y
+el foco; el verde queda para el estado saludable, el ámbar para los avisos y el rojo
+para los errores, y todos los matices de superficie (hover, pulsado, selección, pistas)
+salen de `COLORS`/`SURFACES`, así que el conjunto se reajusta desde un solo sitio.
 
 El QSS es una plantilla con una clave por color: se rellena **al aplicarlo**, no
 al importar el módulo, que es lo que permite cambiar de tema en caliente.
@@ -44,8 +44,8 @@ def with_alpha(color: str, alpha: int) -> str:
     """Color de la paleta con transparencia, para las insignias de estado.
 
     Ojo con el orden: Qt lee un hexadecimal de ocho dígitos como `#AARRGGBB`, no como
-    el `#RRGGBBAA` del CSS. Pegar el alfa al final —`#FBBF24` + `22`— daba un rojo
-    casi opaco en vez de un amarillo al 13 %, así que aquí se escribe el alfa delante.
+    el `#RRGGBBAA` del CSS. Pegar el alfa al final —el color + `22`— daba un tono casi
+    opaco en vez de uno al 13 %, así que aquí se escribe el alfa delante.
     """
     tono = QColor(color)
     valor = max(0, min(255, int(alpha)))
@@ -287,11 +287,13 @@ QPushButton#SidebarItem:focus {{
     border-color: {accent_soft};
 }}
 QPushButton#SidebarItem:checked {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                 stop:0 {selected}, stop:1 {panel_alt});
+    /* D2: la sección activa se marca con el gris de selección y un borde de 1 px en
+       el gris atenuado, no con el acento (que en el tema oscuro es casi blanco y
+       brillaría más que el propio contenido). */
+    background: {selected};
     color: {on_selected};
-    border: 1px solid {accent_soft};
-    border-left: 3px solid {accent};
+    border: 1px solid {text_muted};
+    border-left: 3px solid {text_muted};
     font-weight: 700;
 }}
 
@@ -378,7 +380,7 @@ QListWidget::item {{ padding: 8px 10px; border-radius: 9px; color: {text}; }}
 QListWidget::item:selected {{
     background: {selected};
     color: {text};
-    border: 1px solid {accent_soft};
+    border: 1px solid {text_muted};
 }}
 QListWidget::item:hover {{ background: {hover}; }}
 QListWidget::item:alternate {{ background: {row}; }}
@@ -431,7 +433,7 @@ QTableWidget::item:hover {{ background: {hover}; }}
 QTableWidget::item:selected {{
     background: {selected};
     color: {text};
-    border: 1px solid {accent_soft};
+    border: 1px solid {text_muted};
 }}
 /* Igual que en las listas: con la ventana en segundo plano la selección se apaga. */
 QTableWidget::item:selected:!active {{ background: {panel_alt}; color: {text_muted}; }}

@@ -58,6 +58,7 @@ if IS_WINDOWS:
     from ctypes import wintypes
 
     HWND_BROADCAST = 0xFFFF
+    MSGFLT_ALLOW = 1
 
     class _MSG(ctypes.Structure):
         """Estructura MSG de Windows (solo se mira el campo `message`)."""
@@ -87,6 +88,29 @@ if IS_WINDOWS:
                 wintypes.HWND(HWND_BROADCAST), wintypes.UINT(show_message_id()), 0, 0
             )
         )
+
+    def allow_message_window(window_id: int) -> bool:
+        """Deja pasar el mensaje «muéstrate» a la ventana de esta copia.
+
+        UIPI descarta los mensajes que van de un proceso de integridad más baja a uno más
+        alta: si esta copia corre como administrador y el usuario abre el acceso directo
+        (que se lanza normal), el aviso no llega y la ventana se queda detrás, como si el
+        programa no hubiera hecho nada. Se permite **ese mensaje concreto** y solo ese:
+        el resto de la interfaz sigue protegida por el aislamiento de Windows.
+        """
+        if not window_id:
+            return False
+        try:
+            return bool(
+                ctypes.windll.user32.ChangeWindowMessageFilterEx(
+                    wintypes.HWND(int(window_id)),
+                    wintypes.UINT(show_message_id()),
+                    wintypes.DWORD(MSGFLT_ALLOW),
+                    None,
+                )
+            )
+        except (AttributeError, OSError):
+            return False
 
     class _ShowListener(QAbstractNativeEventFilter):
         """Escucha el mensaje con el que otra copia pide que se muestre la ventana.
@@ -124,6 +148,9 @@ else:  # pragma: no cover - fuera de Windows no hay ventana que mostrar
     def _broadcast_show() -> bool:
         return False
 
+    def allow_message_window(window_id: int) -> bool:
+        return False
+
     _ShowListener = None  # type: ignore[assignment]
 
 
@@ -136,7 +163,7 @@ class SingleInstance(QObject):
         if not guarda.acquire(...):
             guarda.notify_existing()
             return 0
-        guarda.listen(window.show_from_another_instance)   # al terminar: release()
+        guarda.listen(window.show_from_another_instance, window.winId())   # al terminar: release()
     """
 
     show_requested = Signal()
@@ -168,10 +195,13 @@ class SingleInstance(QObject):
 
     # --- Aviso a la copia que ya está abierta --------------------------------
 
-    def listen(self, callback: Callable[[], None] | None = None) -> bool:
+    def listen(self, callback: Callable[[], None] | None = None, window_id: int | None = None) -> bool:
         """Se pone a escuchar peticiones de «muéstrate» de futuras copias.
 
-        Necesita una `QApplication` creada: el filtro se instala en la aplicación.
+        Necesita una `QApplication` creada: el filtro se instala en la aplicación. Con
+        `window_id` (el `winId()` de la ventana principal) se admite además el mensaje
+        cuando la copia nueva viene de un proceso de integridad más baja, que es lo que
+        pasa al abrir el acceso directo normal mientras esta copia es de administrador.
         """
         from PySide6.QtWidgets import QApplication
 
@@ -181,6 +211,8 @@ class SingleInstance(QObject):
         escucha = callback or self.show_requested.emit
         self._listener = _ShowListener(escucha)
         app.installNativeEventFilter(self._listener)
+        if window_id:
+            allow_message_window(int(window_id))
         return True
 
     def stop_listening(self) -> None:

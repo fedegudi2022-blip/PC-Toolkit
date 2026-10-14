@@ -141,7 +141,9 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         layout.addWidget(self.stack, 1)
 
-        self.dashboard = DashboardPage(self.metrics, self._launch_tool, self.history)
+        self.dashboard = DashboardPage(
+            self.metrics, self._launch_tool, self.history, self.settings.alert_config
+        )
         self.optimize_page = OptimizeMemoryPage(self.settings)
         self.startup_page = StartupPage(self.undo_store, self._launch_tool)
         self.schedule_page = MaintenanceSchedulePage(self.settings)
@@ -243,7 +245,9 @@ class MainWindow(QMainWindow):
         settings_shortcut.activated.connect(self.open_alert_settings)
         self._shortcuts.append(settings_shortcut)
 
-        self.auto_log_check = QCheckBox("Registrar acciones automáticamente")
+        # El texto va en dos líneas: con la barra lateral a 226 px, el rótulo entero no
+        # cabía en una (se cortaba por el final) y acortarlo dejaba el nombre a medias.
+        self.auto_log_check = QCheckBox("Registrar acciones\nautomáticamente")
         self.auto_log_check.setToolTip(
             "Añade una entrada al registro de tareas cada vez que abres una herramienta de mantenimiento."
         )
@@ -330,6 +334,9 @@ class MainWindow(QMainWindow):
             self.alerts.config = config
             self.alerts.reset()
             self.tray.refresh_config(config)
+            # Los medidores de la portada marcan el mismo umbral y avisan con él: si el
+            # usuario lo cambia, tienen que enterarse sin reiniciar nada.
+            self.dashboard.set_alert_config(config)
             self.recorder.interval_seconds = max(5, self.settings.history_interval_seconds)
             self._apply_power_profile(refresh=True)
             resumen = _describe_alert_config(config)

@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.config import COLORS, format_bytes
+from ..core.config import COLORS, format_bytes, format_integer
 from ..core import tools as tool_core
 from . import accessibility, icons
 from .widgets import Card, IconBadge, Muted, PageHeader, SectionTitle
@@ -227,7 +227,7 @@ class ToolsPage(QWidget):
             self.clean_temp_button.setEnabled(False)
         else:
             self.temp_info.setText(
-                f"{format_bytes(report.total_size)} en {report.file_count:,} archivos temporales "
+                f"{format_bytes(report.total_size)} en {format_integer(report.file_count)} archivos temporales "
                 f"(más de 1 hora de antigüedad) en {report.folders[0] if report.folders else ''}"
             )
             self.clean_temp_button.setEnabled(True)
@@ -242,7 +242,7 @@ class ToolsPage(QWidget):
             self,
             "Liberar espacio",
             "Se eliminarán los archivos temporales con más de una hora de antigüedad:\n\n"
-            f"{format_bytes(report.total_size)} en {report.file_count:,} archivos\n"
+            f"{format_bytes(report.total_size)} en {format_integer(report.file_count)} archivos\n"
             f"Carpeta: {report.folders[0] if report.folders else ''}\n\n"
             "Los archivos en uso se omitirán automáticamente. ¿Continuar?",
             QMessageBox.Yes | QMessageBox.No,
@@ -253,7 +253,7 @@ class ToolsPage(QWidget):
         result = tool_core.clean_temp_folder()
         self.temp_info.setText(
             f"Se liberaron {format_bytes(result.freed)} "
-            f"({result.deleted:,} archivos borrados, {result.skipped:,} omitidos)."
+            f"({format_integer(result.deleted)} archivos borrados, {format_integer(result.skipped)} omitidos)."
         )
         self.clean_temp_button.setEnabled(False)
         self.status.emit(f"Espacio liberado: {format_bytes(result.freed)}")

@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.config import COLORS, format_bytes
+from ..core.config import COLORS, format_bytes, format_integer
 from ..core.disk import DiskScanner, DriveInfo, ScanResult, list_drives, quick_candidates
 from . import icons
 from .widgets import (
@@ -283,7 +283,7 @@ class DiskAnalyzerPage(QWidget):
 
     def _on_progress(self, path: str, count: int) -> None:
         short = path if len(path) < 78 else "…" + path[-77:]
-        self.status.emit(f"{count:,} archivos analizados · {short}")
+        self.status.emit(f"{format_integer(count)} archivos analizados · {short}")
 
     def _on_failed(self, message: str) -> None:
         self._finish_ui()
@@ -308,7 +308,7 @@ class DiskAnalyzerPage(QWidget):
         suffix = " (incompleto)" if result.cancelled else ""
         self.status.emit(
             f"Análisis terminado{suffix}: {format_bytes(result.total_size)} en "
-            f"{result.total_files:,} archivos · {result.duration:.1f} s"
+            f"{format_integer(result.total_files)} archivos · {result.duration:.1f} s"
         )
 
     def _render(self, result: ScanResult) -> None:

@@ -15,7 +15,7 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 
-from . import config
+from . import config, logs
 
 RETENTION_HOURS = 24
 DEFAULT_INTERVAL_SECONDS = 30
@@ -141,8 +141,8 @@ class HistoryStore:
         try:
             if self.path.exists():
                 self.path.unlink()
-        except OSError:
-            pass
+        except OSError as exc:
+            logs.warning(f"No se pudo vaciar el historial ({self.path})", exc)
         self._writes_since_prune = 0
 
     def count(self) -> int:

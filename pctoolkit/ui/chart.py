@@ -19,14 +19,14 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ..core.config import COLORS, SURFACES
-from . import accessibility
+from . import accessibility, theme
 
 # Series de la gráfica: (clave de la muestra, etiqueta, clave de color de la paleta).
 # Se guarda la **clave** y no el color: la paleta cambia al cambiar de tema, y un
 # color copiado aquí al importar el módulo se quedaría con el del tema anterior.
-# Los colores de serie son de datos, no de estado: cian, violeta y naranja se
-# distinguen entre sí sin parecer una alerta cuando el valor es normal (el amarillo
-# y el rojo quedan reservados para avisos y errores).
+# Los colores de serie son de datos, no de estado: azul, cian, naranja y gris azulado
+# se distinguen entre sí (también con daltonismo) sin parecer una alerta cuando el valor
+# es normal (el ámbar y el rojo quedan reservados para avisos y errores).
 SERIES = (
     ("cpu", "CPU", "series_cpu"),
     ("ram", "Memoria", "series_ram"),
@@ -173,13 +173,15 @@ class HistoryChart(QWidget):
             area.lineTo(QPointF(points[0].x(), rect.bottom()))
             area.closeSubpath()
             gradient = QLinearGradient(0, rect.top(), 0, rect.bottom())
-            gradient.setColorAt(0.0, QColor(base.red(), base.green(), base.blue(), 60))
-            gradient.setColorAt(1.0, QColor(base.red(), base.green(), base.blue(), 0))
+            # `theme.with_alpha` escribe el alfa delante (#AARRGGBB), que es como lo
+            # lee Qt; pegarlo al final del hexadecimal daría un color casi opaco.
+            gradient.setColorAt(0.0, QColor(theme.with_alpha(color, 60)))
+            gradient.setColorAt(1.0, QColor(theme.with_alpha(color, 0)))
             painter.setPen(Qt.NoPen)
             painter.setBrush(QBrush(gradient))
             painter.drawPath(area)
 
-        glow = QPen(QColor(base.red(), base.green(), base.blue(), 55))
+        glow = QPen(QColor(theme.with_alpha(color, 55)))
         glow.setWidthF(6.0)
         glow.setCapStyle(Qt.RoundCap)
         glow.setJoinStyle(Qt.RoundJoin)

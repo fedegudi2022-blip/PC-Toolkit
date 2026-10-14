@@ -32,7 +32,7 @@ DEFAULT_TARGET = ROOT / "assets" / "pc_toolkit.ico"
 
 
 def icon_image(size: int = BASE) -> QImage:
-    """Icono de la app: chip violeta sobre un cuadrado redondeado negro."""
+    """Icono de la app: chip casi blanco sobre un cuadrado redondeado grafito (D2)."""
     image = QImage(BASE, BASE, QImage.Format_ARGB32)
     image.fill(Qt.transparent)
     painter = QPainter(image)
@@ -50,14 +50,18 @@ def icon_image(size: int = BASE) -> QImage:
     radius = BASE * 0.23
     painter.drawRoundedRect(QRectF(0, 0, BASE, BASE), radius, radius)
 
-    # Brillo superior
+    # Brillo superior: el mismo casi blanco del acento, muy transparente. Se lee de la
+    # paleta en vez de escribir un blanco fijo, para que el icono no se quede con un
+    # color de otro diseño si el acento cambia.
+    brillo = QColor(DARK_COLORS["accent_glow"])
+    brillo.setAlpha(46)
     glow = QLinearGradient(0, 0, 0, BASE * 0.6)
-    glow.setColorAt(0.0, QColor(255, 255, 255, 46))
-    glow.setColorAt(1.0, QColor(255, 255, 255, 0))
+    glow.setColorAt(0.0, brillo)
+    glow.setColorAt(1.0, QColor(brillo.red(), brillo.green(), brillo.blue(), 0))
     painter.setBrush(glow)
     painter.drawRoundedRect(QRectF(BASE * 0.04, BASE * 0.04, BASE * 0.92, BASE * 0.55), radius, radius)
 
-    # Chip, en el violeta de acento de la interfaz.
+    # Chip, en el acento de la interfaz (casi blanco en el tema oscuro).
     chip = QRectF(BASE * 0.28, BASE * 0.28, BASE * 0.44, BASE * 0.44)
     pen = QPen(QColor(DARK_COLORS["accent"]))
     pen.setWidthF(BASE * 0.055)

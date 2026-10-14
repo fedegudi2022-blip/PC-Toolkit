@@ -13,7 +13,6 @@ from PySide6.QtGui import (
     QLinearGradient,
     QPainter,
     QPen,
-    QRadialGradient,
 )
 from PySide6.QtWidgets import (
     QFrame,
@@ -29,11 +28,18 @@ from ..core.config import COLORS, SURFACES, health_color
 from . import accessibility, icons
 
 
-def make_shadow(widget: QWidget, blur: int = 28, color: str = "#000000", alpha: int = 110, dy: int = 8) -> None:
+def make_shadow(widget: QWidget, blur: int = 28, color: str | None = None, alpha: int = 110, dy: int = 8) -> None:
+    """Sombra suave bajo un widget.
+
+    El color se resuelve al llamar y no como valor por defecto: los valores por
+    defecto se evalúan al importar el módulo, así que la sombra se quedaría con el
+    fondo del tema que hubiera en ese momento. Sin color propio se usa el fondo de la
+    paleta, que es el tono más neutro que hay en ella.
+    """
     effect = QGraphicsDropShadowEffect(widget)
     effect.setBlurRadius(blur)
     effect.setOffset(0, dy)
-    shadow_color = QColor(color)
+    shadow_color = QColor(color or COLORS["bg"])
     shadow_color.setAlpha(alpha)
     effect.setColor(shadow_color)
     widget.setGraphicsEffect(effect)
@@ -141,6 +147,11 @@ class ArcGauge(QWidget):
         self._subtitle = subtitle
         self._ticks = ticks
         self._accent = COLORS["accent"]
+        # Texto propio para el centro, cuando el dato no es un porcentaje.
+        self._display: str | None = None
+        # Marca del umbral de aviso (en porcentaje): el abanico la pinta como una raya
+        # aparte, para que se vea dónde empieza el aviso configurado.
+        self._threshold: float | None = None
         self.setMinimumSize(170, 148)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setFixedHeight(152)
@@ -173,12 +184,33 @@ class ArcGauge(QWidget):
         texto = f"{self._value:.0f}{self._unit}" if self._unit == "%" else f"{self._value:.0f} {self._unit}"
         return f"{texto} ({self._subtitle})" if self._subtitle else texto
 
-    def set_display(self, main: str, subtitle: str | None = None) -> None:
-        """Permite mostrar un valor en texto libre (p. ej. «1.2 GB/s»)."""
-        self._unit = main
+    def set_display(self, main: str | None, subtitle: str | None = None) -> None:
+        """Muestra un texto propio en el centro (p. ej. «1,2 MB/s»).
+
+        Lo usan los medidores que no miden un porcentaje: la red se enseña en velocidad,
+        porque un «0 %» con tráfico no dice nada. Con `None` vuelve al valor numérico.
+        """
+        nuevo = None if main is None else str(main)
+        if nuevo == self._display and (subtitle is None or subtitle == self._subtitle):
+            return
+        self._display = nuevo
         if subtitle is not None:
             self._subtitle = subtitle
-        self.setAccessibleDescription(f"{main} ({subtitle})" if subtitle else str(main))
+        self.setAccessibleDescription(
+            f"{nuevo} ({self._subtitle})" if nuevo else self._spoken_value()
+        )
+        self.update()
+
+    def set_threshold(self, percent: float | None) -> None:
+        """Marca del umbral de aviso (el de las alertas configuradas).
+
+        `None` la quita. No cambia el color del medidor: solo dibuja dónde queda el
+        umbral, para que el cambio de color no llegue por sorpresa.
+        """
+        nuevo = None if percent is None else max(0.0, min(100.0, float(percent)))
+        if nuevo == self._threshold:
+            return
+        self._threshold = nuevo
         self.update()
 
     # --- Pintura ---------------------------------------------------------
@@ -197,14 +229,9 @@ class ArcGauge(QWidget):
         accent = QColor(self._accent)
         dim = QColor(SURFACES["track"])
 
-        # Halo suave bajo el abanico
-        glow = QRadialGradient(center, radius * 1.05)
-        glow.setColorAt(0.0, QColor(accent.red(), accent.green(), accent.blue(), 62))
-        glow.setColorAt(0.55, QColor(accent.red(), accent.green(), accent.blue(), 20))
-        glow.setColorAt(1.0, QColor(accent.red(), accent.green(), accent.blue(), 0))
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(glow))
-        painter.drawEllipse(center, radius * 1.05, radius * 1.05)
+        # Sin halo: el abanico se sostiene solo con sus marcas, el color de su serie y la
+        # marca del umbral. El resplandor radial que había antes era un resto del diseño
+        # anterior y velaba el fondo de la tarjeta sin aportar información (D2).
 
         for index in range(self._ticks):
             angle = math.radians(start + (end - start) * index / max(1, self._ticks - 1))
@@ -229,30 +256,48 @@ class ArcGauge(QWidget):
                 painter.setPen(pen)
             painter.drawLine(inner_point, outer)
 
+        # Marca del umbral: una raya que cruza el abanico justo por donde empieza el
+        # aviso configurado, un poco más larga que las marcas normales.
+        if self._threshold is not None:
+            angle = math.radians(start + (end - start) * self._threshold / 100.0)
+            cos_a, sin_a = math.cos(angle), math.sin(angle)
+            marca = QPen(QColor(COLORS["text_muted"]))
+            marca.setWidthF(2.2)
+            marca.setCapStyle(Qt.FlatCap)
+            painter.setPen(marca)
+            painter.drawLine(
+                QPointF(center.x() + cos_a * inner * 0.94, center.y() - sin_a * inner * 0.94),
+                QPointF(center.x() + cos_a * radius * 1.07, center.y() - sin_a * radius * 1.07),
+            )
+
         # Valor central
+        value_text = self._display if self._display else f"{self._value:.0f}"
         value_font = QFont(self.font())
-        value_font.setPointSizeF(26.0)
+        # Un dato corto («42») va grande; uno con unidad («12,4 MB/s») necesita menos
+        # cuerpo para no salirse del abanico.
+        value_font.setPointSizeF(26.0 if len(value_text) <= 4 else (19.0 if len(value_text) <= 7 else 15.0))
         value_font.setWeight(QFont.DemiBold)
         painter.setFont(value_font)
         painter.setPen(QColor(COLORS["text"]))
-        value_text = f"{self._value:.0f}"
         metrics = painter.fontMetrics()
         baseline = center.y() - 34.0
         value_rect = QRectF(center.x() - radius, baseline - 34.0, radius * 2, 34.0)
         painter.drawText(value_rect, Qt.AlignHCenter | Qt.AlignBottom, value_text)
 
-        # Unidad (pequeña, a la derecha del número)
-        unit_font = QFont(self.font())
-        unit_font.setPointSizeF(10.0)
-        painter.setFont(unit_font)
-        painter.setPen(QColor(COLORS["text_muted"]))
-        unit_width = painter.fontMetrics().horizontalAdvance(self._unit)
-        painter.drawText(
-            QRectF(center.x() + math.floor(metrics.horizontalAdvance(value_text) / 2) + 2,
-                   baseline - 24.0, unit_width + 8, 20),
-            Qt.AlignLeft | Qt.AlignVCenter,
-            self._unit,
-        )
+        # Unidad (pequeña, a la derecha del número). Si el centro lleva un texto propio,
+        # la unidad ya va dentro de él, así que no se repite.
+        if not self._display:
+            unit_font = QFont(self.font())
+            unit_font.setPointSizeF(10.0)
+            painter.setFont(unit_font)
+            painter.setPen(QColor(COLORS["text_muted"]))
+            unit_width = painter.fontMetrics().horizontalAdvance(self._unit)
+            painter.drawText(
+                QRectF(center.x() + math.floor(metrics.horizontalAdvance(value_text) / 2) + 2,
+                       baseline - 24.0, unit_width + 8, 20),
+                Qt.AlignLeft | Qt.AlignVCenter,
+                self._unit,
+            )
 
         if self._subtitle:
             sub_font = QFont(self.font())
@@ -344,7 +389,7 @@ class HealthMeter(QWidget):
         title_font.setWeight(QFont.DemiBold)
         painter.setFont(title_font)
         painter.setPen(QColor(COLORS["text_muted"]))
-        painter.drawText(QRectF(0, 2, width, 16), Qt.AlignLeft | Qt.AlignVCenter, "HEALTH")
+        painter.drawText(QRectF(0, 2, width, 16), Qt.AlignLeft | Qt.AlignVCenter, "SALUD")
 
 
 class ArcProgress(QWidget):

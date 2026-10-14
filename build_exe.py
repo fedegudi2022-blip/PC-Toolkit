@@ -175,11 +175,11 @@ def write_version_file(target: Path = VERSION_FILE) -> Path:
   kids=[
     StringFileInfo([
       StringTable('0C0A04B0', [
-        StringStruct('CompanyName', 'PCToolkit'),
+        StringStruct('CompanyName', 'Federico'),
         StringStruct('FileDescription', '{APP_NAME} - caja de herramientas para Windows'),
         StringStruct('FileVersion', '{APP_VERSION}'),
         StringStruct('InternalName', 'pctoolkit'),
-        StringStruct('LegalCopyright', 'Uso libre'),
+        StringStruct('LegalCopyright', 'Copyright (c) 2026 Federico · Licencia MIT'),
         StringStruct('OriginalFilename', '{APP_EXE}'),
         StringStruct('ProductName', '{APP_NAME}'),
         StringStruct('ProductVersion', '{APP_VERSION}')

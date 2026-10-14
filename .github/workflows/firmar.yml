@@ -23,8 +23,9 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: read
+  contents: write # adjuntar los ejecutables al release de la etiqueta
   id-token: write # permite pedir el token OIDC de Azure
+  attestations: write # firma la procedencia de los ejecutables (build provenance)
 
 env:
   # Versiones fijadas: cuando Microsoft publique otras, se cambian aquí.
@@ -42,18 +43,21 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      # Todo va fijado por el SHA del commit, no por la etiqueta: una etiqueta se puede
+      # mover a otro commit y el flujo ejecutaría código que nadie revisó. El comentario
+      # dice a qué versión corresponde, que es lo que hay que mirar para actualizar.
       - name: Descargar el código
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Preparar Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.13"
           cache: pip
 
       # La biblioteca de firma en la nube necesita el entorno de ejecución de .NET 8.
       - name: Preparar .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: "8.0.x"
 
@@ -87,7 +91,7 @@ jobs:
           Write-Host "Biblioteca de firma lista: $dlib"
 
       - name: Iniciar sesión en Azure con identidad federada (OIDC)
-        uses: azure/login@v3
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -169,7 +173,7 @@ jobs:
         run: python firmar.py --comprobar
 
       - name: Guardar los ejecutables firmados
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pc-toolkit-firmado
           path: |
@@ -178,3 +182,59 @@ jobs:
             dist/PC Toolkit/**
           if-no-files-found: error
           retention-days: 30
+
+      # --- Publicación, solo al empujar una etiqueta `v…` ----------------------
+      # Se preparan los dos nombres con los que se reparte el programa (el instalador y el
+      # portátil) y el resumen SHA-256, que es lo que se cita en las notas de la versión.
+      - name: Preparar los archivos de la entrega
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = python -c "import sys; sys.path.insert(0, '.'); from pctoolkit.core.config import APP_VERSION; print(APP_VERSION)"
+          $destino = Join-Path $env:GITHUB_WORKSPACE 'dist\entrega'
+          New-Item -ItemType Directory -Force -Path $destino | Out-Null
+          Copy-Item 'dist\PC Toolkit Setup.exe' (Join-Path $destino "PC-Toolkit-$version-Setup.exe") -Force
+          Copy-Item 'dist\PC Toolkit.exe' (Join-Path $destino "PC-Toolkit-$version-portable.exe") -Force
+          Push-Location $destino
+          try {
+            Get-ChildItem -Filter 'PC-Toolkit-*.exe' | Sort-Object Name | ForEach-Object {
+              $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLower()
+              "$hash  $($_.Name)"
+            } | Set-Content -LiteralPath 'SHA256SUMS.txt' -Encoding utf8
+          } finally {
+            Pop-Location
+          }
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Get-Content -LiteralPath (Join-Path $destino 'SHA256SUMS.txt')
+
+      # La procedencia la firma GitHub con la identidad del flujo (transparencia de
+      # suministro): quien descarga puede comprobar que el archivo salió de este
+      # repositorio y de este commit, sin depender de nuestra palabra.
+      - name: Firmar la procedencia de los ejecutables
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: |
+            dist/entrega/PC-Toolkit-*-Setup.exe
+            dist/entrega/PC-Toolkit-*-portable.exe
+
+      - name: Adjuntar los ejecutables al release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $etiqueta = "${{ github.ref_name }}"
+          gh release view $etiqueta --json tagName *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $etiqueta `
+              --title "PC Toolkit $env:VERSION" `
+              --notes "PC Toolkit $env:VERSION. Comprueba la descarga con los SHA-256 de SHA256SUMS.txt."
+          }
+          gh release upload $etiqueta `
+            "dist\entrega\PC-Toolkit-$env:VERSION-Setup.exe" `
+            "dist\entrega\PC-Toolkit-$env:VERSION-portable.exe" `
+            "dist\entrega\SHA256SUMS.txt" `
+            --clobber
+          if ($LASTEXITCODE -ne 0) { throw "No se pudieron adjuntar los archivos al release $etiqueta" }
+          gh release view $etiqueta

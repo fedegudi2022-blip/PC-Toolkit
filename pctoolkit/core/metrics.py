@@ -6,6 +6,7 @@ red y temperatura en un QTimer y emite cada instantánea a la interfaz.
 
 from __future__ import annotations
 
+import os
 import platform
 import time
 from dataclasses import dataclass, field
@@ -14,12 +15,18 @@ from typing import Any
 import psutil
 from PySide6.QtCore import QObject, QTimer, Signal
 
+from . import logs
+
 # Cadencia normal (ventana a la vista) y cadencia de ahorro (segundo plano).
 SAMPLE_INTERVAL_MS = 1200
 ECO_INTERVAL_MS = 3500
 
 PROFILE_FULL = "completo"
 PROFILE_ECO = "eco"
+
+IS_WINDOWS = os.name == "nt"
+
+DEFAULT_DISK_LABEL = "Disco del sistema"
 
 
 @dataclass
@@ -98,12 +105,49 @@ class MetricsSnapshot:
 
 def system_drive() -> str:
     """Unidad donde está instalado Windows."""
-    import os
-
     drive = os.environ.get("SystemDrive")
     if not drive:
         return "C:\\"
     return drive.rstrip("\\") + "\\"
+
+
+def system_volume_label(drive: str | None = None) -> str:
+    """Etiqueta del volumen de la unidad del sistema («Windows», «Disco local»…).
+
+    Se pregunta a Windows por el volumen de **esa** unidad (`GetVolumeInformationW`) y,
+    si no contesta, se usa el sistema de archivos de esa misma partición.
+
+    Antes esto se resolvía en cada muestra con `psutil.disk_partitions()`, que recorre
+    todas las unidades (y puede quedarse esperando por una de red caída) y devolvía la
+    primera de la lista, que no tiene por qué ser la del sistema. Ahora se calcula una
+    sola vez, al crear el servicio.
+    """
+    raiz = drive or system_drive()
+    if not raiz.endswith("\\"):
+        raiz += "\\"
+    if IS_WINDOWS:
+        try:
+            import ctypes
+
+            nombre = ctypes.create_unicode_buffer(261)
+            sistema_archivos = ctypes.create_unicode_buffer(261)
+            ok = ctypes.windll.kernel32.GetVolumeInformationW(  # type: ignore[attr-defined]
+                raiz, nombre, len(nombre), None, None, None, sistema_archivos, len(sistema_archivos)
+            )
+            if ok and nombre.value.strip():
+                return nombre.value.strip()
+            if ok and sistema_archivos.value.strip():
+                return sistema_archivos.value.strip()
+        except (AttributeError, OSError):
+            pass
+    try:
+        for particion in psutil.disk_partitions(all=False):
+            if particion.mountpoint.rstrip("\\").upper() == raiz.rstrip("\\").upper():
+                if particion.fstype:
+                    return particion.fstype
+    except (OSError, AttributeError):
+        pass
+    return DEFAULT_DISK_LABEL
 
 
 def cpu_display_name() -> str:
@@ -144,6 +188,10 @@ class MetricsService(QObject):
         self._snapshot = MetricsSnapshot()
         self._temp_available = self._probe_temperatures()
         self._drive = system_drive()
+        self._disk_error_logged = False
+        # La etiqueta del disco se resuelve una sola vez: es un dato que no cambia y que
+        # antes se consultaba en cada muestra.
+        self._disk_label = system_volume_label(self._drive)
         self._cpu_name = cpu_display_name()
         # Primera lectura de cpu_percent para que la siguiente sea válida.
         psutil.cpu_percent(interval=None)
@@ -238,13 +286,14 @@ class MetricsService(QObject):
             snap.disk_used = usage.used
             snap.disk_total = usage.total
             snap.disk_free = usage.free
-        except OSError:
-            pass
+        except OSError as exc:
+            # Se avisa una sola vez: esto corre en cada muestra y una unidad que no
+            # responde llenaría el registro de la misma línea cada segundo.
+            if not self._disk_error_logged:
+                self._disk_error_logged = True
+                logs.warning(f"No se pudo leer el uso de {self._drive}", exc)
         snap.disk_mount = self._drive
-        try:
-            snap.disk_label = psutil.disk_partitions(all=False)[0].fstype or "Disco del sistema"
-        except (OSError, IndexError):
-            snap.disk_label = "Disco del sistema"
+        snap.disk_label = self._disk_label
         try:
             io = psutil.disk_io_counters()
             if io:

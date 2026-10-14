@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -11,7 +12,7 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 
-from . import config
+from . import config, logs
 
 STATUS_PENDING = "Pendiente"
 STATUS_DONE = "Completada"
@@ -86,6 +87,21 @@ class MaintenanceTask:
         return asdict(self)
 
 
+def _parse_tasks(raw: Any) -> list[MaintenanceTask]:
+    """Convierte el contenido del archivo (o de una línea) en tareas, sin fallar por ruido."""
+    items = raw.get("tareas", raw) if isinstance(raw, dict) else raw
+    tasks: list[MaintenanceTask] = []
+    if not isinstance(items, list):
+        return tasks
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        data = {key: item[key] for key in item if key in MaintenanceTask.__dataclass_fields__}
+        data.setdefault("title", "(sin título)")
+        tasks.append(MaintenanceTask(**data))
+    return tasks
+
+
 def _pretty_date(value: str) -> str:
     if not value:
         return ""
@@ -118,36 +134,63 @@ class TaskStore(QObject):
             return
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as exc:
+            logs.warning(f"El archivo de tareas no se pudo leer ({path}); se empieza de cero", exc)
             try:
                 shutil.copy2(path, path.with_suffix(".json.bak"))
-            except OSError:
-                pass
+            except OSError as copia:
+                logs.warning("Tampoco se pudo guardar una copia del archivo de tareas", copia)
             self._tasks = []
             return
-        items = raw.get("tareas", raw) if isinstance(raw, dict) else raw
-        tasks: list[MaintenanceTask] = []
-        if isinstance(items, list):
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                data = {key: item[key] for key in item if key in MaintenanceTask.__dataclass_fields__}
-                data.setdefault("title", "(sin título)")
-                tasks.append(MaintenanceTask(**data))
-        self._tasks = tasks
+        self._tasks = _parse_tasks(raw)
 
     def save(self) -> None:
+        """Guarda sin perder lo que haya escrito otro proceso y sin dejar el archivo a medias.
+
+        El mantenimiento desatendido corre en su propio proceso y escribe este mismo
+        archivo, así que volcar la copia en memoria tal cual borraría las tareas que
+        hubiera añadido (o completado) desde la otra ventana. Antes de escribir se relee
+        el disco y se fusiona por identificador: lo que hay en memoria manda, y lo del
+        disco que aquí no está se añade. La escritura es atómica (`.tmp` +
+        `os.replace`), de modo que nadie llegue a leer un archivo a medio escribir.
+        """
+        self._merge_from_disk()
         payload = {
             "version": 1,
             "actualizado": _now(),
             "tareas": [task.to_dict() for task in self._tasks],
         }
+        ruta = self.path
         try:
-            self.path.write_text(
+            ruta.parent.mkdir(parents=True, exist_ok=True)
+            temporal = ruta.with_name(ruta.name + ".tmp")
+            temporal.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
             )
-        except OSError:
-            pass
+            os.replace(temporal, ruta)
+        except OSError as exc:
+            # Que no se pueda guardar no puede pasar en silencio: lo que el usuario acaba
+            # de escribir se perdería y no habría forma de saber por qué.
+            logs.warning(f"No se pudieron guardar las tareas en {ruta}", exc)
+
+    def _merge_from_disk(self) -> int:
+        """Añade a la copia en memoria las tareas que solo estén en el disco.
+
+        Devuelve cuántas se han traído. Las que ya están (mismo id) no se tocan: la
+        versión que tiene la ventana abierta es la que el usuario acaba de cambiar.
+        """
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return 0
+        conocidos = {task.id for task in self._tasks}
+        traidas = 0
+        for tarea in _parse_tasks(raw):
+            if tarea.id not in conocidos:
+                self._tasks.append(tarea)
+                conocidos.add(tarea.id)
+                traidas += 1
+        return traidas
 
     # --- Consultas -------------------------------------------------------
     def all(self) -> list[MaintenanceTask]:

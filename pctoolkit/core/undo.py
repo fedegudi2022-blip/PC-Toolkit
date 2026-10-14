@@ -9,6 +9,11 @@ Las acciones se guardan como líneas JSON en `%APPDATA%\\PCToolkit\\deshacer.jso
 un registro por línea, resistente a cierres inesperados, igual que el historial
 de métricas.
 
+El archivo es texto que cualquier proceso del usuario puede editar, así que sus datos
+**no se dan por buenos**: quien actúa sobre ellos (por ejemplo `startup.py` antes de
+tocar el registro) comprueba que la clave de destino, la raíz del registro y el nombre
+del valor estén en las listas cerradas que él mismo usa. Aquí solo se lee y se escribe.
+
 Quien sabe deshacer una acción concreta es su propio módulo (por ejemplo
 `startup.py` para las entradas de arranque): aquí solo se guarda a quién
 preguntar. Así el mismo panel de deshacer sirve para todo lo que se añada más
@@ -25,9 +30,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from . import config
+from . import config, logs
 
 DEFAULT_LIMIT = 200
+
+# Tope de longitud de una línea del archivo. Lo que guarda la aplicación ocupa unos
+# cientos de bytes; una línea de megabytes solo puede venir de un archivo editado a mano
+# (o dañado) y no merece que se cargue en memoria para descubrir que no sirve.
+MAX_LINE_BYTES = 64 * 1024
 
 # Tipos de cambio conocidos (el identificador que usa cada módulo).
 KIND_ARRANQUE = "arranque"
@@ -188,10 +198,12 @@ class UndoStore:
             return []
         actions: list[UndoAction] = []
         try:
-            with self.path.open("r", encoding="utf-8") as handle:
+            with self.path.open("r", encoding="utf-8", errors="replace") as handle:
                 for line in handle:
                     line = line.strip()
                     if not line:
+                        continue
+                    if len(line.encode("utf-8", errors="replace")) > MAX_LINE_BYTES:
                         continue
                     try:
                         data = json.loads(line)
@@ -213,7 +225,8 @@ class UndoStore:
                 for action in reversed(actions):  # en disco, del más antiguo al más nuevo
                     handle.write(json.dumps(action.to_dict(), ensure_ascii=False) + "\n")
             tmp.replace(self.path)
-        except OSError:
+        except OSError as exc:
+            logs.warning(f"No se pudo anotar el cambio en {self.path}", exc)
             return
 
     # ------------------------------------------------------------------
@@ -277,8 +290,8 @@ class UndoStore:
         try:
             if self.path.exists():
                 self.path.unlink()
-        except OSError:
-            pass
+        except OSError as exc:
+            logs.warning(f"No se pudo vaciar el registro de cambios ({self.path})", exc)
 
     def count(self) -> int:
         return len(self._read())

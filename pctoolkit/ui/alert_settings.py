@@ -189,11 +189,11 @@ class AlertSettingsDialog(QDialog):
 
         muestras = self.store.count()
         size = self.store.size_bytes()
-        from ..core.config import format_bytes
+        from ..core.config import format_bytes, format_integer
 
         extras_layout.addWidget(
             Muted(
-                f"Historial actual: {muestras:,} muestras ({format_bytes(size)}) en "
+                f"Historial actual: {format_integer(muestras)} muestras ({format_bytes(size)}) en "
                 f"{self.store.path.name}. Se conservan las últimas 24 horas."
             )
         )

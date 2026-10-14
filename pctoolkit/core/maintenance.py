@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from . import logs
 from . import memory as memory_core
 from . import reports as reports_core
 from . import tools as tools_core
@@ -108,8 +109,8 @@ def _append_log(entry: dict[str, Any]) -> Path:
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
         _trim_log(path)
-    except OSError:
-        pass
+    except OSError as exc:
+        logs.warning(f"No se pudo anotar la ejecución en {path}", exc)
     return path
 
 
@@ -122,8 +123,8 @@ def _trim_log(path: Path, keep: int = MAX_LOG_ENTRIES) -> None:
         return
     try:
         path.write_text("\n".join(lines[-keep:]) + "\n", encoding="utf-8")
-    except OSError:
-        pass
+    except OSError as exc:
+        logs.warning(f"No se pudo recortar el histórico de mantenimiento ({path})", exc)
 
 
 def recent_runs(limit: int = 8) -> list[dict[str, Any]]:

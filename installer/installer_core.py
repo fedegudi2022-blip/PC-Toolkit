@@ -324,11 +324,30 @@ def close_running_apps(timeout: float = 8.0) -> tuple[bool, str]:
 # --- Accesos directos ------------------------------------------------------
 
 
+def _powershell_environment() -> dict[str, str]:
+    """Entorno para lanzar Windows PowerShell desde aquí.
+
+    Cumple lo mismo que `pctoolkit.core.tools.powershell_environment`, pero **sin importar
+    el paquete de la aplicación**: el desinstalador se compila con `--exclude-module
+    PySide6` a propósito (pesa 7 MB en vez de 50), y cualquier import que acabe en
+    `pctoolkit` —aunque sea dentro de una función— lo deja muerto. Pasó justo aquí, con
+    las carpetas del sistema, que se consultan por PowerShell.
+
+    Si el proceso padre es PowerShell 7 (o cualquier shell que lo exporte), los hijos
+    heredan su `PSModulePath`, y entonces Windows PowerShell 5.1 busca sus propios
+    módulos en el sitio equivocado: con él, el COM de los accesos directos y las carpetas
+    del sistema fallan sin motivo aparente. Quitando la variable, el hijo construye la
+    suya como si se hubiera abierto a mano.
+    """
+    entorno = dict(os.environ)
+    entorno.pop("PSModulePath", None)
+    return entorno
+
+
 def _powershell(script: str, timeout: int = 60) -> subprocess.CompletedProcess:
     # Se fuerza la salida en UTF-8 para que los mensajes y las rutas con acentos
     # lleguen legibles (si no, PowerShell usa la página de códigos de la consola).
     script = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;" + script
-    from pctoolkit.core.tools import powershell_environment
 
     return subprocess.run(
         ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
@@ -341,7 +360,7 @@ def _powershell(script: str, timeout: int = 60) -> subprocess.CompletedProcess:
         # El `PSModulePath` heredado (por ejemplo de PowerShell 7) deja a Windows
         # PowerShell sin poder cargar sus módulos, y con ellos el COM de los accesos
         # directos o las carpetas del sistema fallan.
-        env=powershell_environment(),
+        env=_powershell_environment(),
     )
 
 
@@ -483,6 +502,32 @@ def installed_files(folder: Path | None = None) -> list[str]:
         for item in raiz.rglob("*")
         if item.is_file() and item.name != MANIFEST_NAME
     )
+
+
+def copied_files(origin: Path, folder: Path) -> list[str]:
+    """Rutas relativas de los archivos que la instalación ha copiado de verdad.
+
+    El registro tiene que decir **qué puso aquí PC Toolkit**, no qué hay en la carpeta:
+    si se anota todo lo que aparece, al desinstalar se borrarían los archivos que el
+    usuario ya tenía en esa carpeta, justo los que el aviso de la instalación promete
+    conservar. Se recorre la carpeta de origen y se anota lo que se copia de ella.
+    """
+    raiz = Path(origin)
+    destino = Path(folder)
+    relativos: list[str] = []
+    for item in raiz.rglob("*"):
+        try:
+            if not item.is_file():
+                continue
+            relativo = item.relative_to(raiz)
+        except (OSError, ValueError):
+            continue
+        if relativo.name == MANIFEST_NAME:
+            # El registro de una instalación anterior no se copia ni se anota.
+            continue
+        if (destino / relativo).is_file():
+            relativos.append(relativo.as_posix())
+    return sorted(relativos)
 
 
 def write_manifest(folder: Path, files: list[str], version: str) -> bool:
@@ -811,7 +856,7 @@ def _install(
     from pctoolkit.core.config import APP_VERSION
 
     try:
-        write_manifest(destino, installed_files(destino), APP_VERSION)
+        write_manifest(destino, copied_files(origin, destino), APP_VERSION)
     except OSError as exc:
         result.warnings.append(
             f"No se pudo dejar el registro de archivos instalados: {exc}. "

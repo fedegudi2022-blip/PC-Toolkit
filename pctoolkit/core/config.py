@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import os
+from functools import lru_cache
 from pathlib import Path
+
+from PySide6.QtCore import QLocale
 
 APP_NAME = "PC Toolkit"
 APP_TAGLINE = "Herramientas para controlar y mantener tu PC"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 ORG_NAME = "PCToolkit"
 
 IS_WINDOWS = os.name == "nt"
@@ -22,9 +25,70 @@ def data_dir() -> Path:
     return path
 
 
+# Identificadores (FOLDERID_*) de las carpetas personales que Windows conoce. Con
+# OneDrive o una política de la empresa, las carpetas personales se redirigen y
+# `%USERPROFILE%\Documents` deja de ser la carpeta que ve el usuario.
+KNOWN_FOLDERS = {
+    "Desktop": "{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}",
+    "Documents": "{FDD39AD0-238F-46AF-ADB4-6C85480369C7}",
+    "Downloads": "{374DE290-123F-4565-9164-39C4925E467B}",
+    "Pictures": "{33E28130-4E1E-4676-835A-98395C3BC3BB}",
+    "Videos": "{18989B1D-99B5-455B-841C-AB7C74E4DDFC}",
+}
+
+
+def known_folder(name: str, fallback: Path | str | None = None) -> Path:
+    r"""Carpeta personal de Windows (escritorio, documentos, descargas…).
+
+    Se pregunta a Windows por su ruta real (`SHGetKnownFolderPath`). Importa porque estas
+    carpetas pueden estar redirigidas —a OneDrive, por ejemplo— y entonces
+    `%USERPROFILE%\Documents` apunta a un sitio que el usuario no ve. Si la consulta
+    falla (o no estamos en Windows), se devuelve `fallback` o la ruta previsible.
+    """
+    previsible = Path(fallback) if fallback is not None else Path.home() / name
+    identificador = KNOWN_FOLDERS.get(name)
+    if not IS_WINDOWS or not identificador:
+        return previsible
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class GUID(ctypes.Structure):
+            _fields_ = [
+                ("Data1", wintypes.DWORD),
+                ("Data2", wintypes.WORD),
+                ("Data3", wintypes.WORD),
+                ("Data4", ctypes.c_byte * 8),
+            ]
+
+        shell32 = ctypes.windll.shell32  # type: ignore[attr-defined]
+        ole32 = ctypes.windll.ole32  # type: ignore[attr-defined]
+        shell32.SHGetKnownFolderPath.restype = ctypes.c_long
+        ole32.CLSIDFromString.restype = ctypes.c_long
+        guid = GUID()
+        if ole32.CLSIDFromString(ctypes.c_wchar_p(identificador), ctypes.byref(guid)) != 0:
+            return previsible
+        puntero = ctypes.POINTER(ctypes.c_wchar)()
+        if shell32.SHGetKnownFolderPath(ctypes.byref(guid), 0, None, ctypes.byref(puntero)) != 0:
+            return previsible
+        try:
+            ruta = Path(ctypes.wstring_at(puntero)) if puntero else previsible
+        finally:
+            ole32.CoTaskMemFree(puntero)
+        return ruta if str(ruta) and ruta.is_absolute() else previsible
+    except (AttributeError, OSError, ValueError):
+        return previsible
+
+
+@lru_cache(maxsize=8)
+def user_folder(name: str) -> Path:
+    """Carpeta personal de Windows, memorizada (se consulta más de una vez)."""
+    return known_folder(name)
+
+
 def reports_dir() -> Path:
     """Carpeta por defecto para los informes exportados."""
-    path = Path.home() / "Documents" / ORG_NAME / "Informes"
+    path = user_folder("Documents") / ORG_NAME / "Informes"
     try:
         path.mkdir(parents=True, exist_ok=True)
     except OSError:
@@ -46,23 +110,23 @@ def config_file() -> Path:
 
 
 # --- Colores de la interfaz -----------------------------------------------
-# Hay **dos paletas completas** con las mismas claves: la oscura «negro mate»
-# (fondo negro de verdad, superficies en grises neutros sin matiz y texto casi
-# blanco) y la clara «papel» (blancos fríos, texto casi negro y el mismo violeta
-# oscurecido para que el texto siga leyéndose sobre blanco).
+# Hay **dos paletas completas** con las mismas claves: la oscura «D2» (fondos
+# grafito, superficies en grises fríos y acento casi blanco) y la clara (blancos y
+# grises fríos, con el acento tinta #1F2328 y texto blanco encima).
 #
 # El color se usa por **significado**, no por decoración:
-#   violeta → acción principal, foco y selección
-#   cian    → estado saludable
+#   acento  → acción principal, foco y selección
+#   verde   → estado saludable
 #   ámbar   → advertencia o atención necesaria
 #   rojo    → error, peligro o estado crítico
-#   series_*→ datos (CPU cian, memoria violeta y disco naranja): tres tonos que se
-#             distinguen entre sí sin parecer una alerta cuando el valor es normal.
-#             Van solo en la gráfica, la leyenda y las barras del icono de la
-#             bandeja, nunca como fondo de una tarjeta ni como color de estado.
+#   series_*→ datos (CPU azul, memoria cian, disco naranja y red gris azulada):
+#             cuatro tonos que se distinguen entre sí sin parecer una alerta cuando
+#             el valor es normal. Van solo en la gráfica, la leyenda, los medidores y
+#             las barras del icono de la bandeja, nunca como fondo de una tarjeta.
 #
-# El verde no aparece en la paleta: ni como acento, ni como estado, ni como dato. La
-# suite lo comprueba de verdad (ningún color de la paleta tiene matiz verde).
+# Estos valores están medidos, no elegidos a ojo: la suite comprueba los contrastes
+# WCAG y que cada serie se distinga de las demás y de los colores de estado también
+# con daltonismo (simulación de Machado y CIEDE2000).
 #
 # `COLORS` y `SURFACES` son siempre la paleta **activa** y se usan por referencia
 # en toda la interfaz, así que cambiar de tema es reemplazar su contenido con
@@ -73,99 +137,98 @@ def config_file() -> Path:
 #   on_accent    texto e iconos que se pintan encima del acento
 #   on_selected  texto sobre una superficie seleccionada (barra lateral, listas)
 DARK_COLORS = {
-    # Negro de verdad en el fondo y tres grises neutros (sin matiz de ningún color)
-    # para las superficies: cada nivel se separa del anterior lo justo para que se
-    # vean los bordes de las tarjetas.
-    "bg": "#000000",
-    "bg_alt": "#0A0A0A",
-    "panel": "#121212",
-    "panel_alt": "#1A1A1A",
-    "border": "#2E2E33",
-    "border_soft": "#1F1F23",
-    "text": "#F4F4F6",
-    "text_muted": "#A9A9B2",
-    "text_dim": "#8E8E97",
-    # Violeta/índigo de acento: botones principales, foco del teclado y selección.
-    "accent": "#8B5CF6",
-    "accent_soft": "#7C3AED",
-    "accent_glow": "#A78BFA",
-    # El estado saludable es cian: el verde ya no se usa para nada.
-    "good": "#22D3EE",
-    "warn": "#FBBF24",
-    "bad": "#F87171",
-    # Datos: CPU cian, memoria violeta y disco naranja.
-    "series_cpu": "#22D3EE",
-    "series_ram": "#A78BFA",
-    "series_disk": "#FB923C",
-    # Sobre el violeta el texto va casi negro: es lo que mantiene el 4,5:1
-    # (con blanco encima, #8B5CF6 se queda en 3,5:1).
-    "on_accent": "#0B0714",
-    "on_selected": "#E9E4FF",
-    "primary_hover": "#B9A2FF",
-    "primary_disabled_bg": "#16161A",
-    "primary_disabled_border": "#2A2A31",
-    "primary_disabled_text": "#6C6C76",
-    "danger_border": "#4A2A2C",
-    "danger_hover": "#2A1618",
+    # Fondos grafito y superficies frías: cada nivel se separa del anterior lo justo
+    # para que se vean los bordes de las tarjetas.
+    "bg": "#0E0F11",
+    "bg_alt": "#121316",
+    "panel": "#17191C",
+    "panel_alt": "#1C1F23",
+    "border": "#2A2D32",
+    "border_soft": "#212429",
+    "text": "#EEF0F2",
+    "text_muted": "#9AA0A8",
+    "text_dim": "#8B9199",
+    # Acento casi blanco: botones principales, foco del teclado y selección. El texto
+    # que se pinta encima va casi negro.
+    "accent": "#E8EAED",
+    "accent_soft": "#B6BBC2",
+    "accent_glow": "#F6F7F8",
+    # Estados: verde para bien, ámbar para el aviso y rojo para el mal.
+    "good": "#6BD5A1",
+    "warn": "#FFE251",
+    "bad": "#D25969",
+    # Datos: CPU azul, memoria cian, disco naranja y red gris azulada.
+    "series_cpu": "#4F9DDE",
+    "series_ram": "#5EEEFE",
+    "series_disk": "#D79A4C",
+    "series_net": "#A0A7B2",
+    # Sobre el acento casi blanco el texto va casi negro: eso mantiene el 15,7:1.
+    "on_accent": "#101113",
+    "on_selected": "#EEF0F2",
+    "primary_hover": "#D3D7DB",
+    "primary_disabled_bg": "#1B1D20",
+    "primary_disabled_border": "#2A2D32",
+    "primary_disabled_text": "#6E747B",
+    "danger_border": "#4E3134",
+    "danger_hover": "#271719",
 }
 
 LIGHT_COLORS = {
-    # Blancos y grises fríos, sin el matiz verdoso de la paleta anterior.
-    "bg": "#F5F5F7",
-    "bg_alt": "#EBEBEF",
+    # Blancos y grises fríos, sin matiz de ningún color.
+    "bg": "#F4F5F7",
+    "bg_alt": "#ECEFF2",
     "panel": "#FFFFFF",
-    "panel_alt": "#F7F7F9",
-    "border": "#C9C9D2",
-    "border_soft": "#E0E0E6",
-    "text": "#111114",
-    "text_muted": "#4B4B54",
-    "text_dim": "#63636D",
-    # En claro el acento es el mismo violeta, oscurecido porque hace dos trabajos a
-    # la vez: relleno de los botones principales (con texto blanco encima) y color
-    # de texto y de borde sobre blanco. El tono brillante no sirve para lo segundo.
-    "accent": "#6D28D9",
-    "accent_soft": "#5B21B6",
-    "accent_glow": "#7C3AED",
-    "good": "#0E7490",
-    "warn": "#96620B",
-    "bad": "#B32424",
-    "series_cpu": "#0E7490",
-    "series_ram": "#7C3AED",
-    "series_disk": "#C2410C",
+    "panel_alt": "#F7F8FA",
+    "border": "#C6CBD1",
+    "border_soft": "#E2E5E9",
+    "text": "#16181B",
+    "text_muted": "#4C5259",
+    "text_dim": "#5F656D",
+    # El acento es tinta (#1F2328): relleno de los botones principales con texto
+    # blanco encima y, a la vez, color de texto y de borde sobre blanco.
+    "accent": "#1F2328",
+    "accent_soft": "#5A6169",
+    "accent_glow": "#3A4046",
+    "good": "#02623A",
+    "warn": "#794800",
+    "bad": "#A42A2C",
+    "series_cpu": "#1274CE",
+    "series_ram": "#439A9D",
+    "series_disk": "#C17A1B",
+    "series_net": "#485263",
     "on_accent": "#FFFFFF",
-    "on_selected": "#2E1065",
-    # El hover del botón principal oscurece (el gradiente va de `primary_hover` a
-    # `accent_glow`): aclarar el violeta obligaría a quitar el texto blanco.
-    "primary_hover": "#5B21B6",
-    "primary_disabled_bg": "#E6E6EB",
-    "primary_disabled_border": "#D0D0D8",
+    "on_selected": "#14171A",
+    # El hover del botón principal aclara el borde manteniendo el texto blanco.
+    "primary_hover": "#4A5158",
+    "primary_disabled_bg": "#E7E9EC",
+    "primary_disabled_border": "#D3D7DB",
     # El texto de un control apagado queda por debajo de 4,5:1 a propósito (la
     # WCAG exime a los componentes inactivos): tiene que verse apagado, no legible
-    # como si estuviera disponible. 3,6:1 se lee sin confundirse con el activo.
-    "primary_disabled_text": "#7B7B85",
-    "danger_border": "#E3BDBD",
-    "danger_hover": "#FBEDED",
+    # como si estuviera disponible. 3,5:1 se lee sin confundirse con el activo.
+    "primary_disabled_text": "#767C84",
+    "danger_border": "#E3C2C4",
+    "danger_hover": "#FBEDEE",
 }
 
 # Matices de superficie usados en hover/selecciones/filas alternas. Son grises
-# neutros salvo la selección, que lleva el violeta del acento para que se vea de un
-# vistazo qué fila o qué sección está activa.
+# fríos: la selección se distingue por su propio gris y por el borde de 1 px en
+# `text_muted` que le pinta la hoja de estilos, no por un color de acento.
 DARK_SURFACES = {
-    "hover": "#1C1C21",
-    "pressed": "#151519",
-    "selected": "#2A2140",
-    "track": "#2E2E33",
-    "track_hover": "#3F3F46",
-    "row": "#0E0E11",
+    "hover": "#1F2226",
+    "pressed": "#1A1C1F",
+    "selected": "#23262B",
+    "track": "#2A2D32",
+    "track_hover": "#3B3F45",
+    "row": "#131417",
 }
 
 LIGHT_SURFACES = {
-    "hover": "#EDEDF2",
-    "pressed": "#DFDFE6",
-    "selected": "#E7E0FB",
-    "track": "#C9C9D2",
-    "track_hover": "#B2B2BC",
-    "row": "#FAFAFC",
+    "hover": "#E9ECEF",
+    "pressed": "#DDE1E5",
+    "selected": "#E2E6EB",
+    "track": "#C6CBD1",
+    "track_hover": "#AEB5BC",
+    "row": "#FAFBFC",
 }
 
 THEME_DARK = "dark"
@@ -229,6 +292,32 @@ def as_integer(value, default: int, low: int, high: int) -> int:
         return default
 
 
+@lru_cache(maxsize=4)
+def number_locale() -> QLocale:
+    """Configuración regional con la que se escriben los números: la del sistema.
+
+    Windows en español escribe «1.234,5» o «1,234.5» según la región, y hasta ahora la
+    aplicación usaba siempre el formato inglés (punto decimal y sin separador de miles, o
+    el separador de Python). Con `QLocale` los números se leen como en el resto del
+    sistema, igual que los de la documentación.
+    """
+    return QLocale.system()
+
+
+def format_number(value: float, decimals: int = 0) -> str:
+    """Número con separador de miles y decimales según la configuración regional."""
+    try:
+        numero = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    return number_locale().toString(numero, "f", max(0, int(decimals)))
+
+
+def format_integer(value: float) -> str:
+    """Recuento con separador de miles («140.493 archivos»)."""
+    return format_number(value, 0)
+
+
 def format_bytes(size: float, decimals: int = 1) -> str:
     """Formatea bytes en unidades legibles (KB, MB, GB, TB)."""
     if size is None:
@@ -237,10 +326,10 @@ def format_bytes(size: float, decimals: int = 1) -> str:
     for unit in ("B", "KB", "MB", "GB", "TB", "PB"):
         if abs(value) < 1024.0 or unit == "PB":
             if unit == "B":
-                return f"{value:.0f} {unit}"
-            return f"{value:.{decimals}f} {unit}"
+                return f"{format_number(value, 0)} {unit}"
+            return f"{format_number(value, decimals)} {unit}"
         value /= 1024.0
-    return f"{value:.{decimals}f} PB"
+    return f"{format_number(value, decimals)} PB"
 
 
 def health_label(score: float) -> str:

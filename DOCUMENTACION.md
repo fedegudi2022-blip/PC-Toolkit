@@ -1,15 +1,15 @@
-# PC Toolkit 1.2.0 — qué es, qué hace y cómo funciona
+# PC Toolkit 1.2.1 — qué es, qué hace y cómo funciona
 
 Aplicación de escritorio para **Windows 10 y 11** que reúne el mantenimiento del equipo en un solo
 sitio: libera memoria RAM cuando hace falta, programa el mantenimiento en el propio Windows, vigila
 la CPU, la memoria y el disco, analiza el espacio ocupado, reúne los accesos rápidos a las
 herramientas del sistema y exporta informes.
 
-Está hecha en **Python + PySide6 + psutil**, con tema oscuro «negro mate» (fondo negro de verdad y
-grises neutros, cada nivel de superficie separado del siguiente) y violeta para las acciones y
-los estados saludables, ámbar para los avisos y rojo para lo que va mal; y se instala con un
-**instalador propio de Windows** (asistente, accesos directos y desinstalador), sin necesidad de ser
-administrador.
+Está hecha en **Python + PySide6 + psutil**, con tema oscuro «grafito» (fondo casi negro y grises
+fríos, cada nivel de superficie separado del siguiente) y un acento neutro para los botones
+principales y el foco, verde para los estados saludables, ámbar para los avisos y rojo para lo que va
+mal; y se instala con un **instalador propio de Windows** (asistente, accesos directos y
+desinstalador), sin necesidad de ser administrador.
 
 > Este documento explica el programa completo: qué hace cada pantalla, cómo funciona por dentro y
 > cómo se instala, se compila y se desinstala.
@@ -36,8 +36,8 @@ administrador.
 
 ## 2. El instalador de Windows
 
-**Archivo:** `dist\PC Toolkit Setup.exe` (78,9 MB). Es **un solo archivo**: lleva dentro la
-aplicación comprimida (`pc_toolkit_app.zip`, 32,6 MB, los 159 archivos y el desinstalador) y la saca
+**Archivo:** `dist\PC Toolkit Setup.exe` (79,1 MB). Es **un solo archivo**: lleva dentro la
+aplicación comprimida (`pc_toolkit_app.zip`, 32,8 MB, los 161 archivos y el desinstalador) y la saca
 a una carpeta temporal al instalar, borrándola al terminar. No hay que descomprimir nada ni dejar una
 carpeta al lado; si el instalador encuentra la carpeta `PC Toolkit\` junto a él (por ejemplo al
 probarlo desde `dist\`), la usa directamente y no extrae nada.
@@ -129,8 +129,8 @@ Otras opciones: `--sin-escritorio`, `--sin-menu`, `--origen` (carpeta de la apli
   carpeta de prueba con escritorio, menú Inicio y clave de registro propios, comprueba que los
   accesos directos apuntan al programa instalado, que el registro y el arranque automático quedan
   bien, **ejecuta la copia instalada** y desinstala verificando que no queda rastro.
-- **Instalación real en este equipo** (medida): `78,9 MB` de instalador (que ya trae la aplicación
-  dentro), **159 archivos / 72,0 MB** copiados en **8,2 s**, dos accesos directos correctos, entrada
+- **Instalación real en este equipo** (medida): `79,1 MB` de instalador (que ya trae la aplicación
+  dentro), **162 archivos / 72,4 MB** copiados en **8,9 s**, dos accesos directos correctos, entrada
   de registro y arranque automático
   en la bandeja, la copia instalada ejecutando el mantenimiento, y desinstalación dejando todo
   limpio (accesos directos, registro y carpeta eliminados; datos del usuario intactos). Se puede
@@ -307,6 +307,18 @@ es `2` para activada y `3` para desactivada, con la fecha del cambio en los ocho
 exactamente igual que Windows. La entrada sigue donde estaba y se puede volver a activar desde aquí,
 desde el Administrador de tareas o con **Deshacer**.
 
+> **Pendiente de confirmar:** aquí se escriben **9** bytes (el estado y un `FILETIME` de ocho). Hay
+> quien describe esa marca con **12** (un `DWORD` de cuatro más el `FILETIME`), y no se ha podido
+> comprobar en este equipo qué escribe hoy el Administrador de tareas. Hasta que se mire en el
+> Editor del Registro (`regedit` → `...\StartupApproved\Run`) y se vea el tamaño real del valor, el
+> cambio va **aparte**, como parche opcional en `parches\reloj-de-aprobacion-12-bytes.patch`: él solo
+> cambia el número, el largo del valor y su comprobación. Para aplicarlo y deshacerlo:
+>
+> ```bat
+> git apply parches\reloj-de-aprobacion-12-bytes.patch
+> git apply -R parches\reloj-de-aprobacion-12-bytes.patch
+> ```
+
 Otras decisiones que se ven en pantalla:
 
 - **Origen y estado real** de cada entrada, y aviso cuando el programa al que apunta ya no existe
@@ -337,8 +349,8 @@ como estaba.
 ### 3.9 Teclado y accesibilidad
 
 La ventana se maneja entera con el teclado y **el foco siempre se ve**: el borde del control
-enfocado se ilumina en violeta (en el botón principal, que ya es violeta, el borde cambia al color
-de contraste del acento: casi negro en oscuro y blanco en claro). Antes
+enfocado se pinta con el acento (en el botón principal, que ya lleva el acento de relleno, el borde
+cambia al color de contraste: casi negro en oscuro y blanco en claro). Antes
 del cambio, la hoja de estilos quitaba el contorno de todos los controles y con el tabulador no se
 sabía dónde estabas.
 
@@ -414,8 +426,8 @@ aplicación seguiría pintando con la paleta vieja.
 
 | Modo | Qué hace |
 | --- | --- |
-| **Oscuro** (por defecto) | Paleta «negro mate»: fondo negro, superficies en grises neutros y texto casi blanco |
-| **Claro** | Paleta «papel»: blancos y grises fríos, texto casi negro y el mismo violeta oscurecido, para que se lea como texto y como relleno con texto blanco encima |
+| **Oscuro** (por defecto) | Paleta «grafito»: fondo casi negro, superficies en grises fríos y texto casi blanco |
+| **Claro** | Paleta «papel»: blancos y grises fríos, texto casi negro y el mismo acento tinta, para que se lea como texto y como relleno con texto blanco encima |
 | **Seguir a Windows** | Lee `HKCU\...\Themes\Personalize\AppsUseLightTheme`, la misma marca que usa Windows para el modo claro |
 
 El cambio se hace en **Ajustes y alertas → Apariencia**, y la propia ventana explica en una línea
@@ -428,19 +440,24 @@ hereda tamaño, posición y visibilidad, y la anterior se cierra de verdad (no s
 Con `--tema claro|oscuro|auto` se fuerza el tema **solo para esa ejecución**, sin tocar lo guardado:
 es la forma de probarlo o de generar documentación reproducible.
 
-El color tiene significado: **violeta** para la acción principal, el foco y la selección; **cian**
-para lo saludable; **ámbar** para lo que pide atención y **rojo** para los errores. Los datos llevan
-tres tonos propios —CPU cian, memoria violeta y disco naranja— que se distinguen en la gráfica y en
-la leyenda sin parecer una alerta cuando el valor es normal. **El verde no se usa en ningún sitio**
-de la paleta: ni como acento, ni como estado, ni como dato.
+El acento es **neutro** —casi blanco en oscuro, tinta en claro— y se usa en el botón principal y en
+el foco; la sección activa de la barra lateral se marca con el gris de selección y un borde de 1 px
+en `text_muted`, no con el acento, que en oscuro brillaría más que el propio contenido. El color
+tiene significado: **verde** para lo saludable, **ámbar** para lo que pide atención y **rojo** para
+los errores. Los datos llevan cuatro tonos propios —CPU azul, memoria cian, disco naranja y red gris
+azulado— que se distinguen en la gráfica, la leyenda y los medidores sin parecer una alerta cuando el
+valor es normal.
 
-**Comprobado:** el contraste WCAG 4,5:1 de los pares texto/fondo en **las dos paletas**, que el
-acento sea violeta/índigo en ambas, que ningún color de la paleta tenga matiz verde, que los tres
-tonos de dato se distingan entre sí, que cambiar de paleta no reasigne los diccionarios (las referencias
-ya tomadas siguen valiendo), que la plantilla del QSS no deje claves sin rellenar, que cada paleta
-tenga su marca de verificación (la del tema oscuro es blanca y sobre fondo claro desaparecería), que
-el modo `auto` resuelva al del sistema y que un valor ilegible caiga en `auto`, además del render
-claro de la portada (fondo claro, texto oscuro y acento presentes).
+**Comprobado:** el contraste WCAG 4,5:1 de los pares texto/fondo y de los estados en **las dos
+paletas**, el 3:1 de las series, el foco y el borde de selección, que el acento sea neutro y que
+ningún color sea violeta ni magenta (no quedan restos del diseño anterior), que las cuatro series se
+distingan entre sí y de los estados con daltonismo (CIEDE2000 sobre las matrices de Machado, por
+encima del mínimo aprobado en el peor par), que cambiar de paleta no reasigne los diccionarios (las
+referencias ya tomadas siguen valiendo), que la plantilla del QSS no deje claves sin rellenar, que
+cada paleta tenga su marca de verificación (la del tema oscuro es blanca y sobre fondo claro
+desaparecería), que el modo `auto` resuelva al del sistema y que un valor ilegible caiga en `auto`,
+además del render claro de la portada (fondo claro, texto oscuro y acento presentes) y del render
+oscuro sin restos del violeta anterior.
 
 ## 4. Línea de comandos
 
@@ -461,10 +478,14 @@ PC Toolkit.exe --version
 
 ```
 app.py                          Punto de entrada y opciones de línea de comandos
+parches/                        Cambios preparados que esperan una comprobación en Windows
 build_exe.py / build_exe.bat    Empaquetado de la aplicación con PyInstaller
 build_installer.py / .bat       Empaquetado del instalador y del desinstalador
 firmar.py / firmar.bat          Firma digital con signtool (SHA-256, sello RFC 3161 y verificación)
-.github/workflows/firmar.yml   Compila y firma en Windows con Azure Artifact Signing (OIDC)
+.github/workflows/
+  integracion.yml               Comprobaciones de cada envío (sin firma)
+  firmar.yml                    Compila y firma con Azure Artifact Signing (OIDC) y publica la
+                                etiqueta `v…` con sus ejecutables
 installer/
   installer_core.py             Lógica compartida: copia, accesos directos, registro, borrado
   setup_app.py                  Asistente de instalación (y modo silencioso)
@@ -476,8 +497,10 @@ pctoolkit/
   ui/                           Interfaz PySide6: temas (claro y oscuro), anuncios accesibles y
                                 roles de los widgets propios, iconos, tarjetas, gráfica, bandeja,
                                 ventana principal y una página por módulo
-tests/smoke_test.py             576 comprobaciones automáticas (núcleo, interfaz, instalador, firma
-                                y coherencia de esta misma documentación)
+tests/smoke_test.py             635 comprobaciones automáticas (núcleo, interfaz, instalador y firma)
+  _checks.py                    Recuento de comprobaciones, compartido con las guardas
+  documentacion.py              Guardas de documentación: capturas, informe de muestra y recuentos
+                                de las guías (se pueden dejar fuera, véase el apartado 7)
 tools/
   app_icon.py                   Dibuja el icono de la aplicación
   medir_consumo.py              Mide el consumo de CPU/RAM de cada perfil de muestreo
@@ -505,7 +528,12 @@ Al compilar aparecen tres artefactos en `dist\`:
 - XML de la tarea programada: `%APPDATA%\PCToolkit\tarea_mantenimiento.xml`
 - Preferencias (umbrales, bandeja, memoria, programación, modo eco, tema): registro de Windows,
   `HKCU\Software\PCToolkit`
-- Informes por defecto: `C:\Users\<usuario>\Documents\PCToolkit\Informes`
+- Informes por defecto: `C:\Users\<usuario>\Documents\PCToolkit\Informes` (la carpeta de
+  documentos que dice Windows, que con OneDrive o una política de empresa no siempre es
+  `%USERPROFILE%\Documents`)
+- Registro de la aplicación: `%LOCALAPPDATA%\PCToolkit\logs\pctoolkit.log`, con rotación (media
+  mega y tres copias). Lo que antes se perdía en silencio —una tarea que no se pudo guardar, un
+  histórico que no se pudo escribir, una excepción sin capturar— queda aquí escrito.
 
 Todo esto **se conserva al desinstalar** salvo que lo borres desde el asistente o con
 `--borrar-datos`.
@@ -554,13 +582,21 @@ de instalar, ejecutar y desinstalar.
 Pruebas:
 
 ```bat
-.venv\Scripts\python.exe tests\smoke_test.py           576 comprobaciones
+.venv\Scripts\python.exe tests\smoke_test.py            635 comprobaciones
 .venv\Scripts\python.exe tools\verificar_instalacion.py  Instala de verdad y desinstala al terminar
+.venv\Scripts\python.exe tests\documentacion.py         Solo las guardas de documentación
+.venv\Scripts\python.exe tests\smoke_test.py --sin-documentacion   Sin las guardas de documentación
 set PCTOOLKIT_OFFSCREEN=1                               si no hay pantalla disponible
 ```
 
+Las **guardas de documentación** (que las capturas sean de la versión y la paleta de hoy y que los
+recuentos que citan las guías sean los de la pasada) viven en `tests\documentacion.py`, aparte de las
+pruebas de código: así una captura todavía por rehacer no bloquea la comprobación de un parche
+(`--sin-documentacion`). El recuento, que solo tiene sentido al final de la pasada completa, se
+comprueba únicamente cuando se ejecutan como última parte de la suite.
+
 El total depende del equipo: unas pocas comprobaciones solo se hacen si el sistema tiene bandeja,
-si hay `signtool` disponible o si `dist\` ya está compilado. Con la plataforma real de Qt salen 576;
+si hay `signtool` disponible o si `dist\` ya está compilado. Con la plataforma real de Qt salen 635;
 en modo sin pantalla son unas cuantas menos, porque las que necesitan una bandeja de verdad no se
 ejecutan (la comprobación de que la bandeja solo se usa si el sistema la tiene sí se hace siempre).
 
@@ -842,6 +878,21 @@ La suite se ejecuta **después** de compilar, no antes: así comprueba los ejecu
 acaba de generar el propio flujo (que están los cuatro artefactos, que los accesos directos del
 paquete apuntan donde deben, que la firma se puede leer) en vez de un árbol recién clonado donde
 todavía no hay ninguno. Si algo falla ahí, el trabajo se para y **no se publica ningún artefacto**.
+
+**Al empujar una etiqueta `v…`**, el mismo flujo prepara la entrega y la publica: copia los dos
+archivos con los nombres que se reparten (`PC-Toolkit-<versión>-Setup.exe` y `…-portable.exe`),
+escribe `SHA256SUMS.txt` con sus resúmenes, **firma la procedencia** de los ejecutables con
+`actions/attest-build-provenance` (transparencia de suministro: quien descarga puede comprobar que
+el archivo salió de este repositorio y de este commit) y los adjunta al release de esa etiqueta con
+`gh release upload --clobber`. Los pasos de compilación y firma con Azure no cambian.
+
+**Todas las acciones van fijadas por el SHA del commit**, con la etiqueta a la que corresponden en
+un comentario al lado: una etiqueta se puede mover a otro commit y entonces el flujo ejecutaría
+código que nadie revisó. Para actualizarlas se consulta el SHA de la etiqueta nueva:
+
+```pwsh
+gh api repos/actions/checkout/git/ref/tags/v4 --jq .object.sha
+```
 
 Dos trampas del servidor que ya están resueltas en el flujo y conviene no volver a introducir:
 

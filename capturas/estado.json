@@ -1,54 +1,54 @@
 {
   "desinstalador.png": {
-    "sha256": "17807db321e69a5070c8e057edd7141a60476b297988c94fa9adee6a07c83b93",
-    "version": "1.2.0"
+    "sha256": "eebe99047d5d4befe1049a90f627f6c0d98c749109ad31e1e7ceba57f012487d",
+    "version": "1.2.1"
   },
   "dialogo_ajustes.png": {
-    "sha256": "88aa85d739321b518dff668d5c4bc8d0fee997d5d9488eba02d5ec6f47763eac",
-    "version": "1.2.0"
+    "sha256": "7b84b4072afecf8b15bb25708f96af6139e5d8091741cac0b13e1fc7280d59b1",
+    "version": "1.2.1"
   },
   "disk.png": {
-    "sha256": "a89b0ee6488e3cfee131a0d56139d6f76b258e7b449e1f0f00c6f65c5207dab1",
-    "version": "1.2.0"
+    "sha256": "eaddc1e9811e50d194c9b37f838732204fb3eb58f4cbf60e99bee51e663c248e",
+    "version": "1.2.1"
   },
   "home.png": {
-    "sha256": "d6cf4bc3e57aaae1427d0f04cad9390f920938ad7fe36b2fa18ec28638191d59",
-    "version": "1.2.0"
+    "sha256": "8b913505a7e9d59c88e53aa8c196ce62e1ef44f2f55bdf74785391cafb0d1bf0",
+    "version": "1.2.1"
   },
   "informe_muestra.html": {
-    "sha256": "51ca3482497c6e876b26ac5d0183ab04eb94f37ec1c5e97d517c9938ee25aec3",
-    "version": "1.2.0"
+    "sha256": "9e44b2353e1db70bd8733ae7cc0bc86ebf26cfa4eec6e4fec2f6d4f11bdbd13c",
+    "version": "1.2.1"
   },
   "inicio_claro.png": {
-    "sha256": "4f3a6410e48efb4f44e40e45097301e7a8eeb7241b23bc99c283e6a61b53f6d0",
-    "version": "1.2.0"
+    "sha256": "c814d635db39498db01eff91388984ea6dce40261789ee7dade9523c5187a148",
+    "version": "1.2.1"
   },
   "instalador.png": {
-    "sha256": "a5a5982d627e3b3560c3c0b5a6b8c9bbbcedf48ad6080342a68b1505af0c2896",
-    "version": "1.2.0"
+    "sha256": "34721b26d0b4488718918048663bccdb4af49394104797c9d7b17bb5311f3864",
+    "version": "1.2.1"
   },
   "memory.png": {
-    "sha256": "4c601da686a16d3c2586760359119611b8ca058f4e2f591009207dafc0110852",
-    "version": "1.2.0"
+    "sha256": "12083b2082890d0771e1d8d961a1587fe9b8ccb6e9aa29528ffdd9da3b20d28e",
+    "version": "1.2.1"
   },
   "reports.png": {
-    "sha256": "7ad9c6a3720b574be43bfe1aca77e22b1043ffff152090669f5d61acb41fe554",
-    "version": "1.2.0"
+    "sha256": "9190d83bc3b96d8f7ff8769e42b489603682340df716fc0f049ecf5b7465a492",
+    "version": "1.2.1"
   },
   "schedule.png": {
-    "sha256": "f6662825e9b0f1701a51bee247313a6de355f3c4b782858d9c0178a41264a4db",
-    "version": "1.2.0"
+    "sha256": "c7df2d603ab9cd54d4ebaa463205442a07f6d8f432d2e201459301f164098e4f",
+    "version": "1.2.1"
   },
   "startup.png": {
-    "sha256": "9d3aee80b63236bd2bb7f32185dba7ce018b54be8f1e21af83ac70b1541df66b",
-    "version": "1.2.0"
+    "sha256": "47892c44a170cde4551444cc0890349b24936e0de9e766d48d4843fb732d470f",
+    "version": "1.2.1"
   },
   "tasks.png": {
-    "sha256": "d500406da31f128b2dd295920ea339ddf18ee43826149d6129db4c7871fa7692",
-    "version": "1.2.0"
+    "sha256": "536c779b0383178ac6462d222dc9939e45b118553456728d47d1d1386c6fb421",
+    "version": "1.2.1"
   },
   "tools.png": {
-    "sha256": "d6e50d60381554a69b69881eae39f76537a046f0e58ff049d29380ce4b4aa504",
-    "version": "1.2.0"
+    "sha256": "107efbf05dfb18ef99c8d9b3a24ff8b5689ad0e745cbea84406ca70c81e68c83",
+    "version": "1.2.1"
   }
 }

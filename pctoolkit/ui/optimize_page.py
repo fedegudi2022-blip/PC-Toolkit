@@ -427,18 +427,36 @@ class OptimizeMemoryPage(QWidget):
         self.processes_check.toggled.connect(self._save_options)
         grid.addWidget(self.processes_check, 4, 0, 1, 2)
 
-        self.system_check = QCheckBox("Vaciar la caché del sistema")
+        # Las dos opciones que tocan la memoria del sistema van apagadas de fábrica y se
+        # ofrecen aquí, con lo que suponen dicho en el propio texto: son las agresivas y
+        # las que necesitan permisos de administrador.
+        self.system_check = QCheckBox("Vaciar la caché del sistema (opcional y agresivo)")
         self.system_check.setChecked(self.options.empty_system_cache)
+        self.system_check.setToolTip(
+            "No viene activado. Windows vuelve a llenar esa caché leyendo del disco, así que "
+            "el efecto es pasajero; requiere permisos de administrador."
+        )
         self.system_check.toggled.connect(self._save_options)
         grid.addWidget(self.system_check, 5, 0, 1, 2)
 
-        self.standby_check = QCheckBox("Purgar la caché en espera")
+        self.standby_check = QCheckBox("Purgar por completo la caché en espera (lo más agresivo)")
         self.standby_check.setChecked(self.options.purge_standby)
         self.standby_check.setToolTip(
-            "Es lo que más memoria libera, pero Windows exige permisos de administrador."
+            "No viene activado. Es lo que más memoria libera, pero vacía toda la caché "
+            "reclamable: Windows exige permisos de administrador y la primera lectura de "
+            "archivos después vuelve a tardar. Si dudas, usa la purga suave."
         )
         self.standby_check.toggled.connect(self._save_options)
         grid.addWidget(self.standby_check, 6, 0, 1, 2)
+
+        self.soft_standby_check = QCheckBox("Purga suave de la caché en espera")
+        self.soft_standby_check.setChecked(self.options.purge_standby_low_priority)
+        self.soft_standby_check.setToolTip(
+            "Solo las páginas de baja prioridad: libera menos que la purga completa, pero no "
+            "vacía de golpe lo que Windows tenía cacheado. También necesita administrador."
+        )
+        self.soft_standby_check.toggled.connect(self._save_options)
+        grid.addWidget(self.soft_standby_check, 7, 0, 1, 2)
 
         # Campos compactos: con el ancho del panel, un campo que se estira hasta el
         # borde se lee peor y deja el número perdido al fondo.
@@ -622,6 +640,7 @@ class OptimizeMemoryPage(QWidget):
             trim_processes=self.processes_check.isChecked(),
             empty_system_cache=self.system_check.isChecked(),
             purge_standby=self.standby_check.isChecked(),
+            purge_standby_low_priority=self.soft_standby_check.isChecked(),
             include_own_process=False,
         )
         self.settings.memory_options = self.options

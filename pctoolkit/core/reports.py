@@ -16,6 +16,7 @@ from .config import (
     LIGHT_COLORS,
     LIGHT_SURFACES,
     format_bytes,
+    format_integer,
 )
 from .disk import DriveInfo, ScanResult
 from .metrics import MetricsSnapshot
@@ -271,8 +272,8 @@ def _html(report: dict[str, Any]) -> str:
     tasks = report.get("tareas", {}).get("lista", [])
     analysis = report.get("analisis_disco")
     # El informe se abre en el navegador y siempre va en claro, así que sus colores
-    # salen de la paleta **clara** aunque la aplicación esté en oscuro: los violetas y
-    # cianes brillantes de la oscura no se leen sobre blanco.
+    # salen de la paleta **clara** aunque la aplicación esté en oscuro: los azules y
+    # cianes claros de la oscura no se leen sobre blanco.
     claro = LIGHT_COLORS
 
     def bar(percent: float, color: str | None = None) -> str:
@@ -336,7 +337,7 @@ def _html(report: dict[str, Any]) -> str:
         <section>
           <h2>Análisis de espacio en disco</h2>
           <p class="muted">Ruta analizada: <strong>{_escape(analysis['ruta'])}</strong> ·
-             {analysis['tamano_total_display']} en {analysis['archivos']:,} archivos ·
+             {analysis['tamano_total_display']} en {format_integer(analysis['archivos'])} archivos ·
              {analysis['duracion_segundos']:.1f} s</p>
           <div class="grid">
             <div class="card"><h3>Carpetas y archivos más pesados</h3>

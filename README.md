@@ -10,6 +10,7 @@ administrador**.
 
 [![Última versión](https://img.shields.io/github/v/release/fedegudi2022-blip/PC-Toolkit?label=versi%C3%B3n&color=22c55e)](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/latest)
 [![Descargas](https://img.shields.io/github/downloads/fedegudi2022-blip/PC-Toolkit/total?color=22c55e)](https://github.com/fedegudi2022-blip/PC-Toolkit/releases)
+[![Integración](https://github.com/fedegudi2022-blip/PC-Toolkit/actions/workflows/integracion.yml/badge.svg)](https://github.com/fedegudi2022-blip/PC-Toolkit/actions/workflows/integracion.yml)
 [![Licencia](https://img.shields.io/badge/licencia-MIT-22c55e)](LICENSE)
 [![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078d6)](#descargar)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776ab)](#desde-el-c%C3%B3digo)
@@ -26,8 +27,8 @@ Windows 10 u 11 (x64). No hace falta instalar Python ni nada más.
 
 | Archivo | Qué es |
 | --- | --- |
-| [`PC-Toolkit-1.2.0-Setup.exe`](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/download/v1.2.0/PC-Toolkit-1.2.0-Setup.exe) | **Recomendado** (78,9 MB). Asistente con la aplicación dentro: accesos directos, arranque automático opcional y desinstalador. Por usuario, sin avisos de Windows. |
-| [`PC-Toolkit-1.2.0-portable.exe`](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/download/v1.2.0/PC-Toolkit-1.2.0-portable.exe) | Versión portátil (46,7 MB). Doble clic y funciona, sin instalar ni dejar rastro. |
+| [`PC-Toolkit-1.2.1-Setup.exe`](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/download/v1.2.1/PC-Toolkit-1.2.1-Setup.exe) | **Recomendado** (79,1 MB). Asistente con la aplicación dentro: accesos directos, arranque automático opcional y desinstalador. Por usuario, sin avisos de Windows. |
+| [`PC-Toolkit-1.2.1-portable.exe`](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/download/v1.2.1/PC-Toolkit-1.2.1-portable.exe) | Versión portátil (47,2 MB). Doble clic y funciona, sin instalar ni dejar rastro. |
 
 Datos y preferencias se guardan en `%APPDATA%\PCToolkit` (véase [Dónde se guardan los datos](#dónde-se-guardan-los-datos)).
 
@@ -50,14 +51,16 @@ Datos y preferencias se guardan en `%APPDATA%\PCToolkit` (véase [Dónde se guar
 | **Tareas** | Registro de mantenimiento con estados, prioridades, fechas límite y estadísticas. |
 | **Informes** | Exportación a HTML (visual), CSV y JSON, con selección de contenido y destino. |
 
-Dos temas completos —oscuro «negro mate» (fondo negro y grises neutros) y claro «papel»— que se
-cambian al instante; por defecto abre en oscuro y en **Ajustes y alertas → Apariencia** se puede
-seguir a Windows o pasar al claro. El color tiene significado: **violeta** para la acción principal,
-el foco y la selección, **cian** para lo saludable, **ámbar** para los avisos y **rojo** para los
-errores; los datos llevan tonos propios (CPU cian, memoria violeta y disco naranja) y el verde no se
-usa en ningún sitio. Todo se maneja con el teclado (`Ctrl+1`…`Ctrl+8` para las secciones, `Ctrl+9`
-para ajustes; `Tab` e `Intro` alcanzan también tarjetas y filas). Los textos de las dos paletas
-cumplen el contraste 4,5:1 de la WCAG y lo que ocurre se anuncia a los lectores de pantalla.
+Dos temas completos —oscuro «grafito» (fondo casi negro y grises fríos, cada nivel de superficie
+separado del siguiente) y claro «papel»— que se cambian al instante; por defecto abre en oscuro y en
+**Ajustes y alertas → Apariencia** se puede seguir a Windows o pasar al claro. El acento es neutro
+—casi blanco en el tema oscuro y tinta en el claro— y manda en los botones principales y el foco.
+El color tiene significado: **verde** para lo saludable, **ámbar** para los avisos y **rojo** para
+los errores. Los datos llevan cuatro tonos propios (CPU azul, memoria cian, disco naranja y red gris
+azulado) que se distinguen entre sí y de los estados también con daltonismo. Todo se maneja con el
+teclado (`Ctrl+1`…`Ctrl+8` para las secciones, `Ctrl+9` para ajustes; `Tab` e `Intro` alcanzan
+también tarjetas y filas). Los textos de las dos paletas cumplen el contraste 4,5:1 de la WCAG y lo
+que ocurre se anuncia a los lectores de pantalla.
 
 Medido en un Windows 11 x64: liberar RAM bajó del **78,9 % al 63,6 %** (+1.212 MB en 0,84 s), y con
 la ventana en la bandeja el consumo baja a **0,52 % de un núcleo** frente al 2,79 % con la ventana a
@@ -120,9 +123,9 @@ build_installer.bat                      Instalador de Windows (un solo archivo,
 
 | Resultado | Tamaño | Arranque |
 | --- | --- | --- |
-| `dist\PC Toolkit\` (carpeta, 158 archivos) | 64,8 MB | 0,41 s |
-| `dist\PC Toolkit.exe` (`--onefile`) | 46,7 MB | 1,94 s |
-| `dist\PC Toolkit Setup.exe` | 78,9 MB | instala 159 archivos / 72,0 MB en 8,2 s |
+| `dist\PC Toolkit\` (carpeta, 161 archivos) | 72,4 MB | 0,41 s |
+| `dist\PC Toolkit.exe` (`--onefile`) | 47,2 MB | 1,94 s |
+| `dist\PC Toolkit Setup.exe` | 79,1 MB | instala 162 archivos / 72,4 MB en 8,9 s |
 
 `build_exe.py` recorta del paquete 53,2 MB de librerías de Qt que la aplicación no usa y comprueba el
 resultado **ejecutando el propio `.exe`**; `build_installer.py` instala de verdad en carpetas
@@ -163,19 +166,24 @@ Desinstalar conserva estos datos salvo que se pidan borrar desde el asistente.
 .venv\Scripts\python.exe tests\smoke_test.py
 ```
 
-**576 comprobaciones** sin marco externo: métricas y disco reales, persistencia, alertas,
+**635 comprobaciones** sin marco externo: métricas y disco reales, persistencia, alertas,
 historial, informes en los tres formatos, las ocho páginas construidas y navegadas, programas de
 inicio y cambios reversibles sobre claves propias de la prueba, el ciclo del instalador en carpetas
 temporales, la firma (argumentos de `signtool` y firma real con certificado de prueba), el contraste
-WCAG y la ausencia de verde en las dos paletas, y la accesibilidad (roles, nombres, anuncios y foco
-visible).
+WCAG, la diferenciación de las series y los estados con daltonismo (CIEDE2000 sobre las matrices de
+Machado) y la accesibilidad (roles, nombres, anuncios y foco visible).
 
 Se ejecutan con la plataforma gráfica real de Qt; en un equipo sin escritorio, `set
 PCTOOLKIT_OFFSCREEN=1` las ejecuta sin pantalla (las comprobaciones de desbordes avisarán de más y
 no se ejecutan las que necesitan bandeja).
 
 La última comprobación vigila esta misma documentación: que las guías citen la versión actual y que
-cada captura se haya hecho con ella. Para rehacerlas: `tools\capturar_documentacion.py`.
+cada captura se haya hecho con ella. Para rehacerlas: `tools\capturar_documentacion.py`. Esas
+guardas están en `tests\documentacion.py`, aparte de las pruebas de código, y se pueden dejar fuera
+cuando lo que se comprueba es un cambio de código: `tests\smoke_test.py --sin-documentacion`.
+
+En cada envío las pasa [.github/workflows/integracion.yml](.github/workflows/integracion.yml) en un
+servidor de Windows, sin firmar nada.
 
 ## Estructura
 
@@ -192,7 +200,8 @@ pctoolkit/
                              informes, historial, alertas, arranque, mantenimiento, programador
   ui/                        Interfaz PySide6: tema, accesibilidad, iconos, widgets, gráfica,
                              bandeja, diálogos y una página por sección
-tests/smoke_test.py          576 comprobaciones (núcleo, interfaz, instalador, firma y docs)
+tests/smoke_test.py          635 comprobaciones (núcleo, interfaz, instalador y firma)
+tests/documentacion.py       Guardas de capturas, informe y recuentos (van aparte)
 dist/                        Todo lo compilado; se regenera con los scripts
 ```
 
