@@ -855,6 +855,16 @@ Qué hay que preparar una sola vez:
    - Secretos: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`.
    - Variables: `ARTIFACT_SIGNING_ENDPOINT`, `ARTIFACT_SIGNING_ACCOUNT`, `ARTIFACT_SIGNING_PROFILE`.
 
+**Publicar sin firmar.** El flujo también sabe compilar y publicar **sin firma**, para cuando no hay
+configuración de Azure (o no está disponible para tu caso): se lanza a mano (Actions → *Compilar y
+firmar* → Run workflow) con la casilla **«Publicar sin firmar (no usa Azure)»** marcada. Hace lo
+mismo —instala las dependencias, compila el programa y el instalador, pasa la suite completa
+—incluida la instalación y desinstalación del paquete real—, prepara la entrega y adjunta los
+archivos al release—, pero se salta signtool, Azure y `--firmar`. Es una decisión **explícita**: si
+la configuración falta y la casilla no está marcada, el trabajo se para en vez de publicar en
+silencio un release sin firmar. En ese modo las notas del release lo dicen y llevan dentro los
+SHA-256.
+
 Si esos seis valores no están puestos, el flujo se para en el primer paso diciendo cuáles faltan
 (antes `azure/login` fallaba con *«Not all values are present. Ensure 'client-id' and 'tenant-id' are
 supplied.»*, que no explica nada). Y la compilación va **después** del inicio de sesión: sin la
@@ -901,7 +911,9 @@ archivos con los nombres que se reparten (`PC-Toolkit-<versión>-Setup.exe` y `�
 escribe `SHA256SUMS.txt` con sus resúmenes, **firma la procedencia** de los ejecutables con
 `actions/attest-build-provenance` (transparencia de suministro: quien descarga puede comprobar que
 el archivo salió de este repositorio y de este commit) y los adjunta al release de esa etiqueta con
-`gh release upload --clobber`. Los pasos de compilación y firma con Azure no cambian.
+`gh release upload --clobber`. Las notas del release se escriben en ese momento, con los SHA-256
+dentro y diciendo si los ejecutables van firmados o no. Los pasos de compilación y firma con Azure
+no cambian.
 
 **Todas las acciones van fijadas por el SHA del commit**, con la etiqueta a la que corresponden en
 un comentario al lado: una etiqueta se puede mover a otro commit y entonces el flujo ejecutaría

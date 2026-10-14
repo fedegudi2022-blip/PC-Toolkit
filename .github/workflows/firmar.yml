@@ -19,6 +19,15 @@ name: Compilar y firmar (Windows)
 
 on:
   workflow_dispatch:
+    inputs:
+      # Publicar sin firmar es una decisión explícita: si falta la configuración de Azure,
+      # el flujo se para en «Comprobar la configuración de firma» en vez de publicar en
+      # silencio un release sin firma. Con esto puesto, el flujo compila y publica igual,
+      # sin signtool, sin Azure y sin los pasos de firma.
+      sin_firma:
+        description: "Publicar sin firmar (no usa Azure)"
+        type: boolean
+        default: false
   push:
     tags: ["v*"]
 
@@ -55,6 +64,7 @@ jobs:
       # signtool y las herramientas de firma. Con esto el trabajo se para en segundos y
       # el mensaje lleva a DOCUMENTACION.md, apartado 8.10.
       - name: Comprobar la configuración de firma
+        if: ${{ !inputs.sin_firma }}
         shell: pwsh
         env:
           CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -93,6 +103,7 @@ jobs:
 
       # La biblioteca de firma en la nube necesita el entorno de ejecución de .NET 8.
       - name: Preparar .NET
+        if: ${{ !inputs.sin_firma }}
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: "8.0.x"
@@ -103,10 +114,12 @@ jobs:
           python -m pip install -r requirements.txt
 
       - name: Descargar signtool (paquete oficial de Microsoft)
+        if: ${{ !inputs.sin_firma }}
         run: python firmar.py --traer-signtool --signtool-version $env:SDK_BUILDTOOLS_VERSION
         shell: pwsh
 
       - name: Descargar las herramientas de firma de Azure
+        if: ${{ !inputs.sin_firma }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -127,6 +140,7 @@ jobs:
           Write-Host "Biblioteca de firma lista: $dlib"
 
       - name: Iniciar sesión en Azure con identidad federada (OIDC)
+        if: ${{ !inputs.sin_firma }}
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -134,6 +148,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Preparar el archivo de metadatos de la firma
+        if: ${{ !inputs.sin_firma }}
         shell: pwsh
         env:
           ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
@@ -175,6 +190,7 @@ jobs:
           Get-Content -LiteralPath $archivo | Write-Host
 
       - name: Compilar y firmar el programa y el instalador
+        if: ${{ !inputs.sin_firma }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -197,6 +213,21 @@ jobs:
           python build_installer.py --rebuild --firmar
           if ($LASTEXITCODE -ne 0) { throw "Falló la compilación o la firma del instalador (código $LASTEXITCODE)" }
 
+      # El mismo trabajo, sin firma (cuando no hay configuración de Azure y se publica a
+      # propósito sin firmar). Se compila, se pasan las mismas comprobaciones y se publica
+      # lo mismo: lo único que desaparece son signtool, Azure y `--firmar`.
+      - name: Compilar el programa y el instalador (sin firma)
+        if: ${{ inputs.sin_firma }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          python build_exe.py --onefile
+          if ($LASTEXITCODE -ne 0) { throw "Falló la compilación de 'PC Toolkit.exe' (código $LASTEXITCODE)" }
+
+          python build_installer.py --rebuild
+          if ($LASTEXITCODE -ne 0) { throw "Falló la compilación del instalador (código $LASTEXITCODE)" }
+
       # La suite va después de compilar, no antes: así comprueba los ejecutables de
       # `dist\` que se acaban de generar (los cuatro artefactos, los accesos directos
       # del paquete, las firmas) en vez de un árbol recién clonado donde no hay ninguno.
@@ -206,6 +237,7 @@ jobs:
         run: python tests/smoke_test.py
 
       - name: Comprobar que todo quedó firmado
+        if: ${{ !inputs.sin_firma }}
         run: python firmar.py --comprobar
 
       # La suite comprueba la *ruta de código* del desinstalador —incluido el caso que
@@ -226,10 +258,12 @@ jobs:
             throw "La instalación o la desinstalación del paquete compilado ha fallado (código $LASTEXITCODE)"
           }
 
-      - name: Guardar los ejecutables firmados
+      - name: Guardar los ejecutables
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: pc-toolkit-firmado
+          # El nombre dice cómo salió la compilación, para no confundir el artefacto de una
+          # publicación firmada con el de una que no lo está.
+          name: ${{ inputs.sin_firma && 'pc-toolkit-sin-firma' || 'pc-toolkit-firmado' }}
           path: |
             dist/PC Toolkit Setup.exe
             dist/PC Toolkit.exe
@@ -279,11 +313,35 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $etiqueta = "${{ github.ref_name }}"
+
+          # Las notas del release llevan dentro los SHA-256 que se acaban de calcular, y
+          # dicen si los ejecutables van firmados o no. Se escriben en un archivo desde
+          # PowerShell: así no hay comillas ni saltos de línea que escapar en la llamada.
+          $entrega = Join-Path $env:GITHUB_WORKSPACE 'dist\entrega'
+          $lineas = @(
+            "PC Toolkit $env:VERSION",
+            '',
+            '## Comprobar la descarga',
+            '',
+            'Los SHA-256 de los archivos adjuntos:',
+            '',
+            '```'
+          )
+          $lineas += Get-Content -LiteralPath (Join-Path $entrega 'SHA256SUMS.txt')
+          $lineas += @('```', '')
+          if ('${{ inputs.sin_firma }}' -eq 'true') {
+            $lineas += 'Estos ejecutables van **sin firmar**: si Windows avisa con «Windows protegió tu PC», se continúa con «Más información» y «Ejecutar de todos modos».'
+          } else {
+            $lineas += 'Los ejecutables van firmados digitalmente (Azure Artifact Signing), con sello de tiempo.'
+          }
+          $notas = Join-Path $env:RUNNER_TEMP 'notas-release.md'
+          $lineas | Set-Content -LiteralPath $notas -Encoding utf8
+
           gh release view $etiqueta --json tagName *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $etiqueta `
-              --title "PC Toolkit $env:VERSION" `
-              --notes "PC Toolkit $env:VERSION. Comprueba la descarga con los SHA-256 de SHA256SUMS.txt."
+            gh release create $etiqueta --title "PC Toolkit $env:VERSION" --notes-file $notas
+          } else {
+            gh release edit $etiqueta --notes-file $notas
           }
           gh release upload $etiqueta `
             "dist\entrega\PC-Toolkit-$env:VERSION-Setup.exe" `
