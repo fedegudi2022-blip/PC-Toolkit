@@ -74,13 +74,30 @@ jobs:
           python tests/smoke_test.py 2>&1 | Tee-Object -FilePath $registro
           $codigo = $LASTEXITCODE
 
-          $destacadas = Select-String -Path $registro -Pattern '\[FALLO\]|Traceback|^\w*Error' |
+          # Se buscan los fallos de la suite y, además, lo que no es una comprobación fallida
+          # (una excepción, un fallo de Qt, un proceso que se muere sin decir por qué): la
+          # suite imprime el resultado de todas las comprobaciones al final, así que si se
+          # muere antes no deja ni un `[FALLO]` y sin esto el fallo quedaría mudo.
+          $destacadas = Select-String -Path $registro -Pattern '\[FALLO\]|Traceback|Error|Fatal|exception' |
             Select-Object -First 40
-          if ($destacadas) {
+          if (-not $destacadas -and $codigo -ne 0) {
+            # Sin una sola línea reconocible, lo único que queda es el final del registro.
+            $destacadas = @(Get-Content -LiteralPath $registro -Tail 20)
+          }
+          $textos = @(
+            $destacadas | ForEach-Object { if ($_ -is [string]) { $_ } else { $_.Line } } |
+              Where-Object { $_.Trim() } | Select-Object -First 40
+          )
+          if ($codigo -ne 0 -and $textos.Count -eq 0) {
+            '### La suite falló sin dejar ni una línea de salida' |
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
+            Write-Host '::error title=Fallo de la suite::El registro quedó vacío: la suite no llegó a escribir nada.'
+          }
+          if ($textos) {
             '### Fallos de la suite' | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
-            $destacadas | ForEach-Object { '- ' + $_.Line.Trim() } | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
-            foreach ($linea in $destacadas) {
-              $texto = $linea.Line.Trim() -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+            $textos | ForEach-Object { '- ' + $_.Trim() } | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
+            foreach ($linea in $textos) {
+              $texto = $linea.Trim() -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
               Write-Host "::error title=Fallo de la suite::$texto"
             }
           }
