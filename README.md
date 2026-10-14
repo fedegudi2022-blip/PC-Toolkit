@@ -166,10 +166,11 @@ Desinstalar conserva estos datos salvo que se pidan borrar desde el asistente.
 .venv\Scripts\python.exe tests\smoke_test.py
 ```
 
-**635 comprobaciones** sin marco externo: métricas y disco reales, persistencia, alertas,
+**636 comprobaciones** sin marco externo: métricas y disco reales, persistencia, alertas,
 historial, informes en los tres formatos, las ocho páginas construidas y navegadas, programas de
 inicio y cambios reversibles sobre claves propias de la prueba, el ciclo del instalador en carpetas
-temporales, la firma (argumentos de `signtool` y firma real con certificado de prueba), el contraste
+temporales, que las dependencias que la compilación importa estén declaradas en `requirements.txt`,
+la firma (argumentos de `signtool` y firma real con certificado de prueba), el contraste
 WCAG, la diferenciación de las series y los estados con daltonismo (CIEDE2000 sobre las matrices de
 Machado) y la accesibilidad (roles, nombres, anuncios y foco visible).
 
@@ -183,7 +184,10 @@ guardas están en `tests\documentacion.py`, aparte de las pruebas de código, y 
 cuando lo que se comprueba es un cambio de código: `tests\smoke_test.py --sin-documentacion`.
 
 En cada envío las pasa [.github/workflows/integracion.yml](.github/workflows/integracion.yml) en un
-servidor de Windows, sin firmar nada.
+servidor de Windows, que además **compila el ejecutable y el instalador**: así un fallo de
+compilación —una dependencia sin declarar, un cambio que rompe el empaquetado— se ve al enviar y no
+al publicar. No firma nada: de la firma se encarga
+[.github/workflows/firmar.yml](.github/workflows/firmar.yml).
 
 ## Estructura
 
@@ -200,7 +204,7 @@ pctoolkit/
                              informes, historial, alertas, arranque, mantenimiento, programador
   ui/                        Interfaz PySide6: tema, accesibilidad, iconos, widgets, gráfica,
                              bandeja, diálogos y una página por sección
-tests/smoke_test.py          635 comprobaciones (núcleo, interfaz, instalador y firma)
+tests/smoke_test.py          636 comprobaciones (núcleo, interfaz, instalador, firma y dependencias)
 tests/documentacion.py       Guardas de capturas, informe y recuentos (van aparte)
 dist/                        Todo lo compilado; se regenera con los scripts
 ```

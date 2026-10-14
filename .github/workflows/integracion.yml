@@ -1,8 +1,13 @@
 name: Integración (Windows)
 
-# Comprobaciones de cada envío: es el portero rápido. No compila ni firma nada (eso está
-# en «firmar.yml», que corre cuando se pide a mano o al publicar una etiqueta), así que
-# tarda poco y avisa en cuanto algo se rompe.
+# Comprobaciones de cada envío: es el portero. Compila el ejecutable y el instalador —para
+# que un fallo de compilación (una dependencia sin declarar, un cambio que rompe el
+# empaquetado) se vea en cada envío y no al publicar, con el release ya en juego— y pasa la
+# suite. No firma nada: eso está en «firmar.yml», que corre cuando se pide a mano o al
+# publicar una etiqueta.
+#
+# Tarda unos minutos más que antes, y sale barato: descubrir el fallo aquí cuesta una
+# ejecución, descubrirlo al publicar cuesta un release.
 #
 # Las acciones van fijadas por el SHA del commit y no por la etiqueta: una etiqueta se
 # puede mover a otro commit y entonces el flujo ejecutaría código que nadie revisó.
@@ -39,9 +44,24 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      # Sin `dist\` compilado se omiten las comprobaciones que revisan los ejecutables: la
-      # suite lo dice en su resumen y la guarda de recuentos lo tiene en cuenta (en un
-      # equipo incompleto, la guía puede citar un número mayor).
+      # Se compila antes de la suite, a propósito: así las comprobaciones que revisan los
+      # ejecutables de `dist\` (los cuatro artefactos, los accesos directos del paquete, la
+      # instalación y la desinstalación) se hacen en cada envío y no solo al publicar. La
+      # firma no se toca: sin `--firmar` no hay signtool ni Azure, y la suite omite lo que
+      # necesita firmas.
+      - name: Compilar el ejecutable y el instalador
+        shell: pwsh
+        run: |
+          python build_exe.py --onefile
+          if ($LASTEXITCODE -ne 0) { throw "Falló la compilación de 'PC Toolkit.exe' (código $LASTEXITCODE)" }
+
+          python build_installer.py --rebuild
+          if ($LASTEXITCODE -ne 0) { throw "Falló la compilación del instalador (código $LASTEXITCODE)" }
+
+      # Con `dist\` compilado, la suite ya no se salta lo que revisa los ejecutables. Lo que
+      # sigue omitiendo es lo que necesita firmas o la entrega —`SHA256SUMS.txt` y los
+      # nombres publicados, que son de otro paso—, y la guarda de recuentos lo tiene en
+      # cuenta: la guía cita el del equipo completo, que es mayor.
       #
       # Los fallos se anotan con `::error` y se copian al resumen del trabajo: así se leen
       # en la página del flujo sin abrir el registro entero, que en un servidor solo se

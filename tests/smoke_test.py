@@ -3831,6 +3831,80 @@ def test_config() -> None:
     )
 
 
+def _normalizar_distribucion(nombre: str) -> str:
+    """Nombre de paquete comparable: `PyInstaller` y `pyinstaller` son el mismo."""
+    return re.sub(r"[-_.]+", "-", nombre).lower()
+
+
+def test_dependencias() -> None:
+    """Lo que la compilación importa de terceros tiene que estar declarado.
+
+    El servidor de compilación instala `requirements.txt` y nada más, así que un `import`
+    de una biblioteca que no esté ahí funciona en un equipo con paquetes de más y rompe el
+    empaquetado en el servidor. Pasó con PyInstaller: la guía daba por hecho que estaba en
+    `requirements.txt` y no estaba, así que la compilación del servidor llevaba rota desde
+    el principio —nadie la había ejecutado nunca, porque el flujo se paraba antes, en el
+    inicio de sesión de Azure— hasta la primera publicación sin firma.
+    """
+    import ast
+    import importlib.metadata
+
+    declaradas = set()
+    for linea in (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines():
+        linea = linea.split("#", 1)[0].strip()
+        if linea:
+            declaradas.add(_normalizar_distribucion(re.split(r"[<>=!\[;\s]", linea, 1)[0]))
+
+    # Qué paquete trae cada módulo instalado: `PyInstaller` viene de `pyinstaller` y así
+    # con los que no se llaman igual que su distribución.
+    de_paquete = importlib.metadata.packages_distributions()
+
+    archivos = [ROOT / nombre for nombre in ("app.py", "build_exe.py", "build_installer.py", "firmar.py")]
+    for carpeta in ("installer", "pctoolkit", "tools", "tests"):
+        archivos += sorted((ROOT / carpeta).rglob("*.py"))
+
+    # Se leen los `import`, no el texto: así valen las formas raras (dentro de una función,
+    # dentro de un `try`, con paréntesis…) y no cuentan los comentarios ni las cadenas.
+    importados: dict[str, set[str]] = {}
+    for archivo in archivos:
+        if not archivo.exists():
+            continue
+        arbol = ast.parse(archivo.read_text(encoding="utf-8"), filename=str(archivo))
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.Import):
+                nombres = [alias.name.split(".")[0] for alias in nodo.names]
+            elif isinstance(nodo, ast.ImportFrom) and not nodo.level:
+                nombres = [(nodo.module or "").split(".")[0]]
+            else:
+                continue
+            for nombre in nombres:
+                if nombre:
+                    importados.setdefault(nombre, set()).add(archivo.relative_to(ROOT).as_posix())
+
+    # De todo eso solo interesa lo que no trae Python ni el propio proyecto: sus propios
+    # módulos (`_checks`, `documentacion`, `build_exe`…) cuentan como locales, porque la
+    # suite los importa con `tests\` y la raíz en el camino de búsqueda.
+    propios = {archivo.stem for archivo in archivos} | {ruta.name for ruta in ROOT.iterdir() if ruta.is_dir()}
+    faltan = []
+    terceros = 0
+    for nombre, donde in sorted(importados.items()):
+        if nombre in sys.stdlib_module_names or nombre in propios:
+            continue
+        terceros += 1
+        distribuciones = {_normalizar_distribucion(paquete) for paquete in de_paquete.get(nombre, [])}
+        if distribuciones & declaradas or _normalizar_distribucion(nombre) in declaradas:
+            continue
+        faltan.append(f"{nombre} ({', '.join(sorted(donde))})")
+
+    check(
+        "Lo que la compilación importa de terceros está declarado en requirements.txt",
+        not faltan,
+        "sin declarar: " + "; ".join(faltan)
+        if faltan
+        else f"{terceros} bibliotecas de terceros, todas declaradas",
+    )
+
+
 def test_registro() -> None:
     """El registro en archivo: lo que falla queda escrito sin molestar al usuario."""
     from pctoolkit.core import logs
@@ -3864,6 +3938,7 @@ def main(argv: list[str] | None = None) -> int:
     sin_documentacion = "--sin-documentacion" in argumentos
     test_metrics()
     test_config()
+    test_dependencias()
     test_theme()
     test_disk()
     test_tasks()

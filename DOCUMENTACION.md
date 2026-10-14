@@ -483,7 +483,8 @@ build_exe.py / build_exe.bat    Empaquetado de la aplicación con PyInstaller
 build_installer.py / .bat       Empaquetado del instalador y del desinstalador
 firmar.py / firmar.bat          Firma digital con signtool (SHA-256, sello RFC 3161 y verificación)
 .github/workflows/
-  integracion.yml               Comprobaciones de cada envío (sin firma)
+  integracion.yml               Comprobaciones de cada envío: compila el ejecutable y el
+                                instalador y pasa la suite (sin firma)
   firmar.yml                    Compila y firma con Azure Artifact Signing (OIDC) y publica la
                                 etiqueta `v…` con sus ejecutables
 installer/
@@ -497,7 +498,8 @@ pctoolkit/
   ui/                           Interfaz PySide6: temas (claro y oscuro), anuncios accesibles y
                                 roles de los widgets propios, iconos, tarjetas, gráfica, bandeja,
                                 ventana principal y una página por módulo
-tests/smoke_test.py             635 comprobaciones automáticas (núcleo, interfaz, instalador y firma)
+tests/smoke_test.py             636 comprobaciones automáticas (núcleo, interfaz, instalador,
+                                firma y dependencias declaradas)
   _checks.py                    Recuento de comprobaciones, compartido con las guardas
   documentacion.py              Guardas de documentación: capturas, informe de muestra y recuentos
                                 de las guías (se pueden dejar fuera, véase el apartado 7)
@@ -582,7 +584,7 @@ de instalar, ejecutar y desinstalar.
 Pruebas:
 
 ```bat
-.venv\Scripts\python.exe tests\smoke_test.py            635 comprobaciones
+.venv\Scripts\python.exe tests\smoke_test.py            636 comprobaciones
 .venv\Scripts\python.exe tools\verificar_instalacion.py  Instala de verdad y desinstala al terminar
 .venv\Scripts\python.exe tests\documentacion.py         Solo las guardas de documentación
 .venv\Scripts\python.exe tests\smoke_test.py --sin-documentacion   Sin las guardas de documentación
@@ -596,7 +598,7 @@ pruebas de código: así una captura todavía por rehacer no bloquea la comproba
 comprueba únicamente cuando se ejecutan como última parte de la suite.
 
 El total depende del equipo: unas pocas comprobaciones solo se hacen si el sistema tiene bandeja,
-si hay `signtool` disponible o si `dist\` ya está compilado. Con la plataforma real de Qt salen 635;
+si hay `signtool` disponible o si `dist\` ya está compilado. Con la plataforma real de Qt salen 636;
 en modo sin pantalla son unas cuantas menos, porque las que necesitan una bandeja de verdad no se
 ejecutan (la comprobación de que la bandeja solo se usa si el sistema la tiene sí se hace siempre).
 
