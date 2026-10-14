@@ -335,7 +335,10 @@ jobs:
             $lineas += 'Los ejecutables van firmados digitalmente (Azure Artifact Signing), con sello de tiempo.'
           }
           $notas = Join-Path $env:RUNNER_TEMP 'notas-release.md'
-          $lineas | Set-Content -LiteralPath $notas -Encoding utf8
+          # Sin marca de orden de bytes y valiendo igual en PowerShell 7 y en el 5.1 (el
+          # de las herramientas de firma): se escribe con el API de .NET, como el JSON de
+          # metadatos. Con `Set-Content -Encoding utf8` el 5.1 añadiría esa marca.
+          [System.IO.File]::WriteAllLines($notas, $lineas, (New-Object System.Text.UTF8Encoding($false)))
 
           gh release view $etiqueta --json tagName *> $null
           if ($LASTEXITCODE -ne 0) {
