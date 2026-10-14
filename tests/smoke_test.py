@@ -2040,15 +2040,38 @@ def test_interface() -> None:
     check("Aviso de permisos mostrado", bool(window.optimize_page.privilege_label.text()), window.optimize_page.privilege_label.text()[:40])
     check("Opciones de memoria reflejadas", window.optimize_page.min_mb_spin.value() == 50.0, str(window.optimize_page.min_mb_spin.value()))
 
-    # Flujo real de liberación a través de la ventana (en segundo plano).
-    window.release_memory_now("manual")
-    for _ in range(60):
-        if not window._memory_busy:  # noqa: SLF001
-            break
-        _settle(app, 200)
-    result = window.optimize_page.last_result
-    check("Liberación completada desde la interfaz", result is not None and result.processes_trimmed > 0, result.summary() if result else "sin resultado")
-    check("Resultado mostrado en la tarjeta", "MB" in window.optimize_page.last_freed.text(), window.optimize_page.last_freed.text())
+    # Flujo real de liberación a través de la ventana (en segundo plano). Recorre los
+    # procesos de verdad, así que en un servidor recién arrancado —donde ninguno llega al
+    # mínimo de memoria— no habría nada que recortar y la comprobación no mediría el flujo.
+    # Se deja uno propio en marcha, con memoria de sobra, y se apaga al terminar.
+    ayudante = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "datos = bytearray(220 * 1024 * 1024); "
+            "datos[::4096] = b'x' * (220 * 1024 * 1024 // 4096); "
+            "import time; time.sleep(90)",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    try:
+        window.release_memory_now("manual")
+        for _ in range(60):
+            if not window._memory_busy:  # noqa: SLF001
+                break
+            _settle(app, 200)
+        result = window.optimize_page.last_result
+        check(
+            "Liberación completada desde la interfaz",
+            result is not None and result.processes_trimmed > 0,
+            result.summary() if result else "sin resultado",
+        )
+        check("Resultado mostrado en la tarjeta", "MB" in window.optimize_page.last_freed.text(), window.optimize_page.last_freed.text())
+    finally:
+        ayudante.kill()
+        ayudante.wait(timeout=15)
     check("Historial de la sesión con la limpieza", window.optimize_page.history_list.count() == 1, str(window.optimize_page.history_list.count()))
     check("Botón habilitado de nuevo", window.optimize_page.release_button.isEnabled())
 
