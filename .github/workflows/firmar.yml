@@ -172,6 +172,24 @@ jobs:
       - name: Comprobar que todo quedó firmado
         run: python firmar.py --comprobar
 
+      # La suite comprueba la *ruta de código* del desinstalador —incluido el caso que
+      # costó la publicación de la 1.2.0: sin PySide6, en un proceso aparte—, pero no
+      # ejecuta el desinstalador que sale en `dist\`. Este paso sí: instala el paquete
+      # compilado con las rutas reales del usuario, ejecuta la copia instalada y
+      # desinstala con el desinstalador compilado, exigiendo que no quede rastro
+      # (accesos directos, registro, arranque automático ni carpeta de programa). Va
+      # **antes** de publicar: así un desinstalador que no arranca, o que deja basura,
+      # no puede volver a salir en un release. El servidor de compilación es de un solo
+      # uso, así que instalarlo ahí no molesta a nadie.
+      - name: Instalar y desinstalar el paquete real
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python tools/verificar_instalacion.py
+          if ($LASTEXITCODE -ne 0) {
+            throw "La instalación o la desinstalación del paquete compilado ha fallado (código $LASTEXITCODE)"
+          }
+
       - name: Guardar los ejecutables firmados
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

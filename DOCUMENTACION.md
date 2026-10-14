@@ -860,13 +860,17 @@ biblioteca `Microsoft.ArtifactSigning.Client`, que trae
 `bin\x64\Azure.CodeSigning.Dlib.dll`; inicia sesión en Azure con `azure/login@v3`; escribe el
 `metadata.json` con la cuenta, el perfil y `ExcludeCredentials` (conserva `AzureCliCredential`, que es
 la sesión que deja el inicio de sesión, y descarta las que no existen en un servidor); compila y firma
-de una vez; **ejecuta la suite de comprobaciones**; comprueba las firmas y guarda el artefacto:
+de una vez; **ejecuta la suite de comprobaciones**; comprueba las firmas; **instala y desinstala el paquete
+real** —`tools\verificar_instalacion.py`: instalación de verdad en `%LOCALAPPDATA%`, ejecución de la
+copia instalada y desinstalación con el desinstalador compilado, exigiendo que no quede rastro— y
+guarda el artefacto:
 
 ```pwsh
 $env:PCTOOLKIT_SIGN_ARGS = "--signtool $signtool --dlib $dlib --metadatos $metadata --sello http://timestamp.acs.microsoft.com"
 python build_exe.py --onefile --firmar
 python build_installer.py --rebuild --firmar
 python firmar.py --comprobar        # falla el trabajo si algo quedó sin firmar
+python tools/verificar_instalacion.py  # instala, ejecuta y desinstala el paquete real
 ```
 
 Dos detalles que suelen dar problemas: **el signtool del servidor puede ser antiguo** (la biblioteca
@@ -878,6 +882,11 @@ La suite se ejecuta **después** de compilar, no antes: así comprueba los ejecu
 acaba de generar el propio flujo (que están los cuatro artefactos, que los accesos directos del
 paquete apuntan donde deben, que la firma se puede leer) en vez de un árbol recién clonado donde
 todavía no hay ninguno. Si algo falla ahí, el trabajo se para y **no se publica ningún artefacto**.
+
+La suite comprueba la *ruta de código* del desinstalador (con PySide6 bloqueado a propósito, que es
+la única forma de reproducir el fallo de la 1.2.0), pero no ejecuta el desinstalador que sale en
+`dist\`. De eso se encarga el paso siguiente, que instala y desinstala el paquete compilado de
+verdad: así un desinstalador averiado no puede volver a publicarse.
 
 **Al empujar una etiqueta `v…`**, el mismo flujo prepara la entrega y la publica: copia los dos
 archivos con los nombres que se reparten (`PC-Toolkit-<versión>-Setup.exe` y `…-portable.exe`),
