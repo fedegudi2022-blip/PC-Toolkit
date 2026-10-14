@@ -1,0 +1,55 @@
+Parche opcional: el valor de «StartupApproved» con sus doce bytes.
+
+NO está aplicado. Se deja aquí preparado para cuando se confirme, mirando el registro, qué
+escribe exactamente el Administrador de tareas al desactivar una entrada de inicio. Hoy el
+programa escribe nueve bytes (el byte del estado más ocho de fecha) y Windows respeta la marca
+porque solo mira el estado; el parche pasa a doce (el estado como DWORD de cuatro bytes más un
+FILETIME de ocho), que es lo que se espera de esa clave.
+
+Cómo aplicarlo y deshacerlo:
+
+    git apply parches/reloj-de-aprobacion-12-bytes.patch
+    git apply -R parches/reloj-de-aprobacion-12-bytes.patch
+
+Incluye el cambio de la suite que lo comprueba (`len(...) == 9` pasa a `== 12`), así que
+después de aplicarlo las comprobaciones siguen en verde.
+
+--- a/pctoolkit/core/startup.py
++++ b/pctoolkit/core/startup.py
+@@ -486,12 +486,19 @@
+ 
+ # --- Lectura --------------------------------------------------------------
+ def approval_bytes(enabled: bool, moment: float | None = None) -> bytes:
+-    """El valor que escribe Windows en `StartupApproved` (2 activada / 3 desactivada)."""
++    """El valor que escribe Windows en `StartupApproved`: 12 bytes.
++
++    El estado va como DWORD (2 activada / 3 desactivada) y, al desactivar, la fecha en
++    los ocho bytes siguientes (FILETIME). La versiÃ³n anterior escribÃ­a nueve bytes â€”el
++    del estado y ochoâ€”, que es la firma que Windows respeta hoy porque solo se fija en el
++    estado, pero no es lo que deja el Administrador de tareas. Este parche no se aplica
++    todavÃ­a: primero hay que confirmar en el registro lo que escribe Windows.
++    """
+     when = time.time() if moment is None else float(moment)
+     stamp = int((when + _FILETIME_EPOCH) * 10_000_000)
+-    first = b"\x02" if enabled else b"\x03"
+-    extra = (0).to_bytes(8, "little") if enabled else stamp.to_bytes(8, "little")
+-    return first + extra
++    estado = 2 if enabled else 3
++    fecha = 0 if enabled else stamp
++    return estado.to_bytes(4, "little") + fecha.to_bytes(8, "little")
+ 
+ 
+ def approval_enabled(value: Any) -> bool:
+--- a/tests/smoke_test.py
++++ b/tests/smoke_test.py
+@@ -793,8 +793,8 @@
+     # --- Marcas de activada/desactivada (las mismas que escribe Windows) --
+     activada = startup.approval_bytes(True)
+     desactivada = startup.approval_bytes(False)
+-    check("Marca de activada", activada[0] == 2 and len(activada) == 9, activada.hex())
+-    check("Marca de desactivada con su fecha", desactivada[0] == 3 and len(desactivada) == 9, desactivada.hex())
++    check("Marca de activada", activada[0] == 2 and len(activada) == 12, activada.hex())
++    check("Marca de desactivada con su fecha", desactivada[0] == 3 and len(desactivada) == 12, desactivada.hex())
+     check("Se leen las marcas guardadas", startup.approval_enabled(activada) and not startup.approval_enabled(desactivada))
+     check("Sin marca, la entrada cuenta como activa", startup.approval_enabled(None))
+     check("Una marca desconocida no se interpreta como desactivada", startup.approval_enabled(b"\x09\x00"))
