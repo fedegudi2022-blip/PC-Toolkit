@@ -335,10 +335,12 @@ jobs:
             $lineas += 'Los ejecutables van firmados digitalmente (Azure Artifact Signing), con sello de tiempo.'
           }
           $notas = Join-Path $env:RUNNER_TEMP 'notas-release.md'
-          # Sin marca de orden de bytes y valiendo igual en PowerShell 7 y en el 5.1 (el
-          # de las herramientas de firma): se escribe con el API de .NET, como el JSON de
-          # metadatos. Con `Set-Content -Encoding utf8` el 5.1 añadiría esa marca.
-          [System.IO.File]::WriteAllLines($notas, $lineas, (New-Object System.Text.UTF8Encoding($false)))
+          # Se escribe con el API de .NET, sin marca de orden de bytes y con saltos de línea
+          # `\n` explícitos: así el archivo sale igual en PowerShell 7 y en el 5.1 (el de
+          # las herramientas de firma) y no arrastra los finales de línea de Windows que
+          # puedan venir del propio guion (en la primera publicación salieron dobles).
+          $limpio = ($lineas | ForEach-Object { $_.TrimEnd("`r") }) -join "`n"
+          [System.IO.File]::WriteAllText($notas, $limpio + "`n", (New-Object System.Text.UTF8Encoding($false)))
 
           gh release view $etiqueta --json tagName *> $null
           if ($LASTEXITCODE -ne 0) {
