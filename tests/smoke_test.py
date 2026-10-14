@@ -2048,14 +2048,27 @@ def test_interface() -> None:
         [
             sys.executable,
             "-c",
-            "datos = bytearray(220 * 1024 * 1024); "
-            "datos[::4096] = b'x' * (220 * 1024 * 1024 // 4096); "
-            "import time; time.sleep(90)",
+            "datos = bytearray(400 * 1024 * 1024); "
+            "datos[::4096] = b'x' * (400 * 1024 * 1024 // 4096); "
+            "import time; time.sleep(300)",
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
+    # Se espera a que esa memoria esté a la vista antes de pedir la liberación: si el
+    # proceso auxiliar va lento (una máquina cargada, un servidor recién arrancado), la
+    # búsqueda no lo encontraría y volvería el «ningún proceso accesible» que esto evita.
+    import psutil
+
+    limite = time.time() + 25
+    while time.time() < limite:
+        try:
+            if psutil.Process(ayudante.pid).memory_info().rss >= 60 * 1024 * 1024:
+                break
+        except psutil.Error:
+            break
+        time.sleep(0.3)
     try:
         window.release_memory_now("manual")
         for _ in range(60):
