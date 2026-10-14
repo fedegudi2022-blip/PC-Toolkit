@@ -2455,12 +2455,20 @@ def test_interface() -> None:
     window.settings.sync()
     window.alerts.reset()
     check("Sin avisos antes de evaluar", window.alert_history == [])
-    window._on_sample(window.metrics.poll())  # noqa: SLF001
+    # Las dos muestras salen de una lectura real con los tres porcentajes forzados por
+    # encima del umbral. Con la lectura real a secas —el disco de un servidor recién
+    # arrancado, por ejemplo— puede quedarse una métrica por debajo la primera vez y
+    # superar el umbral la segunda: el aviso nuevo sería legítimo y la comprobación del
+    # enfriamiento fallaría sin que nada esté mal.
+    import dataclasses as _dataclasses
+
+    alta = _dataclasses.replace(window.metrics.poll(), cpu_percent=95.0, ram_percent=95.0, disk_percent=95.0)
+    window._on_sample(alta)  # noqa: SLF001
     alerts = window.alert_history
     check("Aviso generado al superar el umbral", len(alerts) >= 1, str([(event.metric, round(event.value)) for event in alerts]))
     check("Indicador de aviso visible", window.alert_indicator.isVisible() and "%" in window.alert_indicator.text(), window.alert_indicator.text())
     first_count = len(alerts)
-    window._on_sample(window.metrics.poll())  # noqa: SLF001
+    window._on_sample(alta)  # noqa: SLF001
     check("Avisos limitados por enfriamiento", len(window.alert_history) == first_count, str(len(window.alert_history)))
 
     # --- Diálogo de alertas ----------------------------------------------
