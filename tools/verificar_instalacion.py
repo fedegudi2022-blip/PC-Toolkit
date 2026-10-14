@@ -39,10 +39,16 @@ def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
 
 
 def shortcut_target(link: Path) -> str:
-    result = run([
-        "powershell", "-NoProfile", "-Command",
-        f"(New-Object -ComObject WScript.Shell).CreateShortcut('{link}').TargetPath",
-    ])
+    result = run(
+        [
+            "powershell", "-NoProfile", "-Command",
+            f"(New-Object -ComObject WScript.Shell).CreateShortcut('{link}').TargetPath",
+        ],
+        # Igual que el instalador: Windows PowerShell 5.1 necesita sus carpetas de módulos
+        # y no las que herede de PowerShell 7 (en el servidor de compilación, el padre es
+        # `pwsh`).
+        env=core._powershell_environment(),  # noqa: SLF001
+    )
     return (result.stdout or "").strip()
 
 
