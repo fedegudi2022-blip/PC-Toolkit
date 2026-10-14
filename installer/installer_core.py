@@ -336,11 +336,23 @@ def _powershell_environment() -> dict[str, str]:
     Si el proceso padre es PowerShell 7 (o cualquier shell que lo exporte), los hijos
     heredan su `PSModulePath`, y entonces Windows PowerShell 5.1 busca sus propios
     módulos en el sitio equivocado: con él, el COM de los accesos directos y las carpetas
-    del sistema fallan sin motivo aparente. Quitando la variable, el hijo construye la
-    suya como si se hubiera abierto a mano.
+    del sistema fallan sin motivo aparente. Quitar la variable tampoco basta en un
+    servidor —sin ella la reconstruye con las del sistema y del usuario, y ahí puede
+    estar la de PowerShell 7—, así que se define con las carpetas del Windows PowerShell
+    de siempre, igual que en `pctoolkit.core.tools`.
     """
     entorno = dict(os.environ)
-    entorno.pop("PSModulePath", None)
+    sistema = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    carpetas = [
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "WindowsPowerShell" / "Modules",
+        sistema / "system32" / "WindowsPowerShell" / "v1.0" / "Modules",
+        Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Documents" / "WindowsPowerShell" / "Modules",
+    ]
+    presentes = [carpeta for carpeta in carpetas if carpeta.is_dir()]
+    if presentes:
+        entorno["PSModulePath"] = os.pathsep.join(str(carpeta) for carpeta in presentes)
+    else:
+        entorno.pop("PSModulePath", None)
     return entorno
 
 

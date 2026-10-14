@@ -95,18 +95,37 @@ def find_tool(tool_id: str) -> ToolShortcut | None:
     return None
 
 
-def powershell_environment() -> dict[str, str]:
-    """Entorno para lanzar Windows PowerShell desde Python.
+def windows_powershell_modules() -> list[Path]:
+    """Carpetas de módulos del Windows PowerShell 5.1 (las que usa al abrirse a mano)."""
+    sistema = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    carpetas = [
+        Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "WindowsPowerShell" / "Modules",
+        sistema / "system32" / "WindowsPowerShell" / "v1.0" / "Modules",
+        Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Documents" / "WindowsPowerShell" / "Modules",
+    ]
+    return [carpeta for carpeta in carpetas if carpeta.is_dir()]
 
-    Si el proceso padre es PowerShell 7 (o cualquier shell que lo exporte), los hijos
-    heredan su `PSModulePath`, y entonces Windows PowerShell 5.1 busca sus propios
-    módulos en el sitio equivocado: `Import-Module PKI`, `New-SelfSignedCertificate` y
-    demás dejan de cargarse y el comando falla sin motivo aparente. Quitando esa
-    variable, el hijo construye la suya como si se hubiera abierto a mano (es el
-    arreglo que documenta Microsoft para los procesos intermedios como Python).
+
+def powershell_environment() -> dict[str, str]:
+    """Entorno para lanzar Windows PowerShell 5.1 desde Python.
+
+    Si el proceso padre es PowerShell 7 (el paso de un flujo de GitHub ejecuta `pwsh`),
+    los hijos heredan su `PSModulePath`, y Windows PowerShell busca sus módulos en el
+    sitio equivocado: `New-SelfSignedCertificate` falla con «No existe ninguna unidad
+    con el nombre 'Cert'» y `ConvertTo-SecureString` con «the module could not be
+    loaded». Los dos engañan durante un buen rato.
+
+    Quitar la variable no basta en un servidor: sin ella, Windows PowerShell la
+    reconstruye con las del sistema y del usuario, y ahí puede estar metida la de
+    PowerShell 7. Se define, pues, con las carpetas del Windows PowerShell de siempre
+    (es el arreglo que documenta Microsoft para los procesos intermedios como Python).
     """
     entorno = dict(os.environ)
-    entorno.pop("PSModulePath", None)
+    carpetas = windows_powershell_modules()
+    if carpetas:
+        entorno["PSModulePath"] = os.pathsep.join(str(carpeta) for carpeta in carpetas)
+    else:  # sin las carpetas del sistema no hay nada seguro que poner
+        entorno.pop("PSModulePath", None)
     return entorno
 
 

@@ -910,11 +910,17 @@ Dos trampas del servidor que ya están resueltas en el flujo y conviene no volve
 existen: eran 15 fallos falsos de la suite. Los servidores Windows de GitHub sí tienen sesión de
 escritorio, así que se dibuja con la plataforma normal. En un equipo sin pantalla se puede usar
   `PCTOOLKIT_OFFSCREEN=1`, sabiendo que las comprobaciones de desbordes avisarán de más.
-- **Al lanzar Windows PowerShell desde Python hay que quitar `PSModulePath`.** El intérprete hereda
-  la del proceso padre —y en un servidor el padre es PowerShell 7—, con lo que Windows PowerShell
-  5.1 busca sus módulos en el sitio equivocado: el módulo `PKI` no carga y `New-SelfSignedCertificate`
-  falla con un engañoso *«No existe ninguna unidad con el nombre 'Cert'»*. El proyecto lo resuelve en
-  `pctoolkit.core.tools.powershell_environment()`, que usan `firmar.py` y el instalador.
+- **Al lanzar Windows PowerShell desde Python hay que fijar `PSModulePath`, no solo quitarla.** El
+  intérprete hereda la del proceso padre —y en un servidor el padre es PowerShell 7—, con lo que
+  Windows PowerShell 5.1 busca sus módulos en el sitio equivocado: el módulo `PKI` no carga y
+  `New-SelfSignedCertificate` falla con un engañoso *«No existe ninguna unidad con el nombre 'Cert'»*,
+  y `ConvertTo-SecureString` —el de `Microsoft.PowerShell.Security`— con *«the module could not be
+  loaded»*. Quitarla tampoco basta: sin la variable, Windows PowerShell la reconstruye con las del
+  sistema y del usuario, donde el servidor de compilación tiene metidas las de PowerShell 7, así que el
+  fallo volvía a aparecer por otra puerta. El proyecto lo resuelve en
+  `pctoolkit.core.tools.powershell_environment()`, que usan `firmar.py` y el instalador,
+  **definiéndola con las carpetas del Windows PowerShell de siempre** (una ruta explícita se respeta
+  tal cual: Windows PowerShell ya no reconstruye nada).
   [Referencia de Microsoft](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_psmodulepath)
 
 Alternativa: la acción oficial

@@ -1281,7 +1281,17 @@ def test_startup() -> None:
         capturado.clear()
         startup.read_task_entries(timeout=5)
         entorno = capturado.get("env") or {}
-        con_entorno = "PSModulePath" not in entorno and bool(entorno)
+        # No basta con que falte: sin ella, Windows PowerShell la reconstruye con las del
+        # sistema y del usuario, donde un servidor tiene metidas las de PowerShell 7 (y
+        # entonces `ConvertTo-SecureString` no carga). Tiene que estar definida con las
+        # carpetas del Windows PowerShell y sin ninguna de PowerShell 7.
+        rutas_modulos = [parte for parte in str(entorno.get("PSModulePath", "")).split(os.pathsep) if parte]
+        con_entorno = (
+            bool(entorno)
+            and bool(rutas_modulos)
+            and all("PowerShell\\7" not in parte for parte in rutas_modulos)
+            and any("WindowsPowerShell\\v1.0\\Modules" in parte for parte in rutas_modulos)
+        )
         capturado.clear()
         tarea_propia = startup.StartupEntry(
             id="tarea-propia",
@@ -1303,9 +1313,9 @@ def test_startup() -> None:
         f"scheduler={en_scheduler!r}, startup={en_startup!r}",
     )
     check(
-        "PowerShell se lanza con su propio entorno (sin PSModulePath heredado)",
+        "PowerShell se lanza con las carpetas de módulos del Windows PowerShell (sin las de PowerShell 7)",
         con_entorno,
-        f"variables: {len(entorno)}",
+        f"variables: {len(entorno)} · módulos: {rutas_modulos}",
     )
 
 
