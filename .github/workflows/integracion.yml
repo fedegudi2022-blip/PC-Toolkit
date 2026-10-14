@@ -42,8 +42,29 @@ jobs:
       # Sin `dist\` compilado se omiten las comprobaciones que revisan los ejecutables: la
       # suite lo dice en su resumen y la guarda de recuentos lo tiene en cuenta (en un
       # equipo incompleto, la guía puede citar un número mayor).
+      #
+      # Los fallos se anotan con `::error` y se copian al resumen del trabajo: así se leen
+      # en la página del flujo sin abrir el registro entero, que en un servidor solo se
+      # puede mirar con la sesión de GitHub iniciada (y desde otro equipo, no se puede).
       - name: Comprobaciones automáticas (sin firma)
-        run: python tests/smoke_test.py
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $registro = Join-Path $env:RUNNER_TEMP 'suite.log'
+          python tests/smoke_test.py 2>&1 | Tee-Object -FilePath $registro
+          $codigo = $LASTEXITCODE
+
+          $destacadas = Select-String -Path $registro -Pattern '\[FALLO\]|Traceback|^\w*Error' |
+            Select-Object -First 40
+          if ($destacadas) {
+            '### Fallos de la suite' | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
+            $destacadas | ForEach-Object { '- ' + $_.Line.Trim() } | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
+            foreach ($linea in $destacadas) {
+              $texto = $linea.Line.Trim() -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+              Write-Host "::error title=Fallo de la suite::$texto"
+            }
+          }
+          exit $codigo
 
       # El registro en archivo es nuevo: si algo falla, conviene poder mirarlo sin volver a
       # reproducir el fallo en local.
