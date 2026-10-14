@@ -3344,8 +3344,25 @@ def test_firma() -> None:
     import firmar
 
     signtool = firmar.find_signtool()
-    check("signtool localizado", signtool is not None and signtool.exists(), str(signtool))
-    check("Sitios donde se busca signtool", len(firmar.signtool_candidates()) >= 1, str(len(firmar.signtool_candidates())))
+    if signtool is None:
+        # Un clon recién descargado (y el servidor de integración) todavía no tiene
+        # signtool: se descarga con `firmar.py --traer-signtool` y en el flujo de firma
+        # es un paso previo a compilar. Lo que revisan estas comprobaciones es la
+        # máquina, no el código, así que se anotan omitidas —igual que las de `dist\`—
+        # y la suite sigue sirviendo en un equipo a medio preparar.
+        check("signtool localizado (omitida: no está descargado)", True, "python firmar.py --traer-signtool")
+        check(
+            "Sitios donde se busca signtool (omitida: no está descargado)",
+            True,
+            "python firmar.py --traer-signtool",
+        )
+    else:
+        check("signtool localizado", signtool.exists(), str(signtool))
+        check(
+            "Sitios donde se busca signtool",
+            len(firmar.signtool_candidates()) >= 1,
+            str(len(firmar.signtool_candidates())),
+        )
 
     sello = firmar.SELLO_POR_DEFECTO
     pfx = firmar.CertificateSpec(modo="pfx", pfx=Path("llave.pfx"), password="secreta")
@@ -3383,8 +3400,24 @@ def test_firma() -> None:
         "Nombre del firmante legible (CN con coma)",
         firmar._nombre_corto("CN=PC Toolkit (prueba, no usar), O=Alguien") == "PC Toolkit (prueba, no usar)",  # noqa: SLF001
     )
-    check("Solo se firman los ejecutables que existen", all(archivo.exists() for archivo in firmar.artifacts()), str(len(firmar.artifacts())))
-    check("Los cuatro artefactos previstos", len(firmar.artifacts()) == 4, str([a.name for a in firmar.artifacts()]))
+    # La selección se prueba con una mezcla de un archivo que existe y otro que no: así la
+    # comprobación dice algo también en un clon recién descargado, donde no hay `dist\`.
+    sistema_exe = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "where.exe"
+    mezcla = firmar.artifacts([str(sistema_exe), str(ROOT / "no_existe.exe")])
+    check(
+        "Solo se firman los ejecutables que existen",
+        len(mezcla) == 1 and all(archivo.exists() for archivo in mezcla),
+        str([archivo.name for archivo in mezcla]),
+    )
+    lista_firma = firmar.artifacts()
+    if lista_firma:
+        check("Los cuatro artefactos previstos", len(lista_firma) == 4, str([archivo.name for archivo in lista_firma]))
+    else:
+        check(
+            "Los cuatro artefactos previstos (omitida: sin dist\\ compilado)",
+            True,
+            "compila con build_installer.py para comprobarlo",
+        )
 
     from firmar import build_parser
 
@@ -3490,13 +3523,22 @@ def test_firma_en_la_compilacion() -> None:
         muestra = ROOT / "dist" / "PC Toolkit.exe"
     else:
         muestra = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "where.exe"
-    avisos.clear()
-    sin_pfx = firmar.sign_paths([muestra], ["--pfx", str(ROOT / "no_existe.pfx")], log=avisos.append)
-    check(
-        "Av\u00edsa si el PFX indicado no existe",
-        sin_pfx is False and any("PFX" in aviso for aviso in avisos),
-        avisos[-1].strip() if avisos else "",
-    )
+    if firmar.find_signtool() is None:
+        # Sin signtool, `sign_paths` se para antes de mirar el certificado (dice cómo
+        # conseguirlo): la comprobación del PFX necesita la máquina preparada.
+        check(
+            "Av\u00edsa si el PFX indicado no existe (omitida: no hay signtool)",
+            True,
+            "python firmar.py --traer-signtool",
+        )
+    else:
+        avisos.clear()
+        sin_pfx = firmar.sign_paths([muestra], ["--pfx", str(ROOT / "no_existe.pfx")], log=avisos.append)
+        check(
+            "Av\u00edsa si el PFX indicado no existe",
+            sin_pfx is False and any("PFX" in aviso for aviso in avisos),
+            avisos[-1].strip() if avisos else "",
+        )
 
     # --- Firma de verdad, sobre una copia y con un certificado de prueba -----
     signtool = firmar.find_signtool()
