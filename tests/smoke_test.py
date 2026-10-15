@@ -6721,33 +6721,43 @@ def main(argv: list[str] | None = None) -> int:
     # Las guardas de documentación se pueden dejar fuera: si una captura está por rehacer,
     # no tiene por qué impedir comprobar un cambio de código.
     sin_documentacion = "--sin-documentacion" in argumentos
-    test_metrics()
-    test_gpu()
-    test_config()
-    test_dependencias()
-    test_logotipo()
-    test_publicacion()
-    revisar_guiones_de_la_aplicacion()
-    test_actualizaciones()
-    test_theme()
-    test_disk()
-    test_tasks()
-    test_tools()
-    test_reports()
-    test_alerts()
-    test_history()
-    test_memory()
-    test_scheduler()
-    test_startup()
-    test_ajustes_windows()
-    test_aplicaciones()
-    test_plugins()
-    test_maintenance()
-    test_installer()
-    test_firma()
-    test_firma_en_la_compilacion()
-    test_interface()
-    test_registro()
+    # El nombre de cada bloque se escribe al empezar: si el proceso se muere a la mitad
+    # —pasa en un servidor, con Qt y los hilos al desmontarse, y el registro se queda sin
+    # informe—, el final del registro dice en cuál iba, que es lo único que no se puede
+    # averiguar después. Se escribe sin acentos ni símbolos raros a propósito: el registro
+    # de un servidor no siempre sale en UTF-8.
+    bloques = (
+        test_metrics,
+        test_gpu,
+        test_config,
+        test_dependencias,
+        test_logotipo,
+        test_publicacion,
+        revisar_guiones_de_la_aplicacion,
+        test_actualizaciones,
+        test_theme,
+        test_disk,
+        test_tasks,
+        test_tools,
+        test_reports,
+        test_alerts,
+        test_history,
+        test_memory,
+        test_scheduler,
+        test_startup,
+        test_ajustes_windows,
+        test_aplicaciones,
+        test_plugins,
+        test_maintenance,
+        test_installer,
+        test_firma,
+        test_firma_en_la_compilacion,
+        test_interface,
+        test_registro,
+    )
+    for bloque in bloques:
+        print(f"--- {bloque.__name__}", flush=True)
+        bloque()
     if sin_documentacion:
         print("Guardas de documentación omitidas (--sin-documentacion).")
     else:
