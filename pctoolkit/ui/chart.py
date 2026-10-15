@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from datetime import datetime
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QLineF, QPointF, QRectF, Qt
 from PySide6.QtGui import (
     QAccessible,
     QBrush,
@@ -13,8 +13,9 @@ from PySide6.QtGui import (
     QFont,
     QLinearGradient,
     QPainter,
-    QPainterPath,
     QPen,
+    QPixmap,
+    QPolygonF,
 )
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
@@ -33,6 +34,11 @@ SERIES = (
     ("disk", "Disco", "series_disk"),
 )
 
+# Radio del halo translúcido que acompaña a cada línea, en píxeles, y hasta dónde
+# puede engordar en un tramo muy inclinado (antes era un trazo de 6 px de ancho).
+HALO_HALF = 3.0
+HALO_MAX = 9.0
+
 
 class HistoryChart(QWidget):
     """Dibuja las muestras de las últimas horas con rejilla, área y cursor."""
@@ -45,6 +51,12 @@ class HistoryChart(QWidget):
         self._hover_index: int | None = None
         self._window_start = time.time() - hours * 3600
         self._window_end = time.time()
+        # Datos ya pintados: `_revision` cambia cuando llegan muestras o se
+        # oculta una serie, y el mapa de bits guardado se reutiliza mientras la
+        # gráfica siga igual (véase `_chart_pixmap`).
+        self._revision = 0
+        self._cache: QPixmap | None = None
+        self._cache_token: tuple | None = None
         self.setMinimumHeight(190)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setFixedHeight(206)
@@ -65,10 +77,12 @@ class HistoryChart(QWidget):
         self._window_start = self._window_end - self.hours * 3600
         if self._hover_index is not None and self._hover_index >= len(self._samples):
             self._hover_index = None
+        self._revision += 1
         self.update()
 
     def set_series_visible(self, visible: dict[str, bool]) -> None:
         self._visible.update(visible)
+        self._revision += 1
         self.update()
 
     def is_series_visible(self, key: str) -> bool:
@@ -95,20 +109,65 @@ class HistoryChart(QWidget):
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.drawPixmap(0, 0, self._chart_pixmap())
+        if self._samples:
+            self._paint_hover(painter, self._plot_rect())
+
+    def _cache_token_now(self) -> tuple:
+        """Huella de lo que depende el dibujo: tamaño, datos, series y paleta.
+
+        La paleta se lee en cada llamada porque cambiar de tema reescribe los
+        colores en el sitio (`config.set_palette`), sin recrear los widgets.
+        """
+        return (
+            self.width(),
+            self.height(),
+            round(self.devicePixelRatioF(), 3),
+            self._revision,
+            tuple(sorted(self._visible.items())),
+            tuple(COLORS.values()),
+            tuple(SURFACES.values()),
+        )
+
+    def _chart_pixmap(self) -> QPixmap:
+        """Devuelve la gráfica ya pintada y la reaprovecha si nada ha cambiado.
+
+        Dibujar las tres series cuesta decenas de milisegundos y el dibujo solo
+        cambia cuando llega una muestra nueva o cambia el tamaño; guardarlo evita
+        repetir ese trabajo en cada repintado (el cursor, los cambios de tema o
+        cualquier otro aviso de la ventana se resuelven volcando el mapa de bits).
+        """
+        token = self._cache_token_now()
+        if self._cache is not None and self._cache_token == token:
+            return self._cache
+
+        ratio = max(1.0, self.devicePixelRatioF())
+        pixmap = QPixmap(
+            max(1, round(self.width() * ratio)),
+            max(1, round(self.height() * ratio)),
+        )
+        pixmap.setDevicePixelRatio(ratio)
+        # Sin fondo propio: la tarjeta que contiene la gráfica ya trae el suyo.
+        pixmap.fill(Qt.transparent)
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing, True)
         rect = self._plot_rect()
         self._paint_background(painter, rect)
-
-        if not self._samples:
+        if self._samples:
+            painter.save()
+            painter.setClipRect(rect)
+            for key, _label, color_key in SERIES:
+                if self._visible.get(key, True):
+                    self._paint_series(painter, rect, key, COLORS[color_key])
+            painter.restore()
+        else:
             self._paint_empty(painter, rect)
-            return
+        painter.end()
 
-        painter.save()
-        painter.setClipRect(rect)
-        for key, _label, color_key in SERIES:
-            if self._visible.get(key, True):
-                self._paint_series(painter, rect, key, COLORS[color_key])
-        painter.restore()
-        self._paint_hover(painter, rect)
+        self._cache = pixmap
+        self._cache_token = token
+        return pixmap
 
     def _paint_background(self, painter: QPainter, rect: QRectF) -> None:
         font = QFont(self.font())
@@ -161,45 +220,54 @@ class HistoryChart(QWidget):
         if not points:
             return
 
-        line = QPainterPath()
-        line.moveTo(points[0])
-        for point in points[1:]:
-            line.lineTo(point)
-
         base = QColor(color)
-        if len(points) > 1:
-            area = QPainterPath(line)
-            area.lineTo(QPointF(points[-1].x(), rect.bottom()))
-            area.lineTo(QPointF(points[0].x(), rect.bottom()))
-            area.closeSubpath()
-            gradient = QLinearGradient(0, rect.top(), 0, rect.bottom())
-            # `theme.with_alpha` escribe el alfa delante (#AARRGGBB), que es como lo
-            # lee Qt; pegarlo al final del hexadecimal daría un color casi opaco.
-            gradient.setColorAt(0.0, QColor(theme.with_alpha(color, 60)))
-            gradient.setColorAt(1.0, QColor(theme.with_alpha(color, 0)))
+        if len(points) == 1:
+            painter.setBrush(base)
             painter.setPen(Qt.NoPen)
-            painter.setBrush(QBrush(gradient))
-            painter.drawPath(area)
+            painter.drawEllipse(points[0], 3.0, 3.0)
+            return
 
-        glow = QPen(QColor(theme.with_alpha(color, 55)))
-        glow.setWidthF(6.0)
-        glow.setCapStyle(Qt.RoundCap)
-        glow.setJoinStyle(Qt.RoundJoin)
-        painter.setPen(glow)
-        painter.setBrush(Qt.NoBrush)
-        painter.drawPath(line)
+        # El halo y la línea van por tramos sueltos, y el relleno como un polígono
+        # corriente. Trazar la polilínea entera con una pluma ancha (que es lo que
+        # hacía antes) obliga a Qt a construir el contorno de la línea completa
+        # —miles de vértices, con el redondeo de cada unión— y a rellenarlo después:
+        # eso cuesta decenas de milisegundos por serie, y con él se van el cursor y
+        # los repintados. Un segmento suelto, un rectángulo o un polígono cuestan
+        # milisegundos.
+        halo: list[QRectF] = []
+        segments: list[QLineF] = []
+        for start, end in zip(points, points[1:]):
+            top = min(start.y(), end.y())
+            bottom = max(start.y(), end.y())
+            # El halo era un trazo de 6 px de ancho: en un tramo inclinado eso ocupa
+            # más altura vertical (3 px / cos θ), y por eso se ensancha en los picos.
+            # Aquí el tramo se rellena con esa misma altura, sin trazar nada ancho.
+            ancho, alto = end.x() - start.x(), end.y() - start.y()
+            coseno = abs(ancho) / max(1e-6, (ancho * ancho + alto * alto) ** 0.5)
+            mitad = min(HALO_MAX, HALO_HALF / max(coseno, 0.05))
+            halo.append(QRectF(start.x(), top - mitad, max(0.0, ancho), bottom - top + mitad * 2))
+            segments.append(QLineF(start, end))
+
+        area = QPolygonF(points + [QPointF(points[-1].x(), rect.bottom()), QPointF(points[0].x(), rect.bottom())])
+        gradient = QLinearGradient(0, rect.top(), 0, rect.bottom())
+        # `theme.with_alpha` escribe el alfa delante (#AARRGGBB), que es como lo
+        # lee Qt; pegarlo al final del hexadecimal daría un color casi opaco.
+        gradient.setColorAt(0.0, QColor(theme.with_alpha(color, 60)))
+        gradient.setColorAt(1.0, QColor(theme.with_alpha(color, 0)))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(gradient))
+        painter.drawPolygon(area)
+
+        painter.setBrush(QColor(theme.with_alpha(color, 55)))
+        painter.drawRects(halo)
 
         pen = QPen(base.lighter(115))
         pen.setWidthF(2.0)
         pen.setCapStyle(Qt.RoundCap)
         pen.setJoinStyle(Qt.RoundJoin)
         painter.setPen(pen)
-        painter.drawPath(line)
-
-        if len(points) == 1:
-            painter.setBrush(base)
-            painter.setPen(Qt.NoPen)
-            painter.drawEllipse(points[0], 3.0, 3.0)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawLines(segments)
 
     def _paint_empty(self, painter: QPainter, rect: QRectF) -> None:
         font = QFont(self.font())
