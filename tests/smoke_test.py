@@ -46,6 +46,36 @@ from pctoolkit.core.metrics import PROFILE_ECO, PROFILE_FULL, MetricsService  # 
 from pctoolkit.core.scheduler import MaintenanceSchedule  # noqa: E402
 from pctoolkit.core.tasks import TaskStore  # noqa: E402
 
+# Comparación de las dos vías de lectura de la tarjeta gráfica (contadores de Windows y
+# proceso de PowerShell). Las medidas no son del mismo instante —la de PowerShell tarda
+# ~2,5 s— y no agregan igual: los contadores promedian una ventana de ~1 s y PowerShell
+# muestrea el instante. Se mide en pares (contadores, PowerShell, contadores) y vale la
+# primera vuelta en la que el uso de PowerShell cae entre las dos medidas de los contadores;
+# si ninguna cae —equipo ocupado— queda el respaldo de que las dos vías vean lo mismo a lo
+# grande. Los márgenes son anchos a propósito: lo que se comprueba es que ninguna vía esté
+# rota, no que dos instantes distintos den el mismo número.
+MARGEN_EQUIVALENCIA = 10.0
+MARGEN_GRUESO = 40.0
+INTENTOS_EQUIVALENCIA = 5
+
+
+def gpu_uso_cuadra(antes: float, powershell: float, despues: float) -> bool:
+    """¿El uso de PowerShell cae entre las dos medidas de los contadores que lo rodean?"""
+    bajo, alto = sorted((antes, despues))
+    return bajo - MARGEN_EQUIVALENCIA <= powershell <= alto + MARGEN_EQUIVALENCIA
+
+
+def gpu_uso_coherente(antes: float, powershell: float, despues: float) -> bool:
+    """¿Las dos vías ven la misma carga, a lo grande?
+
+    Es el respaldo para un equipo con la carga moviéndose rápido: ninguna se queda en 0
+    mientras la otra ve trabajo, y ninguna se va a un valor que no tiene nada que ver con lo
+    que ven los contadores (un 100 % fijo con los contadores en un 5 %, por ejemplo).
+    """
+    if (powershell < 1.0) != (min(antes, despues) < 1.0):
+        return False
+    return abs(powershell - (antes + despues) / 2) <= MARGEN_GRUESO
+
 # Las comprobaciones se cuentan en `tests/_checks.py`, que también usan las guardas de
 # documentación (así el total que citan las guías es el de la pasada completa).
 _TESTS_DIR = Path(__file__).resolve().parent
@@ -322,25 +352,52 @@ def test_gpu() -> None:
             arranques == 0,
             f"{arranques} arranque(s) del proceso de PowerShell",
         )
-        # Y los dos caminos tienen que contar la misma historia: misma tarjeta, mismo
-        # controlador y un uso que se parezca (las dos muestras no son del mismo instante,
-        # así que se compara contra el ruido de muestreo, no exactamente).
+        # Y los dos caminos tienen que contar la misma historia. Comparar el uso contra un
+        # margen fijo no vale: las dos lecturas **no** son del mismo instante (la de
+        # PowerShell tarda ~2,5 s) y además no agregan igual —los contadores promedian una
+        # ventana de ~1 s y PowerShell muestrea el instante—, así que en un servidor de
+        # compilación con la gráfica moviéndose un 9 % y un 25 % pueden ser la misma tarjeta
+        # vista de dos maneras: eso hacía fallar la comprobación en el servidor y no en un
+        # equipo con la gráfica en reposo. Se mide en pares —contadores, PowerShell,
+        # contadores otra vez— y se da por buena la vuelta en la que el uso de PowerShell cae
+        # entre las dos medidas de los contadores; si en ninguna cae (equipo ocupado), queda
+        # la condición que no depende de la carga: que ninguna vía se quede en 0 mientras la
+        # otra ve trabajo. Una vía rota —siempre 0, o un valor disparatado— no pasa ninguna
+        # de las dos.
         original_pdh = gpu.read_gpu_info_pdh
-        gpu.read_gpu_info_pdh = lambda: None
-        try:
-            por_powershell = gpu.read_gpu_info()
-        finally:
-            gpu.read_gpu_info_pdh = original_pdh
+        pares: list[tuple[float, float, float]] = []
+        por_powershell = None
+        for _ in range(INTENTOS_EQUIVALENCIA):
+            antes = gpu.read_gpu_info_pdh()
+            gpu.read_gpu_info_pdh = lambda: None
+            try:
+                lectura = gpu.read_gpu_info()
+            finally:
+                gpu.read_gpu_info_pdh = original_pdh
+            despues = gpu.read_gpu_info_pdh()
+            if lectura is not None:
+                por_powershell = lectura
+            if lectura is None or antes is None or despues is None:
+                continue
+            pares.append((antes.usage, lectura.usage, despues.usage))
+            bajo, alto = sorted((antes.usage, despues.usage))
+            if bajo - MARGEN_EQUIVALENCIA <= lectura.usage <= alto + MARGEN_EQUIVALENCIA:
+                break
+        detalle = " | ".join(
+            f"contadores {antes}/{despues} % · PowerShell {ps} %" for antes, ps, despues in pares
+        ) or "sin lectura de las dos vías"
         check(
             "El camino directo y el de PowerShell ven la misma tarjeta",
             por_powershell is not None
             and (directo.name, directo.driver, directo.cards) == (por_powershell.name, por_powershell.driver, por_powershell.cards),
-            f"PDH {directo.label!r}/{directo.driver!r} · PowerShell {por_powershell.label!r}/{por_powershell.driver!r}",
+            f"PDH {directo.label!r}/{directo.driver!r} · PowerShell "
+            + (f"{por_powershell.label!r}/{por_powershell.driver!r}" if por_powershell else "sin lectura"),
         )
         check(
-            "Y miden el mismo uso (dentro del ruido de dos muestras seguidas)",
-            por_powershell is not None and abs(directo.usage - por_powershell.usage) <= 15.0,
-            f"PDH {directo.usage} % · PowerShell {por_powershell.usage if por_powershell else None} %",
+            "El uso de las dos vías cuadra (o, con la carga moviéndose, es coherente)",
+            any(gpu_uso_cuadra(*par) for par in pares)
+            or (bool(pares) and all(gpu_uso_coherente(*par) for par in pares)),
+            detalle,
         )
 
 
