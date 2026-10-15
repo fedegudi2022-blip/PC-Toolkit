@@ -2133,6 +2133,16 @@ def test_ajustes_windows() -> None:
         permitido, motivo = ajustes.can_apply(de_maquina)
         if ajustes.is_elevated():
             check("Con permisos, un ajuste de equipo sí se puede aplicar", permitido, motivo)
+            # Con permisos no hay rechazo que comprobar, pero se anota igual: si esta rama
+            # se quedara sin comprobación, el recuento cambiaría según con qué cuenta se
+            # ejecute la suite (un servidor de compilación corre como administrador) y las
+            # guías —que citan el del equipo completo— dejarían de cuadrar sin que nada
+            # estuviera roto.
+            check(
+                "Ni se intenta: aplicar un ajuste de equipo sin permisos se rechaza (omitida: hay permisos)",
+                True,
+                "la suite corre con permisos de administrador",
+            )
         else:
             check(
                 "Sin permisos, un ajuste de equipo no se aplica y se explica por qué",
