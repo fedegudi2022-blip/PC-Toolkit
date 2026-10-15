@@ -1,4 +1,4 @@
-# PC Toolkit 1.2.1 — qué es, qué hace y cómo funciona
+# PC Toolkit 1.3.0 — qué es, qué hace y cómo funciona
 
 Aplicación de escritorio para **Windows 10 y 11** que reúne el mantenimiento del equipo en un solo
 sitio: libera memoria RAM cuando hace falta, programa el mantenimiento en el propio Windows, vigila
@@ -30,14 +30,15 @@ desinstalador), sin necesidad de ser administrador.
 | **Informes** | Exportación a **HTML** (informe visual), **CSV** (Excel) y **JSON**, eligiendo contenido y destino. |
 | **Alertas y bandeja** | Icono de estado en la bandeja del sistema, avisos por umbrales configurables y opción de mantener la app en segundo plano al cerrar la ventana. |
 | **Apariencia** | Tema **oscuro** o **claro**, o el que tenga Windows en cada momento, con contraste WCAG 4,5:1 en las dos paletas. |
+| **Actualizaciones** | Comprueba al arrancar si hay una versión nueva (como mucho una vez al día), enseña qué cambia y la instala comprobando antes su **SHA-256**. Se puede desactivar o pedir a mano desde los ajustes (apartado 3.11). |
 | **Accesibilidad** | Manejo completo con el teclado (foco siempre visible y atajos `Ctrl+1`…`Ctrl+9`), anuncios para lectores de pantalla, nombre/valor en los indicadores pintados a mano y rol correcto en cada widget propio (grupo, encabezado, gráfica, barra o botón). |
 
 ---
 
 ## 2. El instalador de Windows
 
-**Archivo:** `dist\PC Toolkit Setup.exe` (79,1 MB). Es **un solo archivo**: lleva dentro la
-aplicación comprimida (`pc_toolkit_app.zip`, 32,8 MB, los 161 archivos y el desinstalador) y la saca
+**Archivo:** `dist\PC Toolkit Setup.exe` (79,3 MB). Es **un solo archivo**: lleva dentro la
+aplicación comprimida (`pc_toolkit_app.zip`, 33,0 MB, los 161 archivos y el desinstalador) y la saca
 a una carpeta temporal al instalar, borrándola al terminar. No hay que descomprimir nada ni dejar una
 carpeta al lado; si el instalador encuentra la carpeta `PC Toolkit\` junto a él (por ejemplo al
 probarlo desde `dist\`), la usa directamente y no extrae nada.
@@ -92,9 +93,11 @@ darse por vencida y no abrirse.
 
 ### Actualizar y desinstalar
 
-- **Actualizar**: volver a ejecutar el instalador. Detecta la instalación anterior, avisa de la
+- **Actualizar**: volver a ejecutar el instalador —o dejar que lo haga la propia aplicación, véase
+  el apartado 3.11—. Detecta la instalación anterior, avisa de la
   versión que había, **cierra las instancias abiertas** (preguntando antes) y conserva los datos y
-  las preferencias.
+  las preferencias. Los archivos de la versión anterior que ya no se usan se quitan antes de copiar
+  (el registro de la instalación dice cuáles eran), así que actualizar no deja restos.
 - **Desinstalar** desde *Configuración → Aplicaciones → Aplicaciones instaladas*, desde el propio
   desinstalador o desde su menú Inicio. Quita accesos directos, la entrada de registro, el arranque
   automático y la **tarea de mantenimiento programado** si existía.
@@ -129,8 +132,8 @@ Otras opciones: `--sin-escritorio`, `--sin-menu`, `--origen` (carpeta de la apli
   carpeta de prueba con escritorio, menú Inicio y clave de registro propios, comprueba que los
   accesos directos apuntan al programa instalado, que el registro y el arranque automático quedan
   bien, **ejecuta la copia instalada** y desinstala verificando que no queda rastro.
-- **Instalación real en este equipo** (medida): `79,1 MB` de instalador (que ya trae la aplicación
-  dentro), **162 archivos / 72,4 MB** copiados en **8,9 s**, dos accesos directos correctos, entrada
+- **Instalación real en este equipo** (medida): `79,3 MB` de instalador (que ya trae la aplicación
+  dentro), **162 archivos / 72,5 MB** copiados en **10,5 s**, dos accesos directos correctos, entrada
   de registro y arranque automático
   en la bandeja, la copia instalada ejecutando el mantenimiento, y desinstalación dejando todo
   limpio (accesos directos, registro y carpeta eliminados; datos del usuario intactos). Se puede
@@ -417,6 +420,56 @@ Si el lector de pantalla no está activo no se pierde nada: el anuncio simplemen
 una versión de Qt anterior a la 6.8 (las dependencias permiten 6.6), queda el nombre accesible, que
 es el respaldo que Qt sí soporta siempre.
 
+### 3.11 Actualizaciones desde la propia aplicación
+
+La aplicación puede mirar si hay una versión nueva y ponérsela sin salir de ella. El trabajo lo
+reparten dos piezas: `pctoolkit/core/actualizador.py` (todo lo que habla con GitHub, sin interfaz) y
+`pctoolkit/ui/actualizaciones.py` (los diálogos y el controlador que decide cuándo se pregunta).
+
+**Cuándo se comprueba.** Al arrancar, en un hilo aparte (la ventana no se entera), y como mucho
+**una vez al día**: la fecha de la última consulta queda en las preferencias
+(`HKCU\Software\PCToolkit\ultima_comprobacion`), así que abrir la aplicación cinco veces no son
+cinco consultas. En «Ajustes y alertas → Actualizaciones» hay un interruptor para desactivarlo
+(`buscar_actualizaciones`) y un botón **«Buscar actualizaciones»** para pedirlo en el momento, que
+cuenta lo que pasa en su propia línea (al día, versión nueva o el error).
+
+**Qué se considera una versión nueva.** Se pregunta por la última publicación del repositorio
+(`/releases/latest`, que ya ignora borradores y versiones preliminares) y se comparan los números,
+no el texto: `v1.10.0` es más nueva que `v1.9.9`, cosa que comparar cadenas diría al revés. Se
+aceptan etiquetas con o sin `v` y con sufijos (`v1.3.0-beta` cuenta como `1.3.0`).
+
+**De dónde sale el SHA-256.** Antes de ejecutar nada se comprueba el archivo descargado contra el
+hash que publica la propia versión. Se busca por este orden:
+
+1. Un adjunto `<nombre del instalador>.sha256` —lo escribe `publicar.yml` junto a cada ejecutable y
+   solo lleva el hash y el nombre—: nada que interpretar.
+2. El adjunto `SHA256SUMS.txt`, con una línea por archivo.
+3. Las notas de la publicación, que repiten los mismos hashes dentro de un bloque de código.
+
+Las opciones 2 y 3 existen para que las versiones publicadas **antes** de que existiera el
+actualizador (como la 1.2.1) también se puedan actualizar; la 1 es la que se documenta como
+preferida. Si no se encuentra ningún hash, la actualización no se descarga: una versión que no
+publica su SHA-256 no se ejecuta, y tampoco hay ninguna otra comprobación que lo sustituya.
+
+**El diálogo.** «Hay una versión nueva» dice de qué versión a qué versión, enseña las notas (sin el
+bloque de hashes, que no le interesa a nadie) y ofrece tres salidas: **Actualizar ahora**, **Más
+tarde** (se volverá a preguntar) y **Omitir esta versión** (no vuelve a avisar de ella; una versión
+posterior sí). Si la copia que se está ejecutando es la portátil no hay instalación que reemplazar,
+así que el botón principal cambia: **«Abrir la página de la versión»**, que la abre en el navegador.
+
+**Cómo se instala.** Aceptar abre la barra de progreso (con **Cancelar**, que para la descarga y
+borra lo que hubiera a medias) y, al terminar, el archivo se comprueba. Solo entonces se lanza el
+instalador descargado en modo silencioso y con la carpeta de la instalación actual
+(`PC-Toolkit-<versión>-Setup.exe --silent --dir <carpeta>`): la aplicación se cierra de la misma
+forma que con «Salir» —espera a lo que esté en marcha, esconde la bandeja y guarda las
+preferencias— y el instalador reemplaza los archivos y vuelve a abrir la versión nueva. Si algo
+falla (sin conexión, hash que no cuadra, instalador que no arranca), se dice en la barra de estado y
+no se pierde nada.
+
+Cuando la aplicación arranca **solo en la bandeja** (inicio automático) no se abre ningún diálogo
+encima de lo que esté haciendo el usuario: se deja un aviso en la bandeja y la actualización queda
+en «Ajustes y alertas → Buscar actualizaciones» para cuando se quiera poner.
+
 ### 3.10 Apariencia: clara, oscura o la de Windows
 
 Hay **dos paletas completas** con las mismas claves y cambia una sola cosa: cuál está activa.
@@ -485,8 +538,10 @@ firmar.py / firmar.bat          Firma digital con signtool (SHA-256, sello RFC 3
 .github/workflows/
   integracion.yml               Comprobaciones de cada envío: compila el ejecutable y el
                                 instalador y pasa la suite (sin firma)
-  firmar.yml                    Compila y firma con Azure Artifact Signing (OIDC) y publica la
-                                etiqueta `v…` con sus ejecutables
+  publicar.yml                  Al empujar una etiqueta `v…`: compila, pasa la suite, calcula los
+                                SHA-256 y crea la publicación con sus archivos y sus notas. A mano
+                                (borrador y preliminar) sirve para ensayar el camino completo
+  firmar.yml                    Compila y firma con Azure Artifact Signing (OIDC), a mano
 installer/
   installer_core.py             Lógica compartida: copia, accesos directos, registro, borrado
   setup_app.py                  Asistente de instalación (y modo silencioso)
@@ -494,12 +549,13 @@ installer/
 pctoolkit/
   core/                         Lógica sin interfaz: métricas, memoria, arranque de Windows,
                                 mantenimiento, disco, herramientas, tareas, informes, historial,
-                                alertas, preferencias y registro de deshacer
+                                alertas, preferencias, registro de deshacer y actualizaciones
+                                desde GitHub (`actualizador.py`)
   ui/                           Interfaz PySide6: temas (claro y oscuro), anuncios accesibles y
                                 roles de los widgets propios, iconos, tarjetas, gráfica, bandeja,
                                 ventana principal y una página por módulo
-tests/smoke_test.py             636 comprobaciones automáticas (núcleo, interfaz, instalador,
-                                firma y dependencias declaradas)
+tests/smoke_test.py             681 comprobaciones automáticas (núcleo, interfaz, instalador,
+                                firma, dependencias y actualizaciones)
   _checks.py                    Recuento de comprobaciones, compartido con las guardas
   documentacion.py              Guardas de documentación: capturas, informe de muestra y recuentos
                                 de las guías (se pueden dejar fuera, véase el apartado 7)
@@ -514,9 +570,9 @@ capturas/                       Imágenes de la documentación (con estado.json 
 
 Al compilar aparecen tres artefactos en `dist\`:
 
-  dist\PC Toolkit\               Programa completo (carpeta autocontenida, 64,8 MB)
-  dist\PC Toolkit.exe            Programa en un solo archivo (46,7 MB)
-  dist\PC Toolkit Setup.exe      Instalador de Windows con la aplicación dentro (78,9 MB)
+  dist\PC Toolkit\               Programa completo (carpeta autocontenida, 72,5 MB)
+  dist\PC Toolkit.exe            Programa en un solo archivo (47,3 MB)
+  dist\PC Toolkit Setup.exe      Instalador de Windows con la aplicación dentro (79,3 MB)
 ```
 
 ---
@@ -528,8 +584,8 @@ Al compilar aparecen tres artefactos en `dist\`:
 - Histórico del mantenimiento: `%APPDATA%\PCToolkit\mantenimiento.jsonl` (últimas 200 ejecuciones)
 - Cambios reversibles (para el botón Deshacer): `%APPDATA%\PCToolkit\deshacer.jsonl` (los últimos 200)
 - XML de la tarea programada: `%APPDATA%\PCToolkit\tarea_mantenimiento.xml`
-- Preferencias (umbrales, bandeja, memoria, programación, modo eco, tema): registro de Windows,
-  `HKCU\Software\PCToolkit`
+- Preferencias (umbrales, bandeja, memoria, programación, modo eco, tema, actualizaciones —si se
+  buscan, cuándo se miró y qué versión se omitió—): registro de Windows, `HKCU\Software\PCToolkit`
 - Informes por defecto: `C:\Users\<usuario>\Documents\PCToolkit\Informes` (la carpeta de
   documentos que dice Windows, que con OneDrive o una política de empresa no siempre es
   `%USERPROFILE%\Documents`)
@@ -584,7 +640,7 @@ de instalar, ejecutar y desinstalar.
 Pruebas:
 
 ```bat
-.venv\Scripts\python.exe tests\smoke_test.py            636 comprobaciones
+.venv\Scripts\python.exe tests\smoke_test.py            681 comprobaciones
 .venv\Scripts\python.exe tools\verificar_instalacion.py  Instala de verdad y desinstala al terminar
 .venv\Scripts\python.exe tests\documentacion.py         Solo las guardas de documentación
 .venv\Scripts\python.exe tests\smoke_test.py --sin-documentacion   Sin las guardas de documentación
@@ -598,7 +654,7 @@ pruebas de código: así una captura todavía por rehacer no bloquea la comproba
 comprueba únicamente cuando se ejecutan como última parte de la suite.
 
 El total depende del equipo: unas pocas comprobaciones solo se hacen si el sistema tiene bandeja,
-si hay `signtool` disponible o si `dist\` ya está compilado. Con la plataforma real de Qt salen 636;
+si hay `signtool` disponible o si `dist\` ya está compilado. Con la plataforma real de Qt salen 681;
 en modo sin pantalla son unas cuantas menos, porque las que necesitan una bandeja de verdad no se
 ejecutan (la comprobación de que la bandeja solo se usa si el sistema la tiene sí se hace siempre).
 
@@ -616,6 +672,53 @@ rehacerlas con:
 Cada una de esas herramientas apunta en `capturas\estado.json` la versión con la que ha guardado
 sus archivos: si alguna se queda con la versión anterior, la suite lo dice por su nombre en vez de
 dejar que la documentación enseñe un número viejo.
+
+### Publicar una versión
+
+La versión se escribe **en un solo sitio**: `APP_VERSION`, en `pctoolkit/core/config.py`. De ahí la
+leen el ejecutable (`build_exe.py` escribe con ella las propiedades del `.exe`), el instalador, los
+nombres de los archivos de cada publicación (`PC-Toolkit-<versión>-Setup.exe`) y la comprobación de
+actualizaciones. No hay ningún otro número que subir.
+
+Al subir de versión, hay dos cosas que se quedan atrás si no se rehacen: las **capturas** (llevan la
+versión dentro) y los **recuentos de las guías** si se añaden o quitan comprobaciones. La última
+comprobación de la suite avisa de las dos por su nombre, así que no hay que acordarse:
+
+```bat
+.venv\Scripts\python.exe tools\capturar_documentacion.py   Rehace las capturas de la versión nueva
+.venv\Scripts\python.exe tests\smoke_test.py               Dice qué falta (capturas o recuentos)
+```
+
+Publicar es empujar la rama y la etiqueta con el mismo número:
+
+```bat
+git push origin main
+git push origin v1.3.0
+```
+
+Antes del día del estreno conviene **ensayarlo**: en «Actions → Publicar la versión (Windows) → Run
+workflow» se lanza el mismo flujo a mano, con una etiqueta de prueba (`v1.3.0-ensayo` si no se dice
+otra). Compila, pasa la suite —incluida la instalación y desinstalación reales—, calcula los SHA-256
+y crea la publicación con sus archivos adjuntos, pero la deja **en borrador y preliminar**: no sale
+en `/releases/latest` (que es lo que consulta el actualizador), no la ve nadie que no pueda ver el
+repositorio y **no gasta ningún número de versión**. Si la etiqueta del ensayo no empieza por
+`v<versión>-`, el trabajo se para antes de compilar, porque se ensaya la versión que dice el código
+y no otra. Una publicación de ensayo se borra con `gh release delete v1.3.0-ensayo --cleanup-tag`.
+
+La etiqueta dispara [`.github/workflows/publicar.yml`](.github/workflows/publicar.yml), que hace
+todo lo demás: comprueba que la etiqueta y `APP_VERSION` coinciden (si no, se para antes de compilar:
+unos archivos que dijeran una versión y una publicación que dijera otra no habría forma de
+entenderlos), instala las dependencias, compila el programa y el instalador, pasa la suite completa
+—incluida la instalación y desinstalación del paquete real—, calcula los SHA-256, firma la
+procedencia con `actions/attest-build-provenance` y crea la publicación con sus archivos adjuntos:
+los dos ejecutables, su `.sha256` y `SHA256SUMS.txt`. No usa ningún secreto (solo el token del propio
+flujo, con permiso para escribir en «Releases»), así que publica **sin firmar**: para firmar con
+Azure Artifact Signing está el apartado 8.10.
+
+Las notas de la publicación llevan los hashes y una sección **«Qué cambia»**: ese texto es el que
+enseña el diálogo de actualización, así que se escribe (o se edita desde GitHub) pensando en quien va
+a actualizar. Volver a empujar la misma etiqueta no rompe nada: el flujo actualiza las notas y
+reemplaza los archivos.
 
 ---
 
@@ -837,8 +940,12 @@ Trusted Signing) y guarda los ejecutables firmados como artefacto de la ejecuci�
 es **OIDC**: el flujo pide el token a Azure con la identidad federada del repositorio, así que **no
 hay ningún certificado, contraseña ni clave guardados en GitHub**.
 
-Se ejecuta a mano (Actions → *Compilar y firmar (Windows)* → Run workflow) y al publicar una etiqueta
-`v…`. Para que corra además en cada envío a `main`, añade `branches: [main]` al `push`.
+Se ejecuta **a mano** (Actions → *Compilar y firmar (Windows)* → Run workflow). De las publicaciones
+se encarga [`.github/workflows/publicar.yml`](.github/workflows/publicar.yml), que se dispara al
+empujar una etiqueta `v…` y no necesita ningún secreto (publica sin firmar). Los dos flujos usan el
+mismo camino de compilación; si algún día se firma siempre, basta con mover el disparo por etiqueta
+de `publicar.yml` a este. Para que la firma corra además en cada envío a `main`, añade
+`branches: [main]` al `push`.
 
 Qué hay que preparar una sola vez:
 
@@ -916,6 +1023,16 @@ el archivo salió de este repositorio y de este commit) y los adjunta al release
 `gh release upload --clobber`. Las notas del release se escriben en ese momento, con los SHA-256
 dentro y diciendo si los ejecutables van firmados o no. Los pasos de compilación y firma con Azure
 no cambian.
+
+**El mismo flujo se lanza a mano para ensayarlo** («Actions → Publicar la versión (Windows) → Run
+workflow»). Recorre todos los pasos de arriba —compilar, la suite, la instalación real, los hashes,
+la firma de procedencia y la creación de la publicación con sus adjuntos— con una etiqueta de prueba
+(`v<versión>-ensayo`) y deja la publicación **en borrador y preliminar**, así que no aparece en
+`/releases/latest` ni ocupa un número de versión. Es la forma de comprobar que el camino entero y los
+permisos del token funcionan sin publicar nada de verdad; además, los pasos de PowerShell de los
+tres flujos los lee el analizador de PowerShell dentro de la suite (`tests\smoke_test.py`), porque
+hasta el día de publicar no los ejecuta nadie y un error de sintaxis no se descubriría hasta
+entonces.
 
 **Todas las acciones van fijadas por el SHA del commit**, con la etiqueta a la que corresponden en
 un comentario al lado: una etiqueta se puede mover a otro commit y entonces el flujo ejecutaría

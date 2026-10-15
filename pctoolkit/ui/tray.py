@@ -75,6 +75,9 @@ class TrayController(QObject):
     settings_requested = Signal()
     memory_requested = Signal()
     maintenance_requested = Signal()
+    #: Se ha hecho clic en un aviso de la bandeja (lo usa el aviso de versión nueva, que
+    #: no puede abrir un diálogo encima de lo que esté haciendo el usuario sin permiso).
+    notify_clicked = Signal()
 
     def __init__(self, settings, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -124,6 +127,7 @@ class TrayController(QObject):
 
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._on_activated)
+        self.tray.messageClicked.connect(self.notify_clicked.emit)
         self.tray.show()
 
     def _on_activated(self, reason) -> None:

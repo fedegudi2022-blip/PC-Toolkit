@@ -27,8 +27,8 @@ Windows 10 u 11 (x64). No hace falta instalar Python ni nada más.
 
 | Archivo | Qué es |
 | --- | --- |
-| [`PC-Toolkit-1.2.1-Setup.exe`](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/download/v1.2.1/PC-Toolkit-1.2.1-Setup.exe) | **Recomendado** (79,1 MB). Asistente con la aplicación dentro: accesos directos, arranque automático opcional y desinstalador. Por usuario, sin avisos de Windows. |
-| [`PC-Toolkit-1.2.1-portable.exe`](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/download/v1.2.1/PC-Toolkit-1.2.1-portable.exe) | Versión portátil (47,2 MB). Doble clic y funciona, sin instalar ni dejar rastro. |
+| [`PC-Toolkit-1.3.0-Setup.exe`](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/download/v1.3.0/PC-Toolkit-1.3.0-Setup.exe) | **Recomendado** (79,3 MB). Asistente con la aplicación dentro: accesos directos, arranque automático opcional y desinstalador. Por usuario, sin avisos de Windows. |
+| [`PC-Toolkit-1.3.0-portable.exe`](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/download/v1.3.0/PC-Toolkit-1.3.0-portable.exe) | Versión portátil (47,3 MB). Doble clic y funciona, sin instalar ni dejar rastro. |
 
 Datos y preferencias se guardan en `%APPDATA%\PCToolkit` (véase [Dónde se guardan los datos](#dónde-se-guardan-los-datos)).
 
@@ -50,6 +50,7 @@ Datos y preferencias se guardan en `%APPDATA%\PCToolkit` (véase [Dónde se guar
 | **Herramientas** | 28 accesos directos a las utilidades de Windows, con buscador y limpieza rápida de temporales. |
 | **Tareas** | Registro de mantenimiento con estados, prioridades, fechas límite y estadísticas. |
 | **Informes** | Exportación a HTML (visual), CSV y JSON, con selección de contenido y destino. |
+| **Actualizaciones** | Al arrancar comprueba si hay una versión nueva (como mucho una vez al día), enseña qué cambia y la instala **verificando antes su SHA-256**. Se puede desactivar o pedir a mano desde Ajustes. |
 
 Dos temas completos —oscuro «grafito» (fondo casi negro y grises fríos, cada nivel de superficie
 separado del siguiente) y claro «papel»— que se cambian al instante; por defecto abre en oscuro y en
@@ -151,11 +152,59 @@ que compila en Windows y firma con **Azure Artifact Signing** por identidad fede
 certificados ni claves en GitHub). Qué hay que preparar una vez, y cómo firmar con la clave en un
 token o HSM: [DOCUMENTACION.md](DOCUMENTACION.md), apartado 8.10.
 
+## Actualizaciones
+
+La aplicación mira si hay una versión nueva **al arrancar** (como mucho una vez al día, y solo si
+está activado) y, cuando la hay, enseña qué cambia y ofrece instalarla. Descargar e instalar es
+siempre una decisión tuya: nada se baja ni se ejecuta sin aceptar.
+
+- El instalador se descarga a una carpeta temporal, se **comprueba su SHA-256** contra el que
+  publica la versión y solo entonces se ejecuta; si el hash no coincide, el archivo se borra y se
+  avisa. Una versión que no publique su hash no se actualiza sola.
+- Se instala **encima** de la versión que tengas, conservando tus datos y preferencias, y la
+  aplicación se cierra sola y vuelve a abrirse con la versión nueva. Si usas la versión portátil, no
+  se instala nada: se abre la página de la versión para que la descargues a mano.
+- En **Ajustes y alertas → Actualizaciones** hay un botón «Buscar actualizaciones» y un interruptor
+  para desactivar la comprobación automática. «Omitir esta versión» deja de avisar de esa versión en
+  concreto (una posterior sí volverá a avisar).
+
+### Publicar una versión nueva
+
+Para quien mantiene el proyecto, publicar una versión son tres pasos:
+
+1. Subir la versión en `pctoolkit/core/config.py` (`APP_VERSION`): es el único sitio donde se
+   escribe, y de ahí salen el ejecutable, el instalador, los nombres de los archivos y la
+   comprobación de actualizaciones.
+2. Rehacer las capturas de la documentación (`tools\capturar_documentacion.py`) y actualizar los
+   recuentos de las guías: llevan la versión dentro y la suite lo comprueba.
+3. Empujar `main` y la etiqueta con el mismo número:
+
+```bat
+git push origin main
+git push origin v1.3.0
+```
+
+Antes del día del estreno se puede **ensayar la publicación** con una etiqueta de prueba: en
+«Actions → Publicar la versión (Windows) → Run workflow» se lanza el mismo trabajo a mano, que
+recorre el camino completo (compilar, suite, instalación real, hashes y publicación) y lo deja todo
+en una publicación **en borrador y preliminar**, con etiqueta `v1.3.0-ensayo`. No sale en
+`/releases/latest` —lo que mira el actualizador— y no gasta ningún número de versión.
+
+La etiqueta dispara [.github/workflows/publicar.yml](.github/workflows/publicar.yml), que compila en
+un servidor de Windows, pasa la suite completa (incluida la instalación y desinstalación reales),
+calcula los SHA-256 y crea la **publicación** con sus archivos adjuntos y sus notas: el instalador,
+la versión portátil, cada `.sha256` y `SHA256SUMS.txt`. Si la etiqueta y `APP_VERSION` no coinciden,
+el trabajo se para en el primer paso. Las novedades que se escriban en las notas de la publicación
+son las que verá quien tenga una versión anterior al actualizar. Para firmar con Azure sigue estando
+[.github/workflows/firmar.yml](.github/workflows/firmar.yml) (a mano, con su configuración; véase
+[DOCUMENTACION.md](DOCUMENTACION.md), apartado 8.10).
+
 ## Dónde se guardan los datos
 
 - `%APPDATA%\PCToolkit`: tareas, historial de métricas (24 h), histórico del mantenimiento, cambios
   reversibles y el XML de la tarea programada.
-- Registro de Windows, `HKCU\Software\PCToolkit`: preferencias (umbrales, bandeja, tema, modo eco…).
+- Registro de Windows, `HKCU\Software\PCToolkit`: preferencias (umbrales, bandeja, tema, modo eco,
+  actualizaciones…).
 - `Documentos\PCToolkit\Informes`: los informes exportados.
 
 Desinstalar conserva estos datos salvo que se pidan borrar desde el asistente.
@@ -166,11 +215,14 @@ Desinstalar conserva estos datos salvo que se pidan borrar desde el asistente.
 .venv\Scripts\python.exe tests\smoke_test.py
 ```
 
-**636 comprobaciones** sin marco externo: métricas y disco reales, persistencia, alertas,
+**681 comprobaciones** sin marco externo: métricas y disco reales, persistencia, alertas,
 historial, informes en los tres formatos, las ocho páginas construidas y navegadas, programas de
 inicio y cambios reversibles sobre claves propias de la prueba, el ciclo del instalador en carpetas
-temporales, que las dependencias que la compilación importa estén declaradas en `requirements.txt`,
-la firma (argumentos de `signtool` y firma real con certificado de prueba), el contraste
+temporales (incluido **instalar encima de una versión anterior**), que las dependencias que la
+compilación importa estén declaradas en `requirements.txt`, la firma (argumentos de `signtool` y
+firma real con certificado de prueba), las actualizaciones (comparación de versiones, lectura de una
+publicación de GitHub con datos simulados, verificación del SHA-256 —correcta e incorrecta—,
+cancelación de la descarga y detección de la versión portátil), el contraste
 WCAG, la diferenciación de las series y los estados con daltonismo (CIEDE2000 sobre las matrices de
 Machado) y la accesibilidad (roles, nombres, anuncios y foco visible).
 
@@ -187,7 +239,8 @@ En cada envío las pasa [.github/workflows/integracion.yml](.github/workflows/in
 servidor de Windows, que además **compila el ejecutable y el instalador**: así un fallo de
 compilación —una dependencia sin declarar, un cambio que rompe el empaquetado— se ve al enviar y no
 al publicar. No firma nada: de la firma se encarga
-[.github/workflows/firmar.yml](.github/workflows/firmar.yml).
+[.github/workflows/firmar.yml](.github/workflows/firmar.yml) y de las publicaciones
+[.github/workflows/publicar.yml](.github/workflows/publicar.yml) (al empujar una etiqueta `v…`).
 
 ## Estructura
 
@@ -204,7 +257,8 @@ pctoolkit/
                              informes, historial, alertas, arranque, mantenimiento, programador
   ui/                        Interfaz PySide6: tema, accesibilidad, iconos, widgets, gráfica,
                              bandeja, diálogos y una página por sección
-tests/smoke_test.py          636 comprobaciones (núcleo, interfaz, instalador, firma y dependencias)
+tests/smoke_test.py          681 comprobaciones (núcleo, interfaz, instalador, firma, dependencias
+                             y actualizaciones)
 tests/documentacion.py       Guardas de capturas, informe y recuentos (van aparte)
 dist/                        Todo lo compilado; se regenera con los scripts
 ```
@@ -223,6 +277,8 @@ Qué hace cada módulo, con detalle: [DOCUMENTACION.md](DOCUMENTACION.md).
 - **Limpieza de temporales:** solo la carpeta `%TEMP%` del usuario, ignora lo reciente y omite lo
   que está en uso.
 - **Bandeja:** si el sistema no la tiene, todo funciona igual salvo el segundo plano, y se avisa.
+- **Actualizaciones:** necesitan conexión con GitHub. La versión portátil no se instala sola (no hay
+  instalación que reemplazar): la aplicación ofrece abrir la página de la versión para descargarla.
 
 ## Licencia
 

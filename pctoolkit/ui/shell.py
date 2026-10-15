@@ -37,6 +37,7 @@ from ..core.settings import AppSettings
 from ..core.tasks import TaskStore
 from ..core.undo import UndoStore
 from . import accessibility, icons
+from .actualizaciones import UpdateController
 from .alert_settings import AlertSettingsDialog
 from .dashboard import DashboardPage
 from .disk_page import DiskAnalyzerPage
@@ -105,6 +106,12 @@ class MainWindow(QMainWindow):
         self.alerts = AlertEngine(self.settings.alert_config)
         self.memory_guard = MemoryGuard(self.settings.memory_options)
         self.tray = TrayController(self.settings, parent=self)
+        # Actualizaciones: el controlador comprueba si hay versión nueva (lo pide `app.py`
+        # al arrancar, y el botón de los ajustes cuando se pulsa) y aquí se le engancha la
+        # ventana: la barra de estado, el aviso de la bandeja y el cierre ordenado al
+        # instalar.
+        self.updates = UpdateController(self.settings, parent=self)
+        self.updates.attach_window(self)
         self._alert_history: list = []
         self._force_quit = False
         self._system_info: dict = {}
@@ -236,7 +243,8 @@ class MainWindow(QMainWindow):
         self.alert_button.setIcon(icons.icon("shield", 17))
         self.alert_button.setMinimumHeight(38)
         self.alert_button.setToolTip(
-            "Umbrales de CPU, memoria y disco, bandeja del sistema, modo eco e historial."
+            "Umbrales de CPU, memoria y disco, bandeja del sistema, modo eco, historial y"
+            " actualizaciones."
             "  ·  Ctrl+9"
         )
         self.alert_button.clicked.connect(self.open_alert_settings)
@@ -328,7 +336,9 @@ class MainWindow(QMainWindow):
 
     def open_alert_settings(self) -> None:
         paleta_antes = active_palette()
-        dialog = AlertSettingsDialog(self.settings, self.history, tray_available(), self)
+        dialog = AlertSettingsDialog(
+            self.settings, self.history, tray_available(), self, updates=self.updates
+        )
         if dialog.exec() == AlertSettingsDialog.Accepted:
             config = dialog.config
             self.alerts.config = config

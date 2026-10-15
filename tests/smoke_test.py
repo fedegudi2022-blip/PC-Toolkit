@@ -1904,6 +1904,71 @@ def test_installer() -> None:
             f"{documento.exists()} · {retirada_ajena.message}",
         )
 
+        # --- Actualizar encima de una versión instalada ---------------------------
+        # Es el caso de cada actualización automática: la aplicación ya está instalada, con
+        # archivos de la versión anterior, y el instalador nuevo tiene que reemplazarla sin
+        # perder nada de lo que puso el usuario ni dejar restos de la vieja. Se prueba con
+        # dos orígenes distintos de verdad: un archivo que cambia de contenido y otro que
+        # desaparece (una DLL que ya no se usa).
+        actualizado = base / "actualizado"
+        nueva_version = base / "origen_1_3_0"
+        shutil.copytree(origen, nueva_version)
+        (nueva_version / "PC Toolkit.exe").write_bytes(b"MZ" + b"n" * 120)
+        (nueva_version / "modulo_nuevo.dll").write_bytes(b"nueva")
+        (nueva_version / "_internal" / "base_library.zip").unlink()
+        previa = core.install(
+            core.InstallOptions(
+                target_dir=actualizado,
+                source=origen,
+                key_name="PCToolkitPruebaTest",
+                run_value="PCToolkitPruebaTest",
+                desktop=escritorio,
+                start_menu=menu,
+                launch_after=False,
+            )
+        )
+        if previa.ok:
+            # Un archivo del usuario que no puso el instalador: tiene que sobrevivir.
+            (actualizado / "mis_notas.txt").write_text("mías", encoding="utf-8")
+            encima = core.install(
+                core.InstallOptions(
+                    target_dir=actualizado,
+                    source=nueva_version,
+                    key_name="PCToolkitPruebaTest",
+                    run_value="PCToolkitPruebaTest",
+                    desktop=escritorio,
+                    start_menu=menu,
+                    launch_after=False,
+                )
+            )
+            registro_nuevo = core.read_manifest(actualizado) or {}
+            check(
+                "Instalar encima de una versión anterior funciona",
+                encima.ok and (actualizado / "PC Toolkit.exe").read_bytes().endswith(b"n" * 120),
+                encima.message,
+            )
+            check(
+                "Los archivos que ya no están se quitan (no queda la versión vieja)",
+                not (actualizado / "_internal" / "base_library.zip").exists()
+                and (actualizado / "modulo_nuevo.dll").exists(),
+                f"{len(registro_nuevo.get('archivos', []))} archivos anotados",
+            )
+            check(
+                "Lo que había puesto el usuario sigue ahí",
+                (actualizado / "mis_notas.txt").read_text(encoding="utf-8") == "mías"
+                and "mis_notas.txt" not in (registro_nuevo.get("archivos") or []),
+                "mis_notas.txt se conserva y no se anota como propio",
+            )
+            core.uninstall(
+                target_dir=actualizado,
+                key_name="PCToolkitPruebaTest",
+                run_value="PCToolkitPruebaTest",
+                desktop=escritorio,
+                start_menu=menu,
+            )
+        else:
+            check("Instalación previa para la actualización (omitida: falló la instalación)", True, previa.message)
+
         # Con «borrar datos» se lleva también la carpeta de datos del usuario.
         datos = Path(_TEMP_HOME) / "PCToolkit"
         datos.mkdir(parents=True, exist_ok=True)
@@ -3771,6 +3836,534 @@ def test_firma_en_la_compilacion() -> None:
         finally:
             firmar._remove_test_certificate(huella)  # noqa: SLF001
 
+def test_actualizaciones() -> None:
+    """Actualizaciones: versiones, lectura de la publicación, SHA-256 y modo portátil.
+
+    Todo con datos simulados: la publicación de GitHub se escribe aquí a mano (con su
+    bloque de sumas dentro, como lo deja el flujo de publicación) y las descargas se
+    hacen desde `file://`, que recorre el mismo código que `https://` sin depender de
+    que haya internet en el equipo donde se pasa la suite.
+    """
+    import hashlib
+
+    from PySide6.QtCore import QSettings
+
+    from pctoolkit.core import actualizador as core_actualizador
+    from pctoolkit.core.settings import AppSettings
+    from pctoolkit.ui import actualizaciones as ui_actualizaciones
+    from pctoolkit.ui import workers as workers_ui
+    from pctoolkit.ui.tray import tray_available
+
+    # --- Comparación de versiones -----------------------------------------
+    check(
+        "La versión se compara por números, no como texto",
+        core_actualizador.is_newer("v1.10.0", "1.9.9")
+        and core_actualizador.is_newer("1.3.0", "1.2.99")
+        and not core_actualizador.is_newer("v1.2.1", APP_VERSION)
+        and not core_actualizador.is_newer("1.2.2", "1.2.10"),
+        f"{core_actualizador.parse_version('v1.10.0')} > {core_actualizador.parse_version('1.9.9')}",
+    )
+    check(
+        "Las etiquetas con sufijo y sin «v» se entienden",
+        core_actualizador.parse_version("v1.3.0-beta.2") == (1, 3, 0)
+        and core_actualizador.parse_version("2") == (2,)
+        and core_actualizador.parse_version("") == (0,)
+        and core_actualizador._version_text("v1.3.0") == "1.3.0",  # noqa: SLF001
+        str(core_actualizador.parse_version("v1.3.0-beta.2")),
+    )
+
+    # --- Lectura de una publicación de GitHub -----------------------------
+    sha_setup = "a" * 64
+    sha_portable = "b" * 64
+    sumas = f"{sha_setup}  PC-Toolkit-1.3.0-Setup.exe\n{sha_portable} *PC-Toolkit-1.3.0-portable.exe\n"
+    notas = (
+        "PC Toolkit 1.3.0\r\n\r\n## Qué cambia\r\n\r\n- Actualizaciones desde la propia aplicación\r\n"
+        "\r\n## Comprobar la descarga\r\n\r\n```\r\n" + f"{sha_setup}  PC-Toolkit-1.3.0-Setup.exe\r\n```\r\n"
+    )
+    publicacion = {
+        "tag_name": "v1.3.0",
+        "body": notas,
+        "html_url": "https://github.com/fedegudi2022-blip/PC-Toolkit/releases/tag/v1.3.0",
+        "published_at": "2026-10-15T00:00:00Z",
+        "assets": [
+            {"name": "PC-Toolkit-1.3.0-Setup.exe", "browser_download_url": "https://ejemplo/setup.exe", "size": 86_135_323},
+            {"name": "PC-Toolkit-1.3.0-portable.exe", "browser_download_url": "https://ejemplo/portable.exe", "size": 47_000_000},
+            {"name": "SHA256SUMS.txt", "browser_download_url": "https://ejemplo/sums"},
+        ],
+    }
+    version_nueva = core_actualizador.parse_release(publicacion)
+    check(
+        "La publicación se interpreta (versión, adjunto, notas y página)",
+        version_nueva.version == "1.3.0"
+        and version_nueva.tag == "v1.3.0"
+        and version_nueva.asset.name.endswith("-Setup.exe")
+        and version_nueva.asset.size == 86_135_323
+        and "Actualizaciones desde la propia aplicación" in version_nueva.notes
+        and version_nueva.page_url.endswith("/tag/v1.3.0"),
+        f"{version_nueva.version} · {version_nueva.asset.name} · {version_nueva.page_url}",
+    )
+    check(
+        "El SHA-256 se saca de las notas de la versión",
+        version_nueva.sha256 == sha_setup and version_nueva.installable,
+        version_nueva.sha256 or "sin hash",
+    )
+    check(
+        "El adjunto de sumas tiene prioridad sobre las notas",
+        core_actualizador.parse_release(publicacion, sums=sumas).sha256 == sha_setup
+        and core_actualizador.sha_for(sumas, "PC-Toolkit-1.3.0-portable.exe") == sha_portable,
+    )
+    check(
+        "Un archivo de un solo hash vale como sumas",
+        core_actualizador.sha_for(f"{'c' * 64}\n", "PC-Toolkit-1.3.0-Setup.exe") == "c" * 64
+        and core_actualizador.sha_for("texto sin hashes\n", "x.exe") == "",
+    )
+    sin_hash = dict(publicacion, body="PC Toolkit 1.3.0\n\nSolo texto, sin sumas.\n")
+    # Unas notas que **solo** son la comprobación de la descarga: así salieron las versiones
+    # publicadas antes de que existiera el apartado de novedades (la 1.2.1, por ejemplo).
+    solo_comprobacion = dict(
+        publicacion,
+        body=(
+            "PC Toolkit 1.2.1\r\n\r\n## Comprobar la descarga\r\n\r\nLos SHA-256 de los "
+            "archivos adjuntos:\r\n\r\n```\r\n" + f"{sha_setup}  PC-Toolkit-1.2.1-Setup.exe\r\n```\r\n"
+        ),
+    )
+    check(
+        "Sin SHA-256 publicado, la versión no se da por instalable",
+        core_actualizador.parse_release(sin_hash).installable is False,
+    )
+    check(
+        "El extracto de las notas enseña lo que cambia y deja fuera la comprobación",
+        "Actualizaciones desde la propia aplicación" in version_nueva.notes_excerpt()
+        and sha_setup not in version_nueva.notes_excerpt()
+        and "Comprobar la descarga" not in version_nueva.notes_excerpt()
+        and "```" not in version_nueva.notes_excerpt()
+        # Unas notas que solo eran la comprobación (las de versiones anteriores a este
+        # apartado) se enseñan enteras: quitarlo dejaría el diálogo sin nada.
+        and "Los SHA-256 de los archivos adjuntos"
+        in core_actualizador.parse_release(solo_comprobacion).notes_excerpt()
+        and sha_setup not in core_actualizador.parse_release(solo_comprobacion).notes_excerpt(),
+        version_nueva.notes_excerpt(60).replace("\n", " / "),
+    )
+    check(
+        "Una publicación sin instalador adjunto se explica sin romper nada",
+        _mensaje_de_error(lambda: core_actualizador.parse_release({"tag_name": "v1.3.0", "assets": []}))
+        .find("instalador") >= 0,
+    )
+    check(
+        "Una respuesta con otro formato se explica sin romper nada",
+        "formato" in _mensaje_de_error(lambda: core_actualizador.parse_release(["no", "es", "un", "dict"])),
+    )
+    import urllib.error
+
+    check(
+        "Sin conexión, el error dice qué pasa",
+        "conexión"
+        in str(core_actualizador._explain(urllib.error.URLError("sin red"), "http://x")),  # noqa: SLF001
+        str(core_actualizador._explain(urllib.error.URLError("sin red"), "http://x")),  # noqa: SLF001
+    )
+    check(
+        "El límite de la API de GitHub se explica aparte",
+        "limitado"
+        in str(
+            core_actualizador._explain(  # noqa: SLF001
+                urllib.error.HTTPError("http://x", 403, "Forbidden", {}, None), "http://x"
+            )
+        ),
+        "403/429: no se puede arreglar desde aquí, así que se explica",
+    )
+
+    # --- Descarga y verificación ------------------------------------------
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        origen = base / version_nueva.asset.name
+        # Más grande que un trozo de lectura (256 KiB): así la descarga avisa varias veces
+        # y se comprueba de verdad que el progreso llega por partes.
+        origen.write_bytes(b"MZ" + bytes(range(256)) * 1300)
+        bueno = hashlib.sha256(origen.read_bytes()).hexdigest()
+        visto: list[tuple[int, int]] = []
+        destino = base / "descargas" / origen.name
+        descargado = core_actualizador.download(
+            origen.as_uri(), destino, sha256=bueno, progress=lambda d, t: visto.append((d, t))
+        )
+        check(
+            "La descarga avisa del progreso y deja el archivo verificado",
+            descargado == destino
+            and destino.read_bytes() == origen.read_bytes()
+            and bool(visto)
+            and visto[-1][0] == origen.stat().st_size
+            and core_actualizador.verify_sha256(destino, bueno),
+            f"{visto[-1][0]} de {visto[-1][1]} bytes · {len(visto)} avisos",
+        )
+        check(
+            "El progreso llega por partes y nunca se pasa del total",
+            len(visto) >= 2 and all(d <= t for d, t in visto),
+            f"{len(visto)} avisos: {visto[:2]}",
+        )
+        malo = base / "malo" / origen.name
+        mensaje = _mensaje_de_error(
+            lambda: core_actualizador.download(origen.as_uri(), malo, sha256="f" * 64)
+        )
+        check(
+            "Un SHA-256 que no coincide borra el archivo y no lo da por bueno",
+            "SHA-256" in mensaje and not malo.exists(),
+            f"{mensaje[:60]}… · queda archivo: {malo.exists()}",
+        )
+        cancelado = base / "cancelado" / origen.name
+        intentos = {"n": 0}
+
+        def _cancelar() -> bool:
+            intentos["n"] += 1
+            return intentos["n"] > 1
+
+        check(
+            "Cancelar la descarga no deja nada a medias",
+            _es_cancelacion(
+                lambda: core_actualizador.download(
+                    origen.as_uri(), cancelado, sha256=bueno, cancel=_cancelar
+                )
+            )
+            and not cancelado.exists(),
+        )
+        check(
+            "Sin SHA-256 no se descarga nada (ni se ejecuta)",
+            "SHA-256" in _mensaje_de_error(
+                lambda: core_actualizador.download(origen.as_uri(), base / "sin" / "x.exe", sha256="")
+            ),
+        )
+
+        # --- Modo portátil frente a copia instalada -----------------------
+        # La marca de una instalación es el archivo que deja el instalador; la versión
+        # portátil es un único `.exe` sin nada más, así que no puede actualizarse sola.
+        portatil = base / "portatil"
+        portatil.mkdir()
+        (portatil / "PC Toolkit.exe").write_bytes(b"MZ")
+        check(
+            "Una carpeta sin la marca del instalador es una copia portátil",
+            core_actualizador.is_portable(portatil)
+            and core_actualizador.installation_folder(portatil) is None,
+            str(portatil),
+        )
+        instalada = base / "instalada"
+        instalada.mkdir()
+        (instalada / core_actualizador.MANIFEST_NAME).write_text("{}", encoding="utf-8")
+        check(
+            "Con la marca del instalador, la copia es una instalación",
+            not core_actualizador.is_portable(instalada)
+            and core_actualizador.installation_folder(instalada) == instalada,
+            str(instalada),
+        )
+
+    # --- Diálogos ----------------------------------------------------------
+    from PySide6.QtWidgets import QApplication as _QApp
+
+    app = _QApp.instance() or _QApp([])
+    dialogo = ui_actualizaciones.UpdateDialog(version_nueva)
+    check(
+        "El diálogo de versión nueva ofrece las tres salidas",
+        dialogo.windowTitle() == "Hay una versión nueva"
+        and dialogo.update_button.text() == "Actualizar ahora"
+        and dialogo.later_button.text() == "Más tarde"
+        and dialogo.skip_button.text() == "Omitir esta versión"
+        and dialogo.update_button.accessibleName() == "Actualizar ahora",
+        f"{dialogo.update_button.text()} / {dialogo.later_button.text()} / {dialogo.skip_button.text()}",
+    )
+    check(
+        "El diálogo dice de qué versión a qué versión",
+        f"Tienes la {APP_VERSION}" in dialogo.subtitle.text()
+        and version_nueva.version in dialogo.subtitle.text(),
+        dialogo.subtitle.text(),
+    )
+    dialogo_skip = ui_actualizaciones.UpdateDialog(version_nueva)
+    dialogo_skip._skip()  # noqa: SLF001
+    check(
+        "Omitir una versión se recuerda como elección",
+        dialogo_skip.choice == ui_actualizaciones.CHOICE_SKIP,
+        dialogo_skip.choice,
+    )
+    portatil_dialogo = ui_actualizaciones.UpdateDialog(version_nueva, installable=False)
+    check(
+        "En la versión portátil el botón lleva a la página de la versión",
+        portatil_dialogo.update_button.text() == "Abrir la página de la versión",
+        portatil_dialogo.update_button.text(),
+    )
+    progreso = ui_actualizaciones.DownloadDialog(version_nueva)
+    progreso.set_progress(43_067_662, 86_135_323)
+    medio = progreso.progress.value()
+    progreso.set_progress(1_000_000, 0)
+    sin_total = progreso.progress.maximum() == 0
+    progreso.set_error("El archivo descargado no coincide con el SHA-256 publicado.")
+    check(
+        "La barra de progreso refleja lo descargado y se puede cancelar",
+        medio == 50
+        and sin_total
+        and "SHA-256" in progreso.status_label.text()
+        and progreso.cancel_button.text() == "Cerrar",
+        f"{medio}% · sin total: {sin_total} · {progreso.cancel_button.text()}",
+    )
+    progreso._cancel()  # noqa: SLF001
+    check("Cancelar avisa al hilo que descarga", progreso.cancel_flag.cancelled is True)
+    dialogo.close()
+    dialogo_skip.close()
+    portatil_dialogo.close()
+    progreso.close()
+
+    # --- Controlador: una vez al día, sin molestar -------------------------
+    ajustes = AppSettings(QSettings(str(Path(_TEMP_HOME) / "ajustes_actualizaciones.ini"), QSettings.IniFormat))
+    controlador = ui_actualizaciones.UpdateController(ajustes)
+    ajustes.check_updates = True
+    ajustes.last_update_check = time.time()
+    antes = len(workers_ui.pending_calls())
+    controlador.start_automatic()
+    check(
+        "La comprobación automática no se repite el mismo día",
+        len(workers_ui.pending_calls()) == antes,
+        f"última: {ajustes.last_update_check:.0f}",
+    )
+    ajustes.check_updates = False
+    ajustes.last_update_check = 0.0
+    controlador.start_automatic()
+    check(
+        "Con la comprobación desactivada no se consulta nada",
+        len(workers_ui.pending_calls()) == antes and ajustes.check_updates is False,
+    )
+    ajustes.check_updates = True
+    ajustes.skipped_version = "1.3.0"
+    controlador._checked(version_nueva, interactive=False)  # noqa: SLF001
+    check(
+        "Una versión omitida no vuelve a avisar sola",
+        controlador.pending is None,
+        f"omitida: {ajustes.skipped_version}",
+    )
+    controlador._checked(version_nueva, interactive=True)  # noqa: SLF001
+    check(
+        "Pero sí se puede encontrar a mano (el botón de ajustes)",
+        controlador.pending is version_nueva,
+    )
+    check(
+        "Toda consulta deja la fecha apuntada, aunque falle",
+        ajustes.last_update_check > 0,
+        time.strftime("%Y-%m-%d %H:%M", time.localtime(ajustes.last_update_check)),
+    )
+    visto_boton: list = []
+    controlador.checked.connect(visto_boton.append)
+    controlador._checked(None, interactive=True)  # noqa: SLF001
+    controlador._checked(core_actualizador.UpdateError("sin conexión"), interactive=True)  # noqa: SLF001
+    fallos: list = []
+    controlador.failed.connect(fallos.append)
+    controlador._checked(core_actualizador.UpdateError("sin conexión"), interactive=True)  # noqa: SLF001
+    check(
+        "Al día y error se cuentan distinto (el botón dice qué pasó)",
+        visto_boton == [None] and fallos == ["sin conexión"],
+        f"al día: {visto_boton} · errores: {fallos}",
+    )
+
+    # --- Ajustes: interruptor y botón -------------------------------------
+    from pctoolkit.core.history import HistoryStore
+    from pctoolkit.ui.alert_settings import AlertSettingsDialog
+
+    dialogo_ajustes = AlertSettingsDialog(
+        ajustes, HistoryStore(), tray_available(), None, updates=controlador
+    )
+    check(
+        "Ajustes trae el interruptor y el botón de actualizaciones",
+        dialogo_ajustes.updates_check.isChecked()
+        and dialogo_ajustes.updates_button.text() == "Buscar actualizaciones"
+        and APP_VERSION in dialogo_ajustes.updates_status.text(),
+        dialogo_ajustes.updates_status.text(),
+    )
+    dialogo_ajustes.updates_check.setChecked(False)
+    dialogo_ajustes.apply()
+    check(
+        "El interruptor se guarda en las preferencias",
+        ajustes.check_updates is False
+        and ajustes.last_update_check > 0,
+        f"buscar_actualizaciones={ajustes.check_updates}",
+    )
+    dialogo_ajustes.close()
+
+
+def _mensaje_de_error(accion) -> str:
+    """Mensaje de la excepción que lanza `accion` (cadena vacía si no lanza)."""
+    try:
+        accion()
+    except Exception as exc:  # noqa: BLE001 - la prueba quiere el texto, no el tipo
+        return str(exc)
+    return ""
+
+
+def _es_cancelacion(accion) -> bool:
+    """Si `accion` termina en una cancelación (y no en otro fallo)."""
+    from pctoolkit.core.actualizador import Cancelled
+
+    try:
+        accion()
+    except Cancelled:
+        return True
+    except Exception:  # noqa: BLE001 - otro fallo no es una cancelación
+        return False
+    return False
+
+
+def revisar_guiones_de_los_flujos() -> None:
+    """Los pasos de PowerShell de los flujos tienen que ser PowerShell que se entienda.
+
+    Estos guiones no se ejecutan hasta el día de publicar (o de ensayar la publicación a
+    mano), así que un error de sintaxis no se descubre hasta el peor momento: un `$nombre:`
+    suelto dentro de una cadena, por ejemplo, hace que PowerShell lea ahí un nombre de
+    unidad y el trabajo ni llega a empezar. Aquí se sacan los bloques `run:` de los flujos
+    y se le pasan al analizador del propio PowerShell, que los lee sin ejecutar nada.
+    """
+    import shutil
+
+    interpretes = [camino for camino in (shutil.which("pwsh"), shutil.which("powershell")) if camino]
+    guiones: list[tuple[str, str, str]] = []
+    for flujo in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+        lineas = flujo.read_text(encoding="utf-8").splitlines()
+        paso, shell = "", ""
+        indice = 0
+        while indice < len(lineas):
+            desnuda = lineas[indice].strip()
+            if desnuda.startswith("- "):
+                # Paso nuevo: el intérprete del anterior ya no vale para este.
+                paso, shell = "", ""
+                if desnuda.startswith("- name:"):
+                    paso = desnuda[len("- name:"):].strip()
+            elif desnuda.startswith("name:"):
+                paso = desnuda[len("name:"):].strip()
+            elif desnuda.startswith("shell:"):
+                shell = desnuda[len("shell:"):].strip().strip('"').strip("'")
+            elif desnuda.startswith("run: |"):
+                sangria = len(lineas[indice]) - len(lineas[indice].lstrip())
+                bloque: list[str] = []
+                indice += 1
+                while indice < len(lineas) and (
+                    not lineas[indice].strip()
+                    or (len(lineas[indice]) - len(lineas[indice].lstrip())) > sangria
+                ):
+                    bloque.append(lineas[indice][sangria + 2:] if lineas[indice].strip() else "")
+                    indice += 1
+                # Sin `shell:` el servidor de Windows usa PowerShell, que es el caso de
+                # todos los pasos de estos flujos; los de otra cáscara se dejan en paz.
+                if (shell or "pwsh").lower() in ("pwsh", "powershell"):
+                    guiones.append((flujo.name, paso or "sin nombre", "\n".join(bloque)))
+                continue
+            indice += 1
+
+    carpeta = Path(_TEMP_HOME) / "flujos"
+    carpeta.mkdir(parents=True, exist_ok=True)
+    for numero, (flujo, paso, guion) in enumerate(guiones):
+        # Las expresiones de GitHub (`${{ … }}`) las sustituye el servidor antes de
+        # ejecutar: aquí se ponen en su lugar para no confundir al analizador.
+        limpio = re.sub(r"\$\{\{.*?\}\}", "expresion", guion)
+        (carpeta / f"paso{numero}.ps1").write_text(limpio, encoding="utf-8-sig")
+        # El nombre del paso se guarda al lado para poder decir cuál falla.
+        (carpeta / f"paso{numero}.txt").write_text(f"{flujo} · {paso}", encoding="utf-8")
+
+    orden = f"""
+$fallos = 0
+Get-ChildItem -LiteralPath '{carpeta}' -Filter 'paso*.ps1' | Sort-Object Name | ForEach-Object {{
+  $errores = $null
+  [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errores)
+  if ($errores.Count) {{
+    $fallos += 1
+    Write-Host (Get-Content (Join-Path '{carpeta}' ($_.BaseName + '.txt')))
+    foreach ($e in $errores) {{ Write-Host ('  linea ' + $e.Extent.StartLineNumber + ': ' + $e.Message) }}
+  }}
+}}
+if ($fallos -gt 0) {{ exit 1 }}
+"""
+    if not interpretes:
+        check(
+            "Los guiones de PowerShell de los flujos se pueden ejecutar",
+            False,
+            "no hay ningún PowerShell a mano para leerlos",
+        )
+        return
+    resultado = subprocess.run(
+        [interpretes[0], "-NoProfile", "-NonInteractive", "-Command", orden],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    problemas = ((resultado.stdout or "") + (resultado.stderr or "")).strip()
+    check(
+        "Los guiones de PowerShell de los flujos se pueden ejecutar",
+        bool(guiones) and resultado.returncode == 0,
+        " · ".join(problemas.splitlines())[:300]
+        or f"{len(guiones)} pasos de los flujos, leídos por {Path(interpretes[0]).name}",
+    )
+
+
+def test_publicacion() -> None:
+    """El flujo de publicación: publica al empujar una etiqueta y sin exponer secretos.
+
+    Lo que hace falta para que una versión llegue a los usuarios sin nada a mano: que la
+    etiqueta y `APP_VERSION` coincidan (o los archivos y la publicación se llamarían de
+    otra manera), que se calculen los SHA-256 —incluido el archivo `<nombre>.sha256` que
+    lee la aplicación— y que la publicación salga sin ningún secreto de por medio.
+    """
+    publicar = (ROOT / ".github" / "workflows" / "publicar.yml").read_text(encoding="utf-8")
+    firmar = (ROOT / ".github" / "workflows" / "firmar.yml").read_text(encoding="utf-8")
+    check(
+        "La publicación se dispara al empujar una etiqueta «v…»",
+        "tags: [\"v*\"]" in publicar and "workflow_dispatch" in publicar,
+        ".github/workflows/publicar.yml",
+    )
+    # El disparo a mano no publica: sirve para **ensayar** el camino completo con una
+    # etiqueta de prueba y una publicación en borrador y preliminar (ni sale en
+    # `/releases/latest`, que es lo que mira el actualizador, ni gasta un número).
+    check(
+        "El disparo a mano solo ensaya: etiqueta de prueba y publicación en borrador",
+        "MODO=ensayo" in publicar
+        and "$argumentos = @('--draft', '--prerelease')" in publicar
+        and "$argumentos = @()" in publicar
+        and "v$version-ensayo" in publicar,
+        "en la publicación de verdad no se pasa ningún argumento de borrador",
+    )
+    check(
+        "La etiqueta y la versión del código tienen que coincidir",
+        "APP_VERSION" in publicar
+        and "APP_VERSION dice" in publicar
+        and publicar.index("APP_VERSION dice") < publicar.index("build_exe.py"),
+        "la comprobación va antes de compilar",
+    )
+    check(
+        "La publicación no usa ningún secreto",
+        "secrets." not in publicar.replace("secrets.GITHUB_TOKEN", ""),
+        "solo el token del propio flujo",
+    )
+    check(
+        "La publicación calcula los SHA-256 y los deja junto a cada archivo",
+        "Get-FileHash" in publicar
+        and ".sha256\"" in publicar
+        and "SHA256SUMS.txt" in publicar
+        and "-Setup.exe" in publicar
+        and "-portable.exe" in publicar,
+        "instalador, portátil y sus sumas",
+    )
+    check(
+        "La publicación comprueba el paquete antes de publicarlo",
+        "tests/smoke_test.py" in publicar
+        and "tools/verificar_instalacion.py" in publicar
+        and "attest-build-provenance" in publicar
+        # La firma de procedencia pide su token (OIDC): sin él el paso falla y la
+        # publicación se queda sin hacer.
+        and "id-token: write" in publicar
+        and "gh release create" in publicar,
+        "suite, instalación real, procedencia y publicación",
+    )
+    check(
+        "Las notas del flujo llevan lo que cambia (la aplicación lo lee de ahí)",
+        "## Qué cambia" in publicar,
+    )
+    check(
+        "Solo un flujo publica al empujar una etiqueta (el de firma ya no)",
+        'tags: ["v*"]' not in firmar and "workflow_dispatch" in firmar,
+        "la firma con Azure se lanza a mano, como hasta ahora",
+    )
+    revisar_guiones_de_los_flujos()
+
+
 def test_config() -> None:
     """Números y carpetas personales: como los tenga el sistema, no como supongamos."""
     from PySide6.QtCore import QLocale
@@ -3939,6 +4532,8 @@ def main(argv: list[str] | None = None) -> int:
     test_metrics()
     test_config()
     test_dependencias()
+    test_publicacion()
+    test_actualizaciones()
     test_theme()
     test_disk()
     test_tasks()

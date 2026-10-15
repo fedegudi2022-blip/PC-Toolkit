@@ -1,0 +1,307 @@
+name: Publicar la versión (Windows)
+
+# Convierte «subir la versión y empujar la etiqueta» en una publicación repartible, sin
+# nada más que hacer a mano:
+#
+#     git push origin main && git push origin v1.3.0
+#
+# y este flujo compila el programa y el instalador en un servidor de Windows, pasa las
+# comprobaciones, calcula los SHA-256, firma la procedencia y crea la publicación con sus
+# archivos adjuntos y sus notas.
+#
+# **Ensayo de publicación.** El mismo flujo se puede lanzar a mano (Actions → «Publicar la
+# versión (Windows)» → Run workflow) para recorrer todo el camino antes del día del
+# estreno: compila, pasa la suite, instala y desinstala el paquete, calcula los hashes y
+# crea la publicación con sus archivos adjuntos. La única diferencia es dónde acaba: con
+# una etiqueta de prueba (`v1.3.0-ensayo`) y la publicación en **borrador y preliminar**,
+# que no sale en `/releases/latest` —lo que consulta el actualizador— ni ocupa ningún
+# número de versión. Es la forma de comprobar que el camino entero funciona (incluidos los
+# permisos del token) sin gastar un número ni publicar nada a medias.
+#
+# No usa ningún secreto: solo el token del propio flujo (`GITHUB_TOKEN`), con permiso para
+# escribir en «Releases». Por eso publica **sin firmar** con un certificado de confianza:
+# para firmar con Azure Artifact Signing está «firmar.yml», que se lanza a mano y necesita
+# su propia configuración (DOCUMENTACION.md, apartado 8.10). Los dos flujos pueden
+# convivir: si algún día se firma siempre, basta con quitar de aquí el disparo por
+# etiqueta y volver a ponerlo en «firmar.yml».
+#
+# La versión de la etiqueta y la del código tienen que coincidir (`APP_VERSION`): si no,
+# los archivos se llamarían de una manera y la publicación de otra, y la comprobación de
+# actualizaciones de los usuarios vería versiones que no son. El trabajo falla en el
+# primer paso si no coinciden, antes de compilar nada.
+#
+# Las acciones van fijadas por el SHA del commit y no por la etiqueta: una etiqueta se
+# puede mover a otro commit y entonces el flujo ejecutaría código que nadie revisó.
+
+on:
+  push:
+    tags: ["v*"]
+  # Ensayo de publicación: se lanza a mano y deja la publicación en borrador (véase la
+  # cabecera). Sin valor, la etiqueta de prueba es `v<versión>-ensayo`.
+  workflow_dispatch:
+    inputs:
+      etiqueta:
+        description: "Etiqueta de prueba para el ensayo (por defecto, v<versión>-ensayo)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write # crear la publicación y adjuntarle los archivos
+  attestations: write # firmar la procedencia de los ejecutables (build provenance)
+  id-token: write # lo pide la firma de procedencia (token OIDC del propio flujo)
+
+jobs:
+  publicar:
+    name: Compilar y publicar
+    runs-on: windows-2025
+    timeout-minutes: 60
+
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # El primer paso, y a propósito: publicar una etiqueta `v1.3.0` con el código en la
+      # 1.2.1 dejaría archivos y notas que se contradicen, y quien los descargue no tiene
+      # forma de saber cuál de los dos números es el bueno.
+      #
+      # Aquí se decide además si esto es una publicación o un ensayo, y se dejan los
+      # nombres en el entorno (`VERSION`, `ETIQUETA`, `MODO`) para el resto del trabajo.
+      - name: Decidir si es publicación o ensayo, y comprobar la versión
+        shell: pwsh
+        env:
+          ETIQUETA_EMPUJADA: ${{ github.ref_name }}
+          ETIQUETA_PEDIDA: ${{ inputs.etiqueta }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = python -c "import sys; sys.path.insert(0, '.'); from pctoolkit.core.config import APP_VERSION; print(APP_VERSION)"
+          if ($LASTEXITCODE -ne 0) { throw "No se pudo leer APP_VERSION de pctoolkit/core/config.py" }
+
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
+            $etiqueta = if ($env:ETIQUETA_PEDIDA) { $env:ETIQUETA_PEDIDA } else { "v$version-ensayo" }
+            # La etiqueta del ensayo lleva la versión del código más un sufijo, así que
+            # nunca puede coincidir con la etiqueta de verdad (`v1.3.0`).
+            if ($etiqueta -notmatch "^v$([regex]::Escape($version))-.+") {
+              throw "La etiqueta de ensayo tiene que ser 'v$version-algo' (por ejemplo 'v$version-ensayo'): se ensaya la versión que dice el código ($version), no otra."
+            }
+            "MODO=ensayo" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            # El `$etiqueta:` de antes se escribe «${etiqueta}» a propósito: un `$nombre:`
+            # suelto hace que PowerShell lea dos puntos donde está el nombre de una unidad y
+            # el guion no llega ni a ejecutarse (lo comprueba la suite en los flujos).
+            Write-Host "Ensayo de la $version con la etiqueta de prueba ${etiqueta}: la publicación quedará en borrador y preliminar (no ocupa número de versión)."
+          } else {
+            $etiqueta = $env:ETIQUETA_EMPUJADA
+            $esperada = $etiqueta -replace '^v', ''
+            if ($version -ne $esperada) {
+              throw "La etiqueta $etiqueta dice $esperada y APP_VERSION dice $version. Sube APP_VERSION (pctoolkit/core/config.py), regenera las capturas y vuelve a empujar la etiqueta."
+            }
+            "MODO=publicacion" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            Write-Host "Versión $version y etiqueta ${etiqueta}: coinciden."
+          }
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ETIQUETA=$etiqueta" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Preparar Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Instalar las dependencias
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      # Sin `QT_QPA_PLATFORM=offscreen`: los servidores de Windows tienen sesión de
+      # escritorio y la plataforma «offscreen» de Qt mide el texto de otra manera (daba
+      # desbordes que no existen en un escritorio real).
+      - name: Compilar el programa portátil (un solo archivo)
+        run: python build_exe.py --onefile
+
+      - name: Compilar el instalador (con la aplicación dentro)
+        run: python build_installer.py --rebuild
+
+      # La suite va después de compilar: así comprueba los ejecutables que se acaban de
+      # generar en vez de un árbol recién clonado donde no hay ninguno. Si algo falla, no
+      # se publica nada.
+      - name: Comprobaciones automáticas
+        run: python tests/smoke_test.py
+
+      - name: Comprobar que el paquete se instala y se desinstala
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python tools/verificar_instalacion.py
+          if ($LASTEXITCODE -ne 0) {
+            throw "La instalación o la desinstalación del paquete compilado ha fallado (código $LASTEXITCODE)"
+          }
+
+      # --- Archivos de la entrega ----------------------------------------------
+      # Los dos nombres que se reparten (instalador y portátil), el resumen de sumas y,
+      # junto a cada ejecutable, su propio archivo `<nombre>.sha256`. Ese último es el que
+      # lee la comprobación de actualizaciones de la aplicación
+      # (`pctoolkit/core/actualizador.py`): un archivo escrito para máquinas, sin nada
+      # que interpretar. Las notas repiten las mismas sumas, para quien las lea a mano.
+      - name: Preparar los archivos de la entrega
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $destino = Join-Path $env:GITHUB_WORKSPACE 'dist\entrega'
+          New-Item -ItemType Directory -Force -Path $destino | Out-Null
+          Copy-Item 'dist\PC Toolkit Setup.exe' (Join-Path $destino "PC-Toolkit-$env:VERSION-Setup.exe") -Force
+          Copy-Item 'dist\PC Toolkit.exe' (Join-Path $destino "PC-Toolkit-$env:VERSION-portable.exe") -Force
+
+          Push-Location $destino
+          try {
+            $lineas = @()
+            Get-ChildItem -Filter 'PC-Toolkit-*.exe' | Sort-Object Name | ForEach-Object {
+              $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLower()
+              $lineas += "$hash  $($_.Name)"
+              # Escrito con el API de .NET: sin marca de orden de bytes y con salto de
+              # línea `\n`, para que el archivo sea igual se mire desde donde se mire.
+              $contenido = "$hash  $($_.Name)`n"
+              [System.IO.File]::WriteAllText(
+                (Join-Path $destino "$($_.Name).sha256"),
+                $contenido,
+                (New-Object System.Text.UTF8Encoding($false))
+              )
+            }
+            [System.IO.File]::WriteAllText(
+              (Join-Path $destino 'SHA256SUMS.txt'),
+              (($lineas -join "`n") + "`n"),
+              (New-Object System.Text.UTF8Encoding($false))
+            )
+            $lineas | ForEach-Object { Write-Host $_ }
+          } finally {
+            Pop-Location
+          }
+
+      - name: Firmar la procedencia de los ejecutables
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: |
+            dist/entrega/PC-Toolkit-*-Setup.exe
+            dist/entrega/PC-Toolkit-*-portable.exe
+
+      # El nombre lleva el número de la ejecución: así un ensayo repetido (o reintentar la
+      # publicación de la misma etiqueta) no choca con los archivos de la vez anterior.
+      - name: Guardar los ejecutables
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pc-toolkit-${{ env.ETIQUETA }}-${{ github.run_number }}
+          path: |
+            dist/entrega/PC-Toolkit-*.exe
+            dist/entrega/PC-Toolkit-*.sha256
+            dist/entrega/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      # --- La publicación ------------------------------------------------------
+      - name: Crear la publicación con sus archivos y sus notas
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $etiqueta = $env:ETIQUETA
+          $entrega = Join-Path $env:GITHUB_WORKSPACE 'dist\entrega'
+
+          # Las notas llevan dentro los SHA-256 recién calculados. Se escriben con el API
+          # de .NET (sin marca de orden de bytes y con `\n` explícitos): así el archivo sale
+          # igual en PowerShell 7 y en el 5.1 y no arrastra los finales de línea de Windows
+          # que puedan venir del propio guion —en la primera publicación salieron dobles—.
+          # La aplicación lee estas notas para contar qué cambia: el diálogo «Hay una versión
+          # nueva» enseña la versión y lo que hay en «Qué cambia», y deja fuera la sección de
+          # comprobación de la descarga (que es siempre la misma y no le interesa a nadie que
+          # solo quiere saber qué cambia). Por eso las novedades van **al principio**, en su
+          # propio apartado, y lo de los hashes detrás.
+          $lineas = @(
+            "PC Toolkit $env:VERSION",
+            ''
+          )
+          # En un ensayo se dice en la primera línea que esto es una prueba: la publicación
+          # queda en borrador (no la ve nadie), pero las notas se escriben igual que las de
+          # verdad, que es de lo que se trata.
+          if ($env:MODO -eq 'ensayo') {
+            $lineas += @(
+              "> **Ensayo de publicación.** No es una versión: se ha lanzado a mano para recorrer el camino completo (compilar, comprobaciones, hashes y publicación). Lo que sigue es exactamente lo que llevará la $env:VERSION cuando se publique de verdad.",
+              ''
+            )
+          }
+          $lineas += @(
+            # Se interpola en vez de concatenar: dentro de `@(...)`, una línea que acaba en
+            # coma y lleva un `+` se convierte en un array anidado y cada trozo sale en su
+            # propia línea de las notas.
+            "Instalador y versión portátil, publicados automáticamente desde la etiqueta $etiqueta.",
+            '',
+            '## Qué cambia',
+            '',
+            'Escribe aquí las novedades de esta versión antes de publicarla (o edita las notas de la publicación desde GitHub: la aplicación las lee de aquí).',
+            '',
+            '## Comprobar la descarga',
+            '',
+            'Los SHA-256 de los archivos adjuntos:',
+            '',
+            '```'
+          )
+          $lineas += Get-Content -LiteralPath (Join-Path $entrega 'SHA256SUMS.txt')
+          $lineas += @(
+            '```',
+            '',
+            'Cada ejecutable lleva además su propio archivo `<nombre>.sha256`. Para comprobar la descarga, desde la carpeta donde estén los archivos:',
+            '',
+            '```powershell',
+            "Get-FileHash .\PC-Toolkit-$env:VERSION-Setup.exe -Algorithm SHA256",
+            '```',
+            '',
+            'Estos ejecutables van **sin firmar**: si Windows avisa con «Windows protegió tu PC», se continúa con «Más información» → «Ejecutar de todos modos».'
+          )
+          $notas = Join-Path $env:RUNNER_TEMP 'notas-release.md'
+          $limpio = ($lineas | ForEach-Object { $_.TrimEnd("`r") }) -join "`n"
+          [System.IO.File]::WriteAllText($notas, $limpio + "`n", (New-Object System.Text.UTF8Encoding($false)))
+          Get-Content -LiteralPath $notas | Write-Host
+
+          # En un ensayo la publicación nace en **borrador y preliminar**: `/releases/latest`
+          # —que es lo que mira el actualizador— ignora las dos cosas, así que nadie que
+          # tenga una versión anterior se enterará, y la etiqueta de prueba no ocupa un
+          # número de versión.
+          if ($env:MODO -eq 'ensayo') {
+            $titulo = "ENSAYO · PC Toolkit $env:VERSION (borrador)"
+            $argumentos = @('--draft', '--prerelease')
+          } else {
+            $titulo = "PC Toolkit $env:VERSION"
+            $argumentos = @()
+          }
+
+          gh release view $etiqueta --json tagName *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $etiqueta --title $titulo @argumentos --notes-file $notas
+          } else {
+            # Publicar otra vez la misma etiqueta (un reintento) actualiza las notas en vez
+            # de fallar. En un ensayo se insiste en el borrador, por si el intento anterior
+            # se quedó a medias.
+            gh release edit $etiqueta --title $titulo @argumentos --notes-file $notas
+          }
+          if ($LASTEXITCODE -ne 0) { throw "No se pudo crear ni actualizar la publicación $etiqueta" }
+
+          gh release upload $etiqueta `
+            "dist\entrega\PC-Toolkit-$env:VERSION-Setup.exe" `
+            "dist\entrega\PC-Toolkit-$env:VERSION-Setup.exe.sha256" `
+            "dist\entrega\PC-Toolkit-$env:VERSION-portable.exe" `
+            "dist\entrega\PC-Toolkit-$env:VERSION-portable.exe.sha256" `
+            "dist\entrega\SHA256SUMS.txt" `
+            --clobber
+          if ($LASTEXITCODE -ne 0) { throw "No se pudieron adjuntar los archivos a la publicación $etiqueta" }
+
+          # El enlace a la página de la publicación, para no tener que buscarlo: es el que
+          # abre la aplicación cuando la copia es la portátil (no puede instalar sola).
+          if ($env:MODO -eq 'ensayo') {
+            "### Ensayo terminado: $($env:VERSION) (borrador, no publicado)" | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
+            "La publicación de prueba queda en borrador: no sale en /releases/latest y no la ve nadie. Para borrarla: gh release delete $etiqueta --cleanup-tag" |
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          } else {
+            "### Publicación lista: $($env:VERSION)" | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          }
+          ("https://github.com/${{ github.repository }}/releases/tag/$etiqueta") |
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          Get-Content -LiteralPath (Join-Path $entrega 'SHA256SUMS.txt') |
+            ForEach-Object { "- $_" } | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8

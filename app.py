@@ -274,6 +274,11 @@ def main(argv: list[str] | None = None) -> int:
         window.navigate("disk")
         window.disk_page.start_scan(args.analizar)
 
+    # Actualizaciones: la comprobación va en un hilo aparte (no retrasa el arranque), como
+    # mucho una vez al día y solo si está activada en los ajustes. Si hay versión nueva,
+    # avisa; descargarla e instalarla es siempre una decisión de quien usa el programa.
+    window.updates.start_automatic()
+
     if args.bandeja and window.tray.active:
         window.tray.notify(
             "PC Toolkit está vigilando tu equipo",

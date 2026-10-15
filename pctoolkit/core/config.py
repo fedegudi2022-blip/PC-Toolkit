@@ -10,8 +10,16 @@ from PySide6.QtCore import QLocale
 
 APP_NAME = "PC Toolkit"
 APP_TAGLINE = "Herramientas para controlar y mantener tu PC"
-APP_VERSION = "1.2.1"
+# La versión se escribe **solo aquí**: de esta constante salen el ejecutable
+# (`build_exe.write_version_file`), el instalador, los nombres de los archivos de cada
+# publicación y lo que consulta el actualizador para saber si hay algo nuevo. Para
+# publicar una versión: se sube este número, se regeneran las capturas de la
+# documentación (`tools\\capturar_documentacion.py`) y se empuja una etiqueta `v…`
+# igual a la versión (lo detalla DOCUMENTACION.md).
+APP_VERSION = "1.3.0"
 ORG_NAME = "PCToolkit"
+# Repositorio del que salen las actualizaciones (`pctoolkit.core.actualizador`).
+GITHUB_REPO = "fedegudi2022-blip/PC-Toolkit"
 
 IS_WINDOWS = os.name == "nt"
 

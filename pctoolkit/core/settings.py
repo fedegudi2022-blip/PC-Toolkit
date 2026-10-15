@@ -34,6 +34,12 @@ class AppSettings:
             return default
         return max(low, min(high, value))
 
+    def _float(self, key: str, default: float) -> float:
+        try:
+            return float(self._settings.value(key, default))
+        except (TypeError, ValueError):
+            return default
+
     def set(self, key: str, value) -> None:
         self._settings.setValue(key, value)
 
@@ -167,3 +173,35 @@ class AppSettings:
     @schedule_config.setter
     def schedule_config(self, schedule: MaintenanceSchedule) -> None:
         self.set("mantenimiento", json.dumps(schedule.to_dict(), ensure_ascii=False))
+
+    # --- Actualizaciones --------------------------------------------------
+    # Tres claves y todas caben en las preferencias de siempre
+    # (HKCU\Software\PCToolkit): si se buscan actualizaciones, cuándo se miró por última
+    # vez y qué versión se pidió no volver a ver. La marca de tiempo es lo que permite
+    # comprobar «como mucho una vez al día» sin volver a consultar nada.
+    @property
+    def check_updates(self) -> bool:
+        """Si se busca una versión nueva al arrancar (se puede desactivar)."""
+        return self._bool("buscar_actualizaciones", True)
+
+    @check_updates.setter
+    def check_updates(self, value: bool) -> None:
+        self.set("buscar_actualizaciones", "true" if value else "false")
+
+    @property
+    def last_update_check(self) -> float:
+        """Momento (segundos desde 1970) de la última comprobación; 0 si nunca."""
+        return self._float("ultima_comprobacion", 0.0)
+
+    @last_update_check.setter
+    def last_update_check(self, value: float) -> None:
+        self.set("ultima_comprobacion", float(value))
+
+    @property
+    def skipped_version(self) -> str:
+        """Versión que el usuario pidió no volver a ver (vacío si ninguna)."""
+        return str(self._settings.value("version_omitida", "", type=str) or "")
+
+    @skipped_version.setter
+    def skipped_version(self, value: str) -> None:
+        self.set("version_omitida", str(value or ""))

@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -18,22 +19,30 @@ from PySide6.QtWidgets import (
 
 from ..core.alerts import METRIC_CPU, METRIC_DISK, METRIC_RAM, AlertConfig
 from ..core.appearance import MODE_LABELS, MODES, describe_mode
-from ..core.config import COLORS
+from ..core.config import APP_VERSION, COLORS
 from ..core.history import HistoryStore
 from ..core.settings import AppSettings
 from .widgets import Card, IconBadge, Muted, SectionTitle, hline
 
 
 class AlertSettingsDialog(QDialog):
-    """Permite ajustar umbrales, avisos de bandeja y frecuencia del historial."""
+    """Permite ajustar umbrales, avisos de bandeja, historial y actualizaciones."""
 
-    def __init__(self, settings: AppSettings, store: HistoryStore, tray_available: bool = True,
-                 parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        settings: AppSettings,
+        store: HistoryStore,
+        tray_available: bool = True,
+        parent: QWidget | None = None,
+        updates=None,
+    ) -> None:
         super().__init__(parent)
         self.settings = settings
         self.store = store
         self.config = settings.alert_config
-        self.setWindowTitle("Alertas y bandeja")
+        #: Controlador de actualizaciones de la ventana (puede no haberlo, en las pruebas).
+        self.updates = updates
+        self.setWindowTitle("Alertas, bandeja y actualizaciones")
         self.setMinimumWidth(520)
         self._build(tray_available)
 
@@ -201,6 +210,50 @@ class AlertSettingsDialog(QDialog):
             extras_layout.addWidget(Muted("Este sistema no tiene bandeja disponible."))
         layout.addWidget(extras)
 
+        # --- Actualizaciones ------------------------------------------------
+        # La comprobación automática solo avisa: descargar e instalar siempre pasa por
+        # el diálogo de la versión nueva. Aquí se decide si se comprueba al arrancar y
+        # se puede pedir una comprobación en el momento.
+        updates_card = Card(soft=True, name="Actualizaciones")
+        updates_layout = QVBoxLayout(updates_card)
+        updates_layout.setContentsMargins(16, 14, 16, 16)
+        updates_layout.setSpacing(8)
+        updates_layout.addWidget(SectionTitle("Actualizaciones"))
+        updates_layout.addWidget(hline())
+
+        self.updates_check = QCheckBox("Buscar actualizaciones al arrancar")
+        self.updates_check.setChecked(self.settings.check_updates)
+        self.updates_check.setToolTip(
+            "Como mucho una vez al día. Solo avisa: descargar e instalar es siempre una "
+            "decisión tuya."
+        )
+        updates_layout.addWidget(self.updates_check)
+
+        updates_row = QWidget()
+        updates_row_layout = QHBoxLayout(updates_row)
+        updates_row_layout.setContentsMargins(0, 0, 0, 0)
+        updates_row_layout.setSpacing(10)
+        self.updates_button = QPushButton("Buscar actualizaciones")
+        self.updates_button.setObjectName("Ghost")
+        self.updates_button.clicked.connect(self._search_updates)
+        updates_row_layout.addWidget(self.updates_button)
+        updates_row_layout.addStretch(1)
+        updates_layout.addWidget(updates_row)
+
+        self.updates_status = Muted(f"Versión instalada: {APP_VERSION}")
+        self.updates_status.setWordWrap(True)
+        self.updates_status.setAccessibleName("Estado de las actualizaciones")
+        updates_layout.addWidget(self.updates_status)
+        if self.updates is None:
+            self.updates_button.setEnabled(False)
+        else:
+            # El diálogo escucha al controlador: así el botón puede contar qué pasó
+            # (al día, versión nueva o error) sin bloquear la ventana mientras se consulta.
+            self.updates.status.connect(self.updates_status.setText)
+            self.updates.checked.connect(self._on_checked)
+            self.updates.failed.connect(self._on_failed)
+        layout.addWidget(updates_card)
+
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Save).setText("Guardar")
         buttons.button(QDialogButtonBox.Cancel).setText("Cancelar")
@@ -239,8 +292,28 @@ class AlertSettingsDialog(QDialog):
         self.settings.eco_when_hidden = self.eco_hidden_check.isChecked()
         self.settings.history_enabled = self.history_check.isChecked()
         self.settings.history_interval_seconds = self.history_spin.value()
+        self.settings.check_updates = self.updates_check.isChecked()
         self.settings.sync()
         return config
+
+    # ------------------------------------------------------------------
+    def _search_updates(self) -> None:
+        """Pide una comprobación de actualizaciones (sin bloquear la ventana)."""
+        if self.updates is None:
+            return
+        self.updates_status.setText("Buscando actualizaciones…")
+        self.updates.check_now()
+
+    def _on_checked(self, release) -> None:
+        """Resultado de una comprobación pedida a mano."""
+        if release is None:
+            self.updates_status.setText(
+                f"Ya tienes la última versión ({APP_VERSION}). Se vuelve a comprobar dentro de "
+                "un día."
+            )
+
+    def _on_failed(self, message: str) -> None:
+        self.updates_status.setText(message)
 
     def accept(self) -> None:  # noqa: D102 (Qt)
         self.apply()

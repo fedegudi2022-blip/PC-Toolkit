@@ -14,9 +14,12 @@ name: Compilar y firmar (Windows)
 #      https://weu.codesigning.azure.net), ARTIFACT_SIGNING_ACCOUNT y
 #      ARTIFACT_SIGNING_PROFILE.
 #
-# Se ejecuta a mano (Actions → Run workflow) y al publicar una etiqueta `v…`.
-# Para que corra también en cada envío a `main`, añade `branches: [main]` al `push`.
+# Se ejecuta a mano (Actions → Run workflow). Para publicar una versión está
+# «publicar.yml», que se dispara al empujar una etiqueta `v…` y no necesita secretos.
 
+# Se lanza a mano y **no** al empujar una etiqueta: de las publicaciones se encarga
+# «publicar.yml», que no necesita ningún secreto. Aquí, además de compilar y firmar con
+# Azure, se puede publicar a mano con la casilla «Publicar sin firmar».
 on:
   workflow_dispatch:
     inputs:
@@ -28,8 +31,6 @@ on:
         description: "Publicar sin firmar (no usa Azure)"
         type: boolean
         default: false
-  push:
-    tags: ["v*"]
 
 permissions:
   contents: write # adjuntar los ejecutables al release de la etiqueta
