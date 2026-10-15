@@ -26,7 +26,7 @@ for ruta in (str(ROOT), str(AQUI)):
 
 from pctoolkit.core.config import APP_VERSION  # noqa: E402
 
-from _checks import CHECKS, check, report  # noqa: E402
+from _checks import CHECKS, POR_FUNCION, check, report  # noqa: E402
 
 
 def verificar_documentacion(*, comprobar_recuentos: bool = True) -> None:
@@ -189,10 +189,20 @@ def verificar_documentacion(*, comprobar_recuentos: bool = True) -> None:
     )
     coinciden = bool(documentados) and len(set(documentados)) == 1
     documentado = documentados[0] if coinciden else 0
+    detalle = (
+        f"guías: {sorted(set(documentados))}; esta pasada: {total}; "
+        f"equipo completo: {'sí' if completo else 'no'}"
+    )
+    if coinciden and documentado != total:
+        # Con el número no basta para arreglarlo: en un servidor faltaba una comprobación y,
+        # sin saber de qué función salía, no había forma de encontrarla (el registro del
+        # servidor no se puede abrir desde otro equipo). El reparto va por función.
+        reparto = ", ".join(f"{nombre}={cuenta}" for nombre, cuenta in sorted(POR_FUNCION.items()))
+        detalle += f"; por función: {reparto}"
     check(
         "Los recuentos de las guías coinciden con esta pasada",
         coinciden and (documentado == total if completo else documentado >= total),
-        f"guías: {sorted(set(documentados))}; esta pasada: {total}; equipo completo: {'sí' if completo else 'no'}",
+        detalle,
     )
 
 
