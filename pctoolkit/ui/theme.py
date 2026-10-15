@@ -319,6 +319,30 @@ QSpinBox:disabled, QDoubleSpinBox:disabled, QDateEdit:disabled, QTimeEdit:disabl
     background: {bg_alt};
     border-color: {border_soft};
 }}
+/* Las flechas de los campos numéricos se colocan a mano: al redondear el borde del campo, Qt
+   dibuja los botones pegados al borde exterior y las flechas asoman fuera del campo (se veía
+   en los diálogos de umbrales). Con `subcontrol-origin: border` quedan dentro y con el mismo
+   radio del campo. */
+QSpinBox, QDoubleSpinBox, QDateEdit, QTimeEdit {{ padding-right: 26px; }}
+QSpinBox::up-button, QDoubleSpinBox::up-button, QDateEdit::up-button, QTimeEdit::up-button {{
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 20px;
+    border: none;
+    border-top-right-radius: 10px;
+    background: transparent;
+}}
+QSpinBox::down-button, QDoubleSpinBox::down-button, QDateEdit::down-button, QTimeEdit::down-button {{
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    width: 20px;
+    border: none;
+    border-bottom-right-radius: 10px;
+    background: transparent;
+}}
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover, QDateEdit::up-button:hover,
+QTimeEdit::up-button:hover, QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover,
+QDateEdit::down-button:hover, QTimeEdit::down-button:hover {{ background: {hover}; }}
 QComboBox:disabled::drop-down {{ border: none; }}
 QComboBox::drop-down {{ border: none; width: 22px; }}
 QComboBox QAbstractItemView {{

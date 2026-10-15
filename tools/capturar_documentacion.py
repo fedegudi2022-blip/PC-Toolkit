@@ -4,7 +4,7 @@
 
 Guarda en `capturas\\`:
 
-* las ocho páginas de la aplicación (lo mismo que `app.py --screenshot`), en tema oscuro;
+* las nueve páginas de la aplicación (lo mismo que `app.py --screenshot`), en tema oscuro;
 * la portada en tema claro (`inicio_claro.png`);
 * el diálogo de ajustes (`dialogo_ajustes.png`);
 * el asistente de instalación y el desinstalador (lo hace `capturar_instalador.py`).
@@ -44,7 +44,17 @@ from pctoolkit.ui.tray import tray_available  # noqa: E402
 from tools import capturas, capturar_instalador  # noqa: E402
 
 SALIDA = ROOT / "capturas"
-PAGINAS = ("home", "memory", "startup", "disk", "tools", "tasks", "reports", "schedule")
+PAGINAS = (
+    "home",
+    "memory",
+    "startup",
+    "windows",
+    "disk",
+    "tools",
+    "tasks",
+    "reports",
+    "schedule",
+)
 INFORME = "informe_muestra.html"
 
 
@@ -71,7 +81,7 @@ def main() -> int:
     app.setApplicationName("PC Toolkit")
     settings = AppSettings()
 
-    # --- Tema oscuro: las ocho páginas y el diálogo de ajustes --------------
+    # --- Tema oscuro: las nueve páginas y el diálogo de ajustes -------------
     apply_theme(app, "dark")
     # El analizador de disco necesita una carpeta escaneada; la del usuario da una
     # imagen representativa y termina enseguida.

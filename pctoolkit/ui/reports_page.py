@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core import reports as report_core
+from ..core import windows_settings as tweaks_core
 from ..core.config import COLORS, format_bytes, reports_dir
 from ..core.disk import list_drives
 from . import icons, theme
@@ -149,12 +150,20 @@ class ReportsPage(QWidget):
         self.include_tasks.setChecked(True)
         self.include_processes = QCheckBox("Procesos con más consumo")
         self.include_processes.setChecked(True)
+        # Los cambios en los ajustes de Windows son del registro de la propia aplicación (qué
+        # se analizó y qué se aplicó), así que van en su propia casilla y se pueden dejar fuera.
+        self.include_tweaks = QCheckBox("Cambios en los ajustes de Windows")
+        self.include_tweaks.setChecked(bool(tweaks_core.recent_changes(1)))
+        self.include_tweaks.setToolTip(
+            "El registro de análisis y cambios de la página «Ajustes de Windows» (con su fecha)."
+        )
         for check in (
             self.include_metrics,
             self.include_drives,
             self.include_disk,
             self.include_tasks,
             self.include_processes,
+            self.include_tweaks,
         ):
             check.toggled.connect(self.update_preview)
             layout.addWidget(check)
@@ -280,6 +289,10 @@ class ReportsPage(QWidget):
             ("Unidades incluidas", str(len(drives)) if self.include_drives.isChecked() else "No incluidas"),
             ("Análisis de disco", analysis_value),
             ("Tareas registradas", str(len(tasks)) if self.include_tasks.isChecked() else "No incluidas"),
+            (
+                "Cambios en los ajustes",
+                str(len(tweaks_core.recent_changes(40))) if self.include_tweaks.isChecked() else "No incluidos",
+            ),
             ("Generado", datetime.now().strftime("%d/%m/%Y %H:%M")),
         ]
         for label, value in rows:
@@ -339,6 +352,7 @@ class ReportsPage(QWidget):
             task_stats=self.task_store.stats(),
             disk_result=self.disk_page.last_result() if self.include_disk.isChecked() else None,
             drive_labels=self.disk_page.drive_labels(),
+            windows_changes=tweaks_core.changes_for_report(40) if self.include_tweaks.isChecked() else None,
         )
         if not self.include_metrics.isChecked():
             report.pop("resumen", None)

@@ -36,6 +36,7 @@ def build_report(
     task_stats: dict[str, Any] | None = None,
     disk_result: ScanResult | None = None,
     drive_labels: dict[str, str] | None = None,
+    windows_changes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Reúne toda la información disponible en un diccionario serializable."""
     generated = datetime.now()
@@ -97,12 +98,19 @@ def build_report(
         "procesos_principales": [
             {"nombre": name, "cpu_porcentaje": round(cpu, 1), "memoria_mb": round(mem, 1)}
             for name, cpu, mem in snapshot.top_processes
-        ],
-        "tareas": {
+        ],            "tareas": {
             "estadisticas": task_stats or {},
             "lista": tasks,
         },
     }
+    # Los cambios en los ajustes de Windows (analizar, aplicar, devolver) van aparte: son del
+    # registro de la propia aplicación, no del equipo, y solo entran si quien pide el informe
+    # los pide (los añade la página de informes con su casilla).
+    if windows_changes:
+        report["ajustes_windows"] = {
+            "total": len(windows_changes),
+            "lista": list(windows_changes),
+        }
     if disk_result is not None:
         report["analisis_disco"] = {
             "ruta": disk_result.root,
@@ -256,6 +264,22 @@ def export_csv(report: dict[str, Any], path: str | Path) -> Path:
         ])
     rows.append([])
 
+    ajustes = report.get("ajustes_windows")
+    if ajustes:
+        rows.append(["AJUSTES DE WINDOWS"])
+        rows.append(["Cambios registrados", ajustes.get("total", 0)])
+        rows.append([])
+        rows.append(["Cuándo", "Tipo", "Título", "Detalle", "Ajustes"])
+        for cambio in ajustes.get("lista", []):
+            rows.append([
+                cambio.get("cuando", ""),
+                cambio.get("tipo", ""),
+                cambio.get("titulo", ""),
+                cambio.get("detalle", ""),
+                cambio.get("ajustes", ""),
+            ])
+        rows.append([])
+
     rows.append(["PROCESOS CON MÁS CONSUMO"])
     rows.append(["Proceso", "CPU %", "Memoria MB"])
     for proc in report.get("procesos_principales", []):
@@ -324,6 +348,24 @@ def _html(report: dict[str, Any]) -> str:
         f"<td class='muted'>{_escape(t.get('due_date', '')) or '—'}</td></tr>"
         for t in tasks
     ) or "<tr><td colspan='6' class='muted'>No hay tareas registradas</td></tr>"
+
+    tweaks = report.get("ajustes_windows")
+    tweaks_html = ""
+    if tweaks:
+        cambio_rows = "".join(
+            f"<tr><td class='muted'>{_escape(c.get('cuando', ''))}</td>"
+            f"<td>{_escape(c.get('tipo', ''))}</td>"
+            f"<td>{_escape(c.get('titulo', ''))}<div class='muted'>{_escape(c.get('detalle', ''))}</div></td></tr>"
+            for c in tweaks.get("lista", [])
+        ) or "<tr><td colspan='3' class='muted'>Sin cambios registrados</td></tr>"
+        tweaks_html = f"""
+  <section class="card">
+    <h2>Ajustes de Windows</h2>
+    <p class="muted">{format_integer(tweaks.get('total', 0))} cambio(s) registrados: lo que se analizó y
+       lo que se aplicó o se devolvió, con su fecha. Todo se puede deshacer desde la aplicación.</p>
+    <table><thead><tr><th>Cuándo</th><th>Tipo</th><th>Cambio</th></tr></thead>
+    <tbody>{cambio_rows}</tbody></table>
+  </section>"""
 
     analysis_html = ""
     if analysis:
@@ -506,6 +548,7 @@ def _html(report: dict[str, Any]) -> str:
     <h2>Procesos con más consumo</h2>
     <table><thead><tr><th>Proceso</th><th>CPU</th><th>Memoria</th></tr></thead><tbody>{proc_rows}</tbody></table>
   </section>
+{tweaks_html}
 
   <footer>Informe generado automáticamente por {APP_NAME} {report.get('app', {}).get('version', '')}</footer>
 </div>

@@ -1,4 +1,4 @@
-# PC Toolkit 1.3.1 — qué es, qué hace y cómo funciona
+# PC Toolkit 1.4.0 — qué es, qué hace y cómo funciona
 
 Aplicación de escritorio para **Windows 10 y 11** que reúne el mantenimiento del equipo en un solo
 sitio: libera memoria RAM cuando hace falta, programa el mantenimiento en el propio Windows, vigila
@@ -23,6 +23,7 @@ desinstalador), sin necesidad de ser administrador.
 | **Inicio** | Medidores de CPU, memoria, disco y red, **tarjeta gráfica** (uso por motor, nombre y controlador), puntuación de salud del equipo, gráfica del historial de las últimas 24 h —CPU, memoria, disco y **tarjeta gráfica**—, detalles del sistema y los procesos que más consumen. |
 | **Optimizar memoria** | Libera RAM recortando los conjuntos de trabajo de los procesos y vaciando la caché del sistema (estilo MemReduct), a mano o **automáticamente** al superar un umbral; mide de verdad lo liberado. |
 | **Programas de inicio** | Lista lo que Windows abre solo al encender el equipo (registro, carpetas de inicio y tareas al iniciar sesión), avisa de las entradas que apuntan a programas que ya no están y **desactiva sin borrar nada**, con cada cambio apuntado para deshacerlo. |
+| **Ajustes de Windows** | Catálogo de ajustes recomendados (anuncios y sugerencias, privacidad, telemetría, interfaz y rendimiento) con el flujo **analizar → revisar → aplicar**: el análisis es solo lectura, cada ajuste sale como *Recomendado* o *Ya optimizado* con su riesgo (y escudo si toca `HKEY_LOCAL_MACHINE`), y solo se aplica lo marcado y confirmado, con respaldo `.reg` y vuelta atrás. Dentro van el gestor de **aplicaciones preinstaladas** (debloat, lista blanca y solo el usuario actual) y los **plugins** de ajustes en JSON (apartado 3.12). |
 | **Mantenimiento** | Crea una tarea en el **Programador de tareas de Windows** para limpiar temporales, liberar memoria y generar informes sin abrir la aplicación; muestra próxima ejecución, último resultado e histórico. |
 | **Analizar disco** | Escaneo por carpetas con barras proporcionales, uso por categoría (vídeo, imágenes, programas…), archivos grandes y navegación hacia dentro con doble clic. |
 | **Herramientas** | 28 accesos directos agrupados por categoría (sistema, mantenimiento, almacenamiento, red y avanzado), buscador y limpieza rápida de archivos temporales. |
@@ -37,8 +38,8 @@ desinstalador), sin necesidad de ser administrador.
 
 ## 2. El instalador de Windows
 
-**Archivo:** `dist\PC Toolkit Setup.exe` (79,3 MB). Es **un solo archivo**: lleva dentro la
-aplicación comprimida (`pc_toolkit_app.zip`, 33,0 MB, los 161 archivos y el desinstalador) y la saca
+**Archivo:** `dist\PC Toolkit Setup.exe` (84,0 MB). Es **un solo archivo**: lleva dentro la
+aplicación comprimida (`pc_toolkit_app.zip`, 37,7 MB, los 166 archivos y el desinstalador) y la saca
 a una carpeta temporal al instalar, borrándola al terminar. No hay que descomprimir nada ni dejar una
 carpeta al lado; si el instalador encuentra la carpeta `PC Toolkit\` junto a él (por ejemplo al
 probarlo desde `dist\`), la usa directamente y no extrae nada.
@@ -132,8 +133,8 @@ Otras opciones: `--sin-escritorio`, `--sin-menu`, `--origen` (carpeta de la apli
   carpeta de prueba con escritorio, menú Inicio y clave de registro propios, comprueba que los
   accesos directos apuntan al programa instalado, que el registro y el arranque automático quedan
   bien, **ejecuta la copia instalada** y desinstala verificando que no queda rastro.
-- **Instalación real en este equipo** (medida): `79,3 MB` de instalador (que ya trae la aplicación
-  dentro), **162 archivos / 72,5 MB** copiados en **10,5 s**, dos accesos directos correctos, entrada
+- **Instalación real en este equipo** (medida): `84,0 MB` de instalador (que ya trae la aplicación
+  dentro), **166 archivos / 85,0 MB** copiados en **10,6 s**, dos accesos directos correctos, entrada
   de registro y arranque automático
   en la bandeja, la copia instalada ejecutando el mantenimiento, y desinstalación dejando todo
   limpio (accesos directos, registro y carpeta eliminados; datos del usuario intactos). Se puede
@@ -272,7 +273,9 @@ plantillas rápidas y estadísticas de progreso; se puede marcar, editar, filtra
 
 Los informes se generan a partir de datos reales del equipo y se exportan en **HTML** (informe visual
 con tarjetas y tablas), **CSV** (para Excel) y **JSON**, eligiendo qué incluir y dónde guardarlos,
-sin sobrescribir los anteriores.
+sin sobrescribir los anteriores. Entre lo que se puede incluir está el **registro de los ajustes de
+Windows** (apartado 3.12): qué se analizó y qué se aplicó o devolvió, con su fecha, en una sección
+más de los tres formatos.
 
 ### 3.7 Consumo de recursos
 
@@ -583,6 +586,116 @@ guarda la GPU en blanco (no como cero), que el grabador solo la escribe si el vi
 —para no repetir el último valor conocido— y que el vigía sigue consultando con la ventana oculta
 solo cuando el camino es barato (contadores).
 
+### 3.12 Ajustes de Windows, aplicaciones preinstaladas y plugins
+
+**Módulos:** `pctoolkit\core\windows_settings.py` (catálogo, análisis y aplicación),
+`pctoolkit\core\apps.py` (aplicaciones preinstaladas) y `pctoolkit\core\plugins.py` (ajustes que
+aporta el usuario). **Pantallas:** `pctoolkit\ui\windows_settings_page.py`,
+`pctoolkit\ui\debloat.py` y `pctoolkit\ui\plugins_ui.py`.
+
+#### El flujo: analizar, revisar y aplicar
+
+1. **Analizar** (`F5` o el botón «Analizar») solo lee el registro y no cambia nada. Cada ajuste
+   queda como **Recomendado** (con el detalle concreto: «vale 1 y se recomienda 0»), **Ya
+   optimizado**, **No disponible** (no se puede leer o aplicar y se dice por qué) o **Sin analizar**
+   antes del primer análisis.
+2. **Revisar.** Cada ajuste lleva su categoría, su **riesgo** (bajo, medio o alto) y, si toca
+   `HKEY_LOCAL_MACHINE`, un escudo. Se pueden marcar los recomendados de una vez, buscarlos por
+   nombre, filtrar por «solo los recomendados» y leer la ayuda de cualquiera con `F1`, con el botón
+   «?» o con el clic derecho: qué cambia, por qué se recomienda, las claves exactas que toca y cómo
+   se revierte. La ayuda también ofrece «Buscar en internet» y «Copiar las claves».
+3. **Aplicar.** Solo se aplica lo marcado y después de confirmar. Si algo es de riesgo medio o alto,
+   la confirmación avisa y, con permisos de administrador, ofrece crear antes un **punto de
+   restauración** de Windows.
+
+Cada ajuste aplicado queda anotado **tres veces**:
+
+* en el historial de cambios reversibles, con los valores que había antes, así que aparece en el panel
+  de «Deshacer» de la página de Inicio junto al resto del programa;
+* en un archivo `.reg` con lo que había (`%APPDATA%\PCToolkit\respaldo_ajustes`, en UTF-16 como los
+  lee el Editor del Registro: se puede restaurar con doble clic, sin abrir la aplicación);
+* en el registro de cambios legible `%APPDATA%\PCToolkit\ajustes_windows.jsonl`, donde se anota cada
+  análisis («N ajustes analizados: M por aplicar») y cada cambio. De ahí sale «Copiar resumen», que
+  arma un texto con la versión, lo que pasó y cómo está el equipo para pedir ayuda en un foro.
+
+Si al aplicar un ajuste falla una escritura a mitad, se devuelven los valores que ya se habían
+cambiado: no se deja el equipo con medio ajuste puesto. Los ajustes que necesitan administrador **no
+se analizan siquiera** sin permisos (aparecen como «no disponible» con el motivo) en vez de ofrecerse
+para luego fallar.
+
+#### El catálogo es declarativo
+
+Cada ajuste es un objeto `Setting` con `id`, `nombre`, `categoria`, `descripcion`, `por_que`,
+`riesgo`, `requiere_admin`, sus **valores** (`ValueSpec`: hive, ruta, nombre, tipo `dword`/`string` y
+el valor recomendado, o `delete` cuando lo recomendado es que el valor *no* exista) y las claves que
+crea (`KeyRef`, para los ajustes que funcionan por la mera existencia de una clave). Añadir uno es
+escribir una ficha en `CATALOG`: la interfaz no sabe nada de ajustes concretos, los pinta a partir de
+sus datos. Las categorías son **Anuncios y sugerencias**, **Privacidad**, **Telemetría**, **Interfaz**
+y **Rendimiento**, y todo el catálogo de serie vive en `HKEY_CURRENT_USER` excepto un par de ajustes
+marcados como de equipo.
+
+Las claves se leen y se escriben con una **raíz de pruebas** opcional (`PCTOOLKIT_RAIZ_PRUEBAS`): con
+esa variable puesta, cada ruta cuelga de ahí, y así la suite prueba cambios reales de registro sin
+tocar una sola clave del sistema.
+
+#### Aplicaciones preinstaladas (debloat seguro)
+
+`pctoolkit\core\apps.py` lista los paquetes de la tienda del usuario con **PowerShell**
+(`Get-AppxPackage`, más `Get-StartApps` para el nombre visible), mide lo que ocupa cada uno con un
+tope de tiempo —una aplicación con miles de archivos no puede bloquear la lista— y los clasifica:
+
+* **lista blanca** (`PROTECTED_EXACT` y `PROTECTED_PREFIXES`): tienda, instalador de paquetes,
+marcos (`VCLibs`, `.NET.Native`, `UI.Xaml`, `WindowsAppRuntime`), componentes del shell, extensión de
+  imagen y vídeo y el instalador de la tienda. Esos no se pueden quitar y se explica por qué;
+* **recomendadas** (`BLOAT`): las que Windows trae puestas y casi nadie usa, cada una con su riesgo y
+  **qué se pierde** si se quita;
+* **por decidir**: el resto. Se pueden quitar, pero se avisa de que PC Toolkit no las conoce.
+
+Quitar una aplicación usa `Remove-AppxPackage` **sin `-AllUsers`**: afecta solo a la cuenta abierta y
+no necesita administrador. El nombre del paquete se pasa por **variable de entorno**
+(`$env:PCTK_PAQUETE`), nunca interpolado en el guion, y el cambio se anota con la carpeta de
+instalación para poder **reinstalarla** después registrándola otra vez (`Add-AppxPackage -Register`);
+si Windows ya no la tiene, el mensaje manda a la tienda. La lista blanca se comprueba **también** en
+el núcleo, así que la ventana no puede saltársela ni por error.
+
+#### Plugins de ajustes
+
+Un plugin es un archivo `*.json` en `%APPDATA%\PCToolkit\plugins` (o en la carpeta que indique
+`PCTOOLKIT_RAIZ_PLUGINS`, que es lo que usan las pruebas). Se validan campo por campo y **un archivo
+con un error se rechaza entero**, con el motivo concreto («claves que no existen: rriesgo»,
+«`riesgo` tiene que ser `bajo`, `medio` o `alto`», «toca HKEY_LOCAL_MACHINE, así que el ajuste tiene
+que llevar `requiere_admin`»), sin cargarse a medias. Los límites son 256 KB por archivo, 50 archivos
+y 200 ajustes por archivo.
+
+Sus ajustes entran en el mismo catálogo (`id` con prefijo `plugin.<plugin>.<ajuste>`), con las mismas
+reglas y la misma vuelta atrás, pero **no se pueden aplicar hasta que el plugin se revisa y se
+acepta**: la ventana de plugins enseña qué trae cada uno, las claves que toca y avisa en rojo de los
+que necesitan administrador o son de riesgo alto. La aceptación guarda la **huella** (SHA-256) del
+archivo, así que si el JSON se edita después hay que revisarlo otra vez; retirar la confianza vuelve
+a bloquearlo todo. La comprobación vive en el núcleo (un «guardián» que el catálogo consulta antes de
+aplicar), no solo en la interfaz: aunque se llame a `apply_setting` directamente, el ajuste se
+rechaza.
+
+#### Cómo se ha comprobado
+
+Con claves de registro propias de la prueba y un PowerShell de mentira en la frontera del sistema:
+que el análisis y la aplicación funcionan y se deshacen, que se guarda el `.reg` y se anota el
+registro de cambios, que una pieza del sistema **no** llega a ejecutar ningún comando, que el nombre
+del paquete viaja por variable de entorno y no dentro del comando, que reinstalar avisa cuando no se
+puede, que cada error de esquema de un plugin se rechaza con su motivo, que un plugin sin aceptar no
+se puede aplicar ni sale como analizable, que editar el archivo tumba la confianza y que aceptar y
+retirar desde la ventana cambia el estado. La ventana de aplicaciones y la de plugins se construyen y
+se navegan de verdad (con la lista interceptada), como el resto de páginas.
+
+#### Créditos
+
+La idea del catálogo de ajustes con análisis previo, la del gestor de aplicaciones preinstaladas y la
+de definiciones que aporta el usuario está inspirada en **[CrapFixer](https://github.com/builtbybel/CrapFixer)**
+(builtbybel, licencia MIT). No se ha copiado código suyo: el catálogo, la detección, la lista blanca,
+la validación de los plugins y la vuelta atrás son código propio, con la arquitectura de PC Toolkit.
+
+---
+
 ## 4. Línea de comandos
 
 ```bat
@@ -593,6 +706,8 @@ PC Toolkit.exe --screenshot salida     Guarda una captura de cada página y sale
 PC Toolkit.exe --tema claro            Abre con el tema claro (o `oscuro`/`auto`) sin guardarlo
 PC Toolkit.exe --demo                  Carga tareas de ejemplo
 PC Toolkit.exe --mantenimiento [--simular] [--liberar-memoria] [--antiguedad HORAS]
+PC Toolkit.exe --comprobar-https        Comprueba (sin red) que esta copia puede usar https y sale
+PC Toolkit.exe --comprobar-actualizaciones  Mira si hay versión nueva, lo cuenta y sale
 PC Toolkit.exe --version
 ```
 
@@ -628,13 +743,16 @@ pctoolkit/
                                 contadores de rendimiento de Windows (`pdh.py`), memoria,
                                 arranque de Windows, mantenimiento, disco, herramientas, tareas,
                                 informes, historial, alertas, preferencias, registro de deshacer y
-                                actualizaciones desde GitHub (`actualizador.py`)
+                                actualizaciones desde GitHub (`actualizador.py`), ajustes de Windows
+                                (`windows_settings.py`), aplicaciones preinstaladas (`apps.py`) y
+                                plugins (`plugins.py`)
   ui/                           Interfaz PySide6: temas (claro y oscuro), anuncios accesibles y
                                 roles de los widgets propios, iconos, tarjetas, gráfica, vigía de la
                                 GPU (`gpu_monitor.py`), bandeja, ventana principal y una página por
                                 módulo
-tests/smoke_test.py             767 comprobaciones automáticas (núcleo, interfaz, instalador,
-                                firma, dependencias, logotipo y actualizaciones)
+tests/smoke_test.py             851 comprobaciones automáticas (núcleo, interfaz, instalador,
+                                firma, dependencias, logotipo, actualizaciones, ajustes de Windows,
+                                aplicaciones preinstaladas y plugins)
   _checks.py                    Recuento de comprobaciones, compartido con las guardas
   documentacion.py              Guardas de documentación: capturas, informe de muestra y recuentos
                                 de las guías (se pueden dejar fuera, véase el apartado 7)
@@ -649,9 +767,9 @@ capturas/                       Imágenes de la documentación (con estado.json 
 
 Al compilar aparecen tres artefactos en `dist\`:
 
-  dist\PC Toolkit\               Programa completo (carpeta autocontenida, 72,5 MB)
-  dist\PC Toolkit.exe            Programa en un solo archivo (47,3 MB)
-  dist\PC Toolkit Setup.exe      Instalador de Windows con la aplicación dentro (79,3 MB)
+  dist\PC Toolkit\               Programa completo (carpeta autocontenida, 85,0 MB)
+  dist\PC Toolkit.exe            Programa en un solo archivo (47,5 MB)
+  dist\PC Toolkit Setup.exe      Instalador de Windows con la aplicación dentro (84,0 MB)
 ```
 
 ---
@@ -668,6 +786,12 @@ Al compilar aparecen tres artefactos en `dist\`:
 - Informes por defecto: `C:\Users\<usuario>\Documents\PCToolkit\Informes` (la carpeta de
   documentos que dice Windows, que con OneDrive o una política de empresa no siempre es
   `%USERPROFILE%\Documents`)
+- Registro de cambios de los ajustes de Windows: `%APPDATA%\PCToolkit\ajustes_windows.jsonl`
+  (cada análisis y cada ajuste aplicado o devuelto; los últimos 400).
+- Respaldos `.reg` de los ajustes, con lo que había antes de aplicar cada uno:
+  `%APPDATA%\PCToolkit\respaldo_ajustes`.
+- Plugins de ajustes y qué se revisó de cada uno (con su huella): `%APPDATA%\PCToolkit\plugins` y
+  `%APPDATA%\PCToolkit\plugins\confianza.json`.
 - Registro de la aplicación: `%LOCALAPPDATA%\PCToolkit\logs\pctoolkit.log`, con rotación (media
   mega y tres copias). Lo que antes se perdía en silencio —una tarea que no se pudo guardar, un
   histórico que no se pudo escribir, una excepción sin capturar— queda aquí escrito.
@@ -713,13 +837,13 @@ Qué entregar:
   ejecutables con SHA-256 y sello de tiempo, y verifica el resultado.
 
 Los tres artefactos se comprueban solos al generarlos: el ejecutable se **ejecuta** (capturas de las
-siete páginas, historial y mantenimiento desatendido en simulación) y el instalador completa un ciclo
+nueve páginas, historial y mantenimiento desatendido en simulación) y el instalador completa un ciclo
 de instalar, ejecutar y desinstalar.
 
 Pruebas:
 
 ```bat
-.venv\Scripts\python.exe tests\smoke_test.py            767 comprobaciones
+.venv\Scripts\python.exe tests\smoke_test.py            851 comprobaciones
 .venv\Scripts\python.exe tools\verificar_instalacion.py  Instala de verdad y desinstala al terminar
 .venv\Scripts\python.exe tests\documentacion.py         Solo las guardas de documentación
 .venv\Scripts\python.exe tests\smoke_test.py --sin-documentacion   Sin las guardas de documentación
@@ -733,7 +857,7 @@ pruebas de código: así una captura todavía por rehacer no bloquea la comproba
 comprueba únicamente cuando se ejecutan como última parte de la suite.
 
 El total depende del equipo: unas pocas comprobaciones solo se hacen si el sistema tiene bandeja,
-si hay `signtool` disponible o si `dist\` ya está compilado. Con la plataforma real de Qt salen 767;
+si hay `signtool` disponible o si `dist\` ya está compilado. Con la plataforma real de Qt salen 851;
 en modo sin pantalla son unas cuantas menos, porque las que necesitan una bandeja de verdad no se
 ejecutan (la comprobación de que la bandeja solo se usa si el sistema la tiene sí se hace siempre).
 
@@ -772,17 +896,17 @@ Publicar es empujar la rama y la etiqueta con el mismo número:
 
 ```bat
 git push origin main
-git push origin v1.3.1
+git push origin v1.4.0
 ```
 
 Antes del día del estreno conviene **ensayarlo**: en «Actions → Publicar la versión (Windows) → Run
-workflow» se lanza el mismo flujo a mano, con una etiqueta de prueba (`v1.3.1-ensayo` si no se dice
+workflow» se lanza el mismo flujo a mano, con una etiqueta de prueba (`v1.4.0-ensayo` si no se dice
 otra). Compila, pasa la suite —incluida la instalación y desinstalación reales—, calcula los SHA-256
 y crea la publicación con sus archivos adjuntos, pero la deja **en borrador y preliminar**: no sale
 en `/releases/latest` (que es lo que consulta el actualizador), no la ve nadie que no pueda ver el
 repositorio y **no gasta ningún número de versión**. Si la etiqueta del ensayo no empieza por
 `v<versión>-`, el trabajo se para antes de compilar, porque se ensaya la versión que dice el código
-y no otra. Una publicación de ensayo se borra con `gh release delete v1.3.1-ensayo --cleanup-tag`.
+y no otra. Una publicación de ensayo se borra con `gh release delete v1.4.0-ensayo --cleanup-tag`.
 
 La etiqueta dispara [`.github/workflows/publicar.yml`](.github/workflows/publicar.yml), que hace
 todo lo demás: comprueba que la etiqueta y `APP_VERSION` coinciden (si no, se para antes de compilar:

@@ -597,6 +597,53 @@ def test_reports() -> None:
         target = reports.unique_path(out, "informe.html")
         check("No sobrescribe archivos", target.name == "informe_1.html", target.name)
 
+        # --- Los cambios en los ajustes de Windows, en los tres formatos -----
+        cambios = [
+            {
+                "cuando": "15/10/2026 10:20",
+                "tipo": "aplicado",
+                "titulo": "Anuncios y sugerencias en el menú Inicio",
+                "detalle": "«Anuncios y sugerencias en el menú Inicio» aplicado",
+                "ajustes": "anuncios_inicio",
+            },
+            {
+                "cuando": "15/10/2026 10:21",
+                "tipo": "analisis",
+                "titulo": "Análisis de ajustes de Windows",
+                "detalle": "17 ajuste(s) analizado(s): 10 por aplicar",
+                "ajustes": "",
+            },
+        ]
+        con_ajustes = reports.build_report(
+            snapshot=snap,
+            system_info=service.system_info(),
+            drives=[],
+            tasks=[],
+            windows_changes=cambios,
+        )
+        sin_ajustes = reports.build_report(snapshot=snap, system_info=service.system_info(), drives=[], tasks=[])
+        check(
+            "El informe lleva los cambios de los ajustes solo cuando se le piden",
+            con_ajustes.get("ajustes_windows", {}).get("total") == 2
+            and "ajustes_windows" not in sin_ajustes,
+            str(con_ajustes.get("ajustes_windows", {}).get("total")),
+        )
+        csv_ajustes = reports.export_csv(con_ajustes, out / "con_ajustes.csv").read_text(encoding="utf-8-sig")
+        html_ajustes = reports.export_html(con_ajustes, out / "con_ajustes.html").read_text(encoding="utf-8")
+        json_ajustes = json.loads(
+            reports.export_json(con_ajustes, out / "con_ajustes.json").read_text(encoding="utf-8")
+        )
+        check(
+            "Los tres formatos llevan la sección de ajustes con su detalle",
+            "AJUSTES DE WINDOWS" in csv_ajustes
+            and "AJUSTES DE WINDOWS" not in csv_text
+            and "Ajustes de Windows" in html_ajustes
+            and "Anuncios y sugerencias en el menú Inicio" in html_ajustes
+            and "15/10/2026 10:20" in html_ajustes
+            and json_ajustes["ajustes_windows"]["lista"][0]["tipo"] == "aplicado",
+            f"csv {len(csv_ajustes)} B · html {len(html_ajustes)} B · json {len(json_ajustes)} B",
+        )
+
         # Estructura del HTML: etiquetas equilibradas y datos escapados.
         from html.parser import HTMLParser
 
@@ -1889,6 +1936,1008 @@ def test_scheduler() -> None:
         check("Sin tarea: mensaje informativo", bool(status.message), status.message)
 
 
+def _borrar_arbol_de_registro(ruta: str) -> None:
+    """Borra una clave del usuario y todo lo que cuelga (solo para las pruebas)."""
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, ruta, 0, winreg.KEY_READ | winreg.KEY_WRITE) as clave:
+            while True:
+                try:
+                    subclave = winreg.EnumKey(clave, 0)
+                except OSError:
+                    break
+                _borrar_arbol_de_registro(f"{ruta}\\{subclave}")
+            while True:
+                try:
+                    nombre, _tipo, _dato = winreg.EnumValue(clave, 0)
+                except OSError:
+                    break
+                try:
+                    winreg.DeleteValue(clave, nombre)
+                except OSError:
+                    break
+    except OSError:
+        return
+    try:
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, ruta)
+    except OSError:
+        pass
+
+
+def test_ajustes_windows() -> None:
+    """Catálogo de ajustes de Windows: catálogo, análisis, aplicación y vuelta atrás.
+
+    Todo se hace sobre una **raíz de registro propia** (`PCTOOLKIT_RAIZ_PRUEBAS`), que el
+    módulo pone delante de cada ruta: las claves reales del sistema no se tocan. Es la
+    única forma de probar de verdad un cambio en el registro sin arriesgar el equipo.
+    """
+    import winreg
+
+    from pctoolkit.core import undo, windows_settings as ajustes
+
+    # --- El catálogo -------------------------------------------------------
+    identificadores = [setting.id for setting in ajustes.CATALOG]
+    categorias = {setting.category for setting in ajustes.CATALOG}
+    check(
+        "El catálogo no repite identificadores y tiene nombre y categoría",
+        len(identificadores) == len(set(identificadores))
+        and all(setting.name and setting.category in ajustes.CATEGORIES for setting in ajustes.CATALOG)
+        and len(categorias) >= 4,
+        f"{len(identificadores)} ajustes en {len(categorias)} categorías: "
+        + ", ".join(ajustes.CATEGORIES[clave][0] for clave in ajustes.CATEGORY_ORDER if clave in categorias),
+    )
+    check(
+        "Cada ajuste declara su riesgo y qué claves toca",
+        all(setting.risk in ajustes.RISK_ORDER for setting in ajustes.CATALOG)
+        and all(setting.values or setting.created_keys for setting in ajustes.CATALOG)
+        and all(setting.registry_lines for setting in ajustes.CATALOG if setting.values),
+    )
+    de_usuario = [s for s in ajustes.CATALOG if all(v.hive == ajustes.HIVE_USER for v in s.values)]
+    de_equipo = [s for s in ajustes.CATALOG if any(v.hive == ajustes.HIVE_MACHINE for v in s.values)]
+    check(
+        "Lo que toca HKEY_LOCAL_MACHINE se marca con escudo; lo del usuario, no",
+        bool(de_usuario)
+        and bool(de_equipo)
+        and all(setting.needs_admin for setting in de_equipo)
+        and not any(setting.needs_admin for setting in de_usuario),
+        f"{len(de_usuario)} de usuario y {len(de_equipo)} de equipo",
+    )
+    check(
+        "La ayuda de cada ajuste lleva las claves, el riesgo y cómo revertirlo",
+        all(
+            "Riesgo:" in setting.help_text() and "Cómo se revierte" in setting.help_text()
+            for setting in ajustes.CATALOG
+        )
+        and ajustes.CATALOG[0].search_url().startswith("https://"),
+        ajustes.CATALOG[0].help_text().splitlines()[0],
+    )
+    etiquetas = {
+        ajustes.STATUS_PENDING: "Recomendado",
+        ajustes.STATUS_OPTIMIZED: "Ya optimizado",
+        ajustes.STATUS_UNAVAILABLE: "No disponible",
+        ajustes.STATUS_UNKNOWN: "Sin analizar",
+    }
+    check(
+        "Los estados se enseñan en castellano y el resumen los cuenta todos",
+        all(ajustes.STATUS_LABELS[clave] == texto for clave, texto in etiquetas.items())
+        and sum(
+            valor
+            for clave, valor in ajustes.summary(
+                [ajustes.SettingState(s, ajustes.STATUS_PENDING) for s in ajustes.CATALOG]
+            ).items()
+            if clave in ("recomendados", "optimizados", "no_disponibles")
+        )
+        == len(ajustes.CATALOG),
+    )
+
+    # --- Análisis y aplicación sobre claves propias ------------------------
+    raiz = r"Software\PCToolkit\PruebasAjustes"
+    sin_raiz = os.environ.get(ajustes.TEST_ROOT_ENV)
+    os.environ[ajustes.TEST_ROOT_ENV] = raiz
+    try:
+        valor = ajustes.ValueSpec(
+            path=r"Software\PCToolkit\PruebaValor", name="Valor", recommended=1
+        )
+        ajuste = ajustes.Setting(
+            id="prueba_valor",
+            name="Ajuste de prueba con valor",
+            category=ajustes.CATEGORY_ADS,
+            description="Ajuste de la suite: no toca nada real de Windows.",
+            why="Comprobar que el análisis y la vuelta atrás funcionan.",
+            values=(valor,),
+        )
+        estado = ajustes.analyse_one(ajuste)
+        check(
+            "Sin el ajuste aplicado, el análisis lo marca como recomendado (y no toca nada)",
+            estado.status == ajustes.STATUS_PENDING and not ajustes.key_exists(valor),
+            f"{estado.status}: {estado.detail}",
+        )
+        # Poniendo el valor recomendado a mano, el análisis lo da por hecho.
+        ajustes.write_value(valor, 1)
+        ya = ajustes.analyse_one(ajuste)
+        ajustes.delete_value(valor)
+        check(
+            "Un valor que ya está como se recomienda sale como ya optimizado",
+            ya.status == ajustes.STATUS_OPTIMIZED,
+            ya.detail,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            carpeta = Path(tmp)
+            store = undo.UndoStore(carpeta / "deshacer.jsonl")
+            ok, detalle = ajustes.apply_setting(ajuste, store=store)
+            existe, leido = ajustes.read_value(valor)
+            check(
+                "Aplicar un ajuste escribe lo recomendado y lo anota para deshacer",
+                ok and existe and int(leido) == 1 and store.count() == 1,
+                detalle,
+            )
+            check(
+                "Ya aplicado, el análisis dice que está optimizado",
+                ajustes.analyse_one(ajuste).status == ajustes.STATUS_OPTIMIZED,
+            )
+            accion = store.recent(1)[0]
+            respaldo = Path(str(accion.data.get("respaldo") or ""))
+            contenido = respaldo.read_text(encoding="utf-16") if respaldo.exists() else ""
+            check(
+                "Antes de escribir se guarda un .reg con lo que había",
+                respaldo.exists()
+                and "Windows Registry Editor Version 5.00" in contenido
+                and r"Software\PCToolkit\PruebaValor" in contenido,
+                respaldo.name if respaldo.exists() else "sin respaldo",
+            )
+            devuelto = undo.revert_action(store, accion)
+            existe, _leido = ajustes.read_value(valor)
+            check(
+                "Deshacer deja el valor como estaba (aquí: sin existir)",
+                devuelto[0] and not existe and store.get(accion.id).reverted,
+                devuelto[1],
+            )
+
+            # Una clave que el ajuste crea: al deshacer hay que quitarla, o el ajuste
+            # seguiría puesto aunque sus valores hubieran vuelto a como estaban.
+            vacia = r"Software\PCToolkit\PruebaClaveVacia"
+            winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, f"{raiz}\\{vacia}").Close()
+            check(
+                "Una clave que el ajuste creó se puede quitar al deshacer",
+                ajustes.remove_key_if_empty(ajustes.KeyRef(vacia))
+                and not winreg_key_exists(f"{raiz}\\{vacia}"),
+            )
+
+        # --- El registro de cambios y el resumen ---------------------------
+        tipos = [entrada.get("tipo") for entrada in ajustes.recent_changes(20)]
+        resumen = ajustes.summary_text()
+        check(
+            "Cada análisis y cada cambio quedan anotados en un registro legible",
+            "aplicado" in tipos and "revertido" in tipos,
+            ", ".join(tipos[-6:]) or "sin entradas",
+        )
+        check(
+            "El resumen para pedir ayuda cuenta lo que pasó y cómo está el equipo",
+            APP_VERSION in resumen and "Estado ahora:" in resumen,
+            resumen.splitlines()[0],
+        )
+        filas = ajustes.changes_for_report(10)
+        check(
+            "Los cambios se preparan para el informe con la fecha ya legible",
+            bool(filas)
+            and any(fila["tipo"] == "aplicado" for fila in filas)
+            and all(len(fila["cuando"]) == 16 and fila["cuando"][2] == "/" for fila in filas)
+            and [fila["cuando"] for fila in filas] == sorted(fila["cuando"] for fila in filas),
+            filas[-1]["cuando"] if filas else "sin cambios",
+        )
+
+        # --- Lo que necesita administrador no se aplica sin permisos -------
+        de_maquina = next(s for s in ajustes.CATALOG if s.needs_admin)
+        permitido, motivo = ajustes.can_apply(de_maquina)
+        if ajustes.is_elevated():
+            check("Con permisos, un ajuste de equipo sí se puede aplicar", permitido, motivo)
+        else:
+            check(
+                "Sin permisos, un ajuste de equipo no se aplica y se explica por qué",
+                not permitido and "administrador" in motivo,
+                motivo,
+            )
+            aplicado, mensaje = ajustes.apply_setting(de_maquina)
+            check(
+                "Ni se intenta: aplicar un ajuste de equipo sin permisos se rechaza",
+                not aplicado and "administrador" in mensaje,
+                mensaje,
+            )
+        ok, motivo_punto = ajustes.create_restore_point("Prueba de la suite")
+        check(
+            "Se puede pedir un punto de restauración (sin administrador, se avisa)",
+            (True if ajustes.is_elevated() else (not ok and "administrador" in motivo_punto)),
+            motivo_punto,
+        )
+
+        # --- La página: analizar, marcar y aplicar -------------------------
+        # Se aplica el catálogo de verdad, pero con la raíz de pruebas puesta: lo que se
+        # escribe cae en una clave propia y no en los ajustes del equipo.
+        from PySide6.QtWidgets import QApplication, QMessageBox
+
+        from pctoolkit.ui.windows_settings_page import WindowsSettingsPage
+
+        app = QApplication.instance() or QApplication(sys.argv[:1])
+        store_pagina = undo.UndoStore(Path(_TEMP_HOME) / "deshacer_ajustes.jsonl")
+        pagina = WindowsSettingsPage(store_pagina)
+        pagina.show()
+        _settle(app, 150)
+        pagina.analyse()
+        _settle(app, 150)
+        cifras = ajustes.summary([fila.state for fila in pagina._rows])  # noqa: SLF001
+        check(
+            "La página analiza el catálogo y resume el resultado",
+            cifras["total"] == len(ajustes.CATALOG)
+            and "recomendado(s)" in pagina.summary_label.text()
+            and cifras["recomendados"] > 0,
+            pagina.summary_label.text(),
+        )
+        check(
+            "Antes de marcar no hay nada que aplicar y el botón está apagado",
+            not pagina.selected_settings() and not pagina.apply_button.isEnabled(),
+        )
+        pagina.mark_recommended(True)
+        marcados = len(pagina.selected_settings())
+        check(
+            "Marcar los recomendados llena el botón de aplicar (y solo con ellos)",
+            marcados == cifras["recomendados"] and f"({marcados})" in pagina.apply_button.text(),
+            pagina.apply_button.text(),
+        )
+        pagina.search.setText("anuncios")
+        _settle(app, 100)
+        visibles = [fila for fila in pagina._rows if fila.isVisible()]  # noqa: SLF001
+        check(
+            "El buscador de la página deja a la vista solo lo que coincide",
+            0 < len(visibles) < len(pagina._rows),  # noqa: SLF001
+            f"{len(visibles)} de {len(pagina._rows)} filas",  # noqa: SLF001
+        )
+        pagina.search.clear()
+        _settle(app, 100)
+
+        # La confirmación se contesta sola: aquí se comprueba que la marca llegue a aplicarse.
+        original_exec = QMessageBox.exec
+        QMessageBox.exec = lambda self: QMessageBox.Yes  # type: ignore[method-assign]
+        try:
+            pagina.apply_marked()
+            _settle(app, 200)
+        finally:
+            QMessageBox.exec = original_exec  # type: ignore[method-assign]
+        aplicados = store_pagina.count()
+        check(
+            "Aplicar desde la página anota cada cambio para poder deshacerlo",
+            aplicados == marcados and not pagina.selected_settings(),
+            f"{aplicados} cambios anotados de {marcados} marcados",
+        )
+        check(
+            "Después de aplicar, el análisis ya no los pide otra vez",
+            ajustes.summary([fila.state for fila in pagina._rows])["recomendados"] == 0,  # noqa: SLF001
+            pagina.summary_label.text(),
+        )
+        deshechos = [undo.revert_action(store_pagina, accion) for accion in store_pagina.pending()]
+        check(
+            "Todo lo aplicado desde la página se puede devolver desde «Deshacer»",
+            bool(deshechos) and all(ok for ok, _mensaje in deshechos),
+            f"{len(deshechos)} cambios devueltos",
+        )
+        pagina.close()
+    finally:
+        if sin_raiz is None:
+            os.environ.pop(ajustes.TEST_ROOT_ENV, None)
+        else:
+            os.environ[ajustes.TEST_ROOT_ENV] = sin_raiz
+        _borrar_arbol_de_registro(raiz)
+    check(
+        "La raíz de pruebas no se queda puesta (no se tocaría nunca el registro real)",
+        ajustes.test_root() == "",
+        ajustes.test_root() or "vacía",
+    )
+
+
+def test_aplicaciones() -> None:
+    """Aplicaciones preinstaladas: lista blanca, lectura, quitado y vuelta a instalar.
+
+    Lo que toca el equipo (PowerShell) se sustituye en la frontera del sistema: el guion se
+    comprueba como texto y el paquete se pasa por variable de entorno, nunca dentro del
+    comando. La lectura de la lista, el tamaño de las carpetas y la lista blanca se prueban de
+    verdad, porque no tocan nada.
+    """
+    from pctoolkit.core import apps, undo
+
+    # --- La lista blanca: lo que nunca se puede quitar ---------------------
+    nunca = [
+        apps.AppEntry(name="Microsoft.WindowsStore"),
+        apps.AppEntry(name="Microsoft.DesktopAppInstaller"),
+        apps.AppEntry(name="Microsoft.Windows.ShellExperienceHost"),
+        apps.AppEntry(name="Microsoft.Windows.StartMenuExperienceHost"),
+        apps.AppEntry(name="Microsoft.VCLibs.140.00.UWPDesktop"),
+        apps.AppEntry(name="Microsoft.UI.Xaml.2.8"),
+        apps.AppEntry(name="Microsoft.WebpImageExtension"),
+        apps.AppEntry(name="Microsoft.AV1VideoExtension"),
+        apps.AppEntry(name="MicrosoftWindows.Client.CBS"),
+        apps.AppEntry(name="Cualquiera", framework=True),
+    ]
+    check(
+        "La tienda, el shell, los marcos, los códecs y las piezas del sistema no se pueden quitar",
+        all(not entrada.removable and entrada.protected_reason for entrada in nunca),
+        "; ".join(f"{entrada.name}: {entrada.protected_reason}" for entrada in nunca[:3]),
+    )
+    check(
+        "Quitar una de esas se rechaza con su motivo y sin llegar a ejecutar nada",
+        all(not apps.can_remove(entrada)[0] for entrada in nunca)
+        and "tienda" in apps.can_remove(nunca[0])[1],
+        apps.can_remove(nunca[0])[1],
+    )
+
+    # --- Lo que sí conviene quitar y su riesgo -----------------------------
+    bing = apps.AppEntry(name="Microsoft.BingNews", full_name="Microsoft.BingNews_1_x64__8wekyb3d8bbwe")
+    xbox = apps.AppEntry(name="Microsoft.GamingServices", full_name="Microsoft.GamingServices_1_x64__8wekyb3d8bbwe")
+    rara = apps.AppEntry(name="Editor.AppRara", full_name="Editor.AppRara_1_x64__abc")
+    del_equipo = apps.AppEntry(name="Editor.DelSistema", system=True, full_name="Editor.DelSistema_1_x64__abc")
+    check(
+        "Las aplicaciones de la lista de molestas salen recomendadas, con su riesgo",
+        apps.is_recommended(bing) and bing.risk == apps.RISK_LOW and "noticias" in bing.note,
+        f"{bing.display_name}: {bing.risk_label} — {bing.note}",
+    )
+    check(
+        "Lo que rompe algo se marca como riesgo alto",
+        xbox.risk == apps.RISK_HIGH and del_equipo.risk == apps.RISK_HIGH,
+        f"{xbox.risk_label} / {del_equipo.risk_label}",
+    )
+    check(
+        "Una aplicación desconocida se puede quitar, pero no se recomienda y se avisa",
+        rara.removable and not apps.is_recommended(rara) and "solo si sabes" in rara.note,
+        rara.note,
+    )
+    check(
+        "Lo protegido explica por qué y no se marca como recomendado",
+        "No se puede quitar" in nunca[0].note and not apps.is_recommended(nunca[0]),
+        nunca[0].note,
+    )
+    cifras = apps.summary([bing, xbox, rara, del_equipo, *nunca])
+    check(
+        "El resumen cuenta totales, protegidas y lo que ocupan las recomendadas",
+        cifras["total"] == 14
+        and cifras["protegidas"] == 10
+        and cifras["recomendadas"] == 2
+        and cifras["desconocidas"] == 2,
+        str(cifras),
+    )
+    ordenados = sorted([*nunca, bing, rara], key=apps.sort_key)
+    grupos = [apps.sort_key(entrada)[0] for entrada in ordenados]
+    check(
+        "La lista pone primero lo que conviene quitar y deja el sistema al final",
+        ordenados[0].name == "Microsoft.BingNews"
+        and grupos == sorted(grupos)
+        and grupos[-1] == 2
+        and all(apps.sort_key(entrada)[0] == 2 for entrada in ordenados[-len(nunca):]),
+        ", ".join(entrada.name for entrada in ordenados[:3]) + " … " + ordenados[-1].name,
+    )
+
+    # --- Lectura de la salida de PowerShell -------------------------------
+    salida = json.dumps(
+        [
+            {
+                "nombre": "Microsoft.BingNews",
+                "familia": "Microsoft.BingNews_8wekyb3d8bbwe",
+                "completo": "Microsoft.BingNews_4.55_x64__8wekyb3d8bbwe",
+                "editor": "Microsoft Corporation",
+                "version": "4.55.0.0",
+                "carpeta": r"C:\Program Files\WindowsApps\Microsoft.BingNews_4.55_x64__8wekyb3d8bbwe",
+                "visible": "Noticias de Windows",
+                "marco": False,
+                "sistema": False,
+                "firma": "Store",
+            },
+            {"nombre": "Microsoft.VCLibs.140.00", "marco": True, "visible": ""},
+            {"nombre": ""},
+            "esto no es un objeto",
+        ]
+    )
+    entradas = apps.parse_packages(salida)
+    check(
+        "La salida de PowerShell se lee con nombres, editor, versión y carpeta",
+        len(entradas) == 2
+        and entradas[0].display_name == "Noticias de Windows"
+        and entradas[0].publisher == "Microsoft Corporation"
+        and entradas[0].full_name.endswith("8wekyb3d8bbwe"),
+        f"{len(entradas)} leídas: " + ", ".join(entrada.name for entrada in entradas),
+    )
+    check(
+        "Las filas vacías o con basura se descartan sin arrastrar a las demás",
+        all(entrada.name for entrada in entradas) and entradas[1].framework,
+        ", ".join(entrada.name for entrada in entradas),
+    )
+    check("Sin JSON no hay lista (y no se inventa nada)", apps.parse_packages("vaya") == [])
+
+    # --- Tamaño de las carpetas -------------------------------------------
+    with tempfile.TemporaryDirectory() as tmp:
+        carpeta = Path(tmp)
+        (carpeta / "datos.bin").write_bytes(b"0" * 3000)
+        sub = carpeta / "sub"
+        sub.mkdir()
+        (sub / "mas.bin").write_bytes(b"0" * 2000)
+        check(
+            "El tamaño de una aplicación se mide recorriendo su carpeta",
+            apps.folder_size(carpeta) == 5000,
+            str(apps.folder_size(carpeta)),
+        )
+        check(
+            "Sin carpeta no hay tamaño (y se dice, en vez de poner un cero falso)",
+            apps.folder_size("") == -1
+            and apps.folder_size(carpeta / "no-existe") == -1
+            and apps.AppEntry(name="X").size_label == "sin medir",
+        )
+
+    # --- Quitar y volver a instalar (con el guion interceptado) -----------
+    guiones: list[tuple[str, dict]] = []
+    respuestas: list[tuple[int, str, str]] = []
+
+    def falso_run(script: str, *, timeout: int = 120, extra_env=None):
+        guiones.append((script, dict(extra_env or {})))
+        return respuestas.pop(0) if respuestas else (0, "ok", "")
+
+    original_run = apps._run_script  # noqa: SLF001
+    apps._run_script = falso_run  # type: ignore[assignment]  # noqa: SLF001
+    anotados: list[tuple] = []
+
+    def diario(*args, **kwargs):
+        """Sustituye al registro de cambios: aquí solo se apunta lo que se le pidió."""
+        anotados.append(args)
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = undo.UndoStore(Path(tmp) / "deshacer.jsonl")
+            # Una pieza del sistema: no se lanza nada y queda anotado como bloqueado.
+            ok, motivo = apps.remove_app(nunca[0], store=store, journal=diario)
+            check(
+                "Quitar una pieza del sistema se bloquea, se explica y no ejecuta PowerShell",
+                not ok and not guiones and store.count() == 0 and anotados[-1][0] == "bloqueado",
+                motivo,
+            )
+            respuestas.append((0, "ok", ""))
+            ok, detalle = apps.remove_app(bing, store=store, journal=diario)
+            script, entorno = guiones[-1]
+            check(
+                "Quitar una aplicación se anota y se lanza solo para el usuario actual",
+                ok and store.count() == 1 and anotados[-1][0] == "quitado"
+                and "-AllUsers" not in script
+                and "Remove-AppxPackage" in script,
+                detalle,
+            )
+            check(
+                "El paquete se pasa por variable de entorno, nunca dentro del comando",
+                entorno.get("PCTK_PAQUETE") == bing.key
+                and bing.key not in script
+                and "$env:PCTK_PAQUETE" in script,
+                entorno.get("PCTK_PAQUETE", "(sin variable)"),
+            )
+            accion = store.recent(1)[0]
+            check(
+                "El apunte guarda con qué carpeta estaba instalada (para reinstalarla)",
+                accion.kind == apps.KIND_APLICACIONES
+                and accion.data.get("carpeta") == bing.location
+                and accion.data.get("riesgo") == bing.risk,
+                str(accion.data.get("nombre")),
+            )
+            check(
+                "El historial de «Deshacer» sabe volver atrás una aplicación quitada",
+                undo.can_revert(apps.KIND_APLICACIONES),
+            )
+            respuestas.append((0, "ok", ""))
+            devuelto = undo.revert_action(store, accion)
+            check(
+                "Volver a instalar registra el paquete otra vez y marca el apunte",
+                devuelto[0]
+                and store.get(accion.id).reverted
+                and guiones[-1][1].get("PCTK_NOMBRE") == bing.name
+                and "Add-AppxPackage -Register" in guiones[-1][0],
+                devuelto[1],
+            )
+            # Cuando Windows no deja quitarla (o el nombre no es el esperado).
+            respuestas.append((1, "no: acceso denegado", ""))
+            ok, motivo = apps.remove_app(rara, store=store, journal=diario)
+            check(
+                "Si Windows no deja quitarla, se cuenta el motivo y se anota el error",
+                not ok and "acceso denegado" in motivo and anotados[-1][0] == "error"
+                and store.count() == 1,
+                motivo,
+            )
+            # Y si Windows no puede volver a registrarla, se avisa y no se da por deshecho.
+            sin_carpeta = undo.UndoStore(Path(tmp) / "deshacer2.jsonl")
+            accion_pelada = sin_carpeta.add(
+                kind=apps.KIND_APLICACIONES,
+                title="Noticias de Windows",
+                before="instalada",
+                after="quitada",
+                data={"nombre": "Microsoft.BingNews", "carpeta": r"C:\no\existe"},
+            )
+            respuestas.append((1, "no: la aplicación ya no está en este equipo", ""))
+            fallo = apps.restore(accion_pelada, sin_carpeta)
+            check(
+                "Si no se puede reinstalar se avisa, se manda a la tienda y no se da por deshecho",
+                not fallo[0]
+                and "tienda" in fallo[1]
+                and                not sin_carpeta.get(accion_pelada.id).reverted,
+                fallo[1][:90],
+            )
+    finally:
+        apps._run_script = original_run  # type: ignore[assignment]  # noqa: SLF001
+
+    # --- La ventana: lista, filtro y quitar ---------------------------
+    from PySide6.QtWidgets import QApplication, QLabel, QMessageBox
+
+    from pctoolkit.ui import workers
+    from pctoolkit.ui.debloat import DebloatDialog
+
+    app = QApplication.instance() or QApplication(sys.argv[:1])
+    listado = [
+        apps.AppEntry(
+            name="Microsoft.BingNews",
+            full_name="Microsoft.BingNews_4_x64__8wekyb3d8bbwe",
+            publisher="Microsoft Corporation",
+            version="4.55",
+            size_bytes=1024,
+            label="Noticias de Windows",
+        ),
+        apps.AppEntry(name="Microsoft.WindowsStore", publisher="Microsoft Corporation", size_bytes=4096),
+        apps.AppEntry(name="Editor.AppRara", full_name="Editor.AppRara_1_x64__abc", publisher="Un editor", size_bytes=2048),
+    ]
+    original_bg = workers.run_in_background
+    # El hilo se sustituye por una llamada directa: la lista llega en el acto y la prueba no
+    # depende de que el hilo termine a tiempo.
+    workers.run_in_background = lambda owner, fn, cb: cb(fn())  # type: ignore[assignment]
+    original_list = apps.list_apps
+    apps.list_apps = lambda *args, **kwargs: listado  # type: ignore[assignment]
+    # El guion sigue interceptado: la ventana tampoco puede llegar a quitar nada de verdad.
+    apps._run_script = falso_run  # type: ignore[assignment]  # noqa: SLF001
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            store_ventana = undo.UndoStore(Path(tmp) / "deshacer.jsonl")
+            dialogo = DebloatDialog(store_ventana)
+            dialogo.show()
+            _settle(app, 120)
+            fila_bing = dialogo._rows[0]  # noqa: SLF001
+            textos = " ".join(
+                etiqueta.text() for etiqueta in fila_bing.findChildren(QLabel)
+            )
+            check(
+                "La ventana lista las aplicaciones con su editor, su versión y su tamaño",
+                len(dialogo._rows) == 3  # noqa: SLF001
+                and fila_bing.entry.display_name == "Noticias de Windows"
+                and "Microsoft Corporation" in textos
+                and "4.55" in textos
+                and "KB" in textos,
+                textos[:110],
+            )
+            check(
+                "El resumen dice cuántas hay, cuántas conviene quitar y cuánto ocupan",
+                "3 aplicación" in dialogo.summary.text()
+                and "1 que conviene quitar" in dialogo.summary.text()
+                and "1 piezas del sistema" in dialogo.summary.text(),
+                dialogo.summary.text(),
+            )
+            check(
+                "Una pieza del sistema sale sin casilla: no hay forma de marcarla",
+                not dialogo._rows[1].check.isVisibleTo(dialogo._rows[1])  # noqa: SLF001
+                and dialogo._rows[1].entry.removable is False,  # noqa: SLF001
+                dialogo._rows[1].entry.name,  # noqa: SLF001
+            )
+            dialogo.only_recommended.setChecked(True)
+            _settle(app, 80)
+            visibles = [fila for fila in dialogo._rows if fila.isVisible()]  # noqa: SLF001
+            dialogo.only_recommended.setChecked(False)
+            dialogo.search.setText("bing")
+            _settle(app, 80)
+            filtradas = [fila for fila in dialogo._rows if fila.isVisible()]  # noqa: SLF001
+            dialogo.search.clear()
+            _settle(app, 80)
+            check(
+                "El filtro de la ventana deja a la vista solo las recomendadas o lo que se busca",
+                len(visibles) == 1 and len(filtradas) == 1,
+                f"{len(visibles)} recomendadas, {len(filtradas)} con «bing»",
+            )
+            dialogo.mark_recommended(True)
+            check(
+                "Marcar las recomendadas solo marca esa (y el botón se enciende)",
+                len(dialogo.selected()) == 1 and dialogo.remove_button.isEnabled(),  # noqa: SLF001
+                dialogo.remove_button.text(),  # noqa: SLF001
+            )
+            original_exec = QMessageBox.exec
+            QMessageBox.exec = lambda self: QMessageBox.Yes  # type: ignore[method-assign]
+            guiones.clear()
+            respuestas.append((0, "ok", ""))
+            try:
+                dialogo.remove_marked()
+                _settle(app, 150)
+            finally:
+                QMessageBox.exec = original_exec  # type: ignore[method-assign]
+            check(
+                "Confirmar en la ventana quita de verdad y queda para deshacer",
+                store_ventana.count() == 1
+                and guiones
+                and guiones[-1][1].get("PCTK_PAQUETE") == "Microsoft.BingNews_4_x64__8wekyb3d8bbwe"
+                and "quitada" in dialogo.result_label.text()
+                and dialogo.result_label.isVisibleTo(dialogo),
+                dialogo.result_label.text(),
+            )
+            dialogo.close()
+    finally:
+        workers.run_in_background = original_bg  # type: ignore[assignment]
+        apps.list_apps = original_list  # type: ignore[assignment]
+        apps._run_script = original_run  # type: ignore[assignment]  # noqa: SLF001
+
+
+def test_plugins() -> None:
+    """Plugins: validación estricta, confianza por huella y entrada en el catálogo.
+
+    Todo se hace en una carpeta propia (`PCTOOLKIT_RAIZ_PLUGINS`): ni se leen ni se escriben
+    los plugins del usuario, y los ajustes de prueba escriben en la raíz de registro de la
+    suite como el resto.
+    """
+    import winreg  # noqa: F401  (solo para saber que estamos en Windows)
+
+    from pctoolkit.core import plugins, undo, windows_settings as ajustes
+
+    sin_carpeta = os.environ.get(plugins.PLUGINS_DIR_ENV)
+    sin_raiz = os.environ.get(ajustes.TEST_ROOT_ENV)
+    raiz = r"Software\PCToolkit\PruebasPlugins"
+    with tempfile.TemporaryDirectory() as tmp:
+        carpeta = Path(tmp) / "plugins"
+        carpeta.mkdir()
+        os.environ[plugins.PLUGINS_DIR_ENV] = str(carpeta)
+        os.environ[ajustes.TEST_ROOT_ENV] = raiz
+        try:
+            # --- Validación estricta del esquema ---------------------------
+            malos = {
+                "sin-json.json": "esto no es JSON",
+                "sin-nombre.json": json.dumps({"ajustes": [{"id": "ajuste-x"}]}),
+                "riesgo-raro.json": json.dumps(
+                    {
+                        "id": "raro",
+                        "nombre": "Raro",
+                        "ajustes": [
+                            {
+                                "id": "ajuste-a",
+                                "nombre": "A",
+                                "categoria": "privacidad",
+                                "descripcion": "d",
+                                "riesgo": "altísimo",
+                                "claves": [{"path": "Software\\X", "nombre": "Y", "recomendado": 0}],
+                            }
+                        ],
+                    }
+                ),
+                "categoria-rara.json": json.dumps(
+                    {
+                        "id": "cat",
+                        "nombre": "Cat",
+                        "ajustes": [
+                            {
+                                "id": "ajuste-b",
+                                "nombre": "B",
+                                "categoria": "juegos",
+                                "descripcion": "d",
+                                "riesgo": "bajo",
+                                "claves": [{"path": "Software\\X", "nombre": "Y", "recomendado": 0}],
+                            }
+                        ],
+                    }
+                ),
+                "hkln-sin-admin.json": json.dumps(
+                    {
+                        "id": "eq",
+                        "nombre": "Equipo",
+                        "ajustes": [
+                            {
+                                "id": "ajuste-c",
+                                "nombre": "C",
+                                "categoria": "rendimiento",
+                                "descripcion": "d",
+                                "riesgo": "medio",
+                                "claves": [
+                                    {"hive": "HKLM", "path": "Software\\X", "nombre": "Y", "recomendado": 1}
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                "errata.json": json.dumps(
+                    {
+                        "id": "errata",
+                        "nombre": "Errata",
+                        "ajustes": [
+                            {
+                                "id": "ajuste-e",
+                                "nombre": "E",
+                                "categoria": "privacidad",
+                                "descripcion": "d",
+                                "rriesgo": "bajo",
+                                "claves": [{"path": "Software\\X", "nombre": "Y", "recomendado": 0}],
+                            }
+                        ],
+                    }
+                ),
+                "tipo-raro.json": json.dumps(
+                    {
+                        "id": "tipo",
+                        "nombre": "Tipo",
+                        "ajustes": [
+                            {
+                                "id": "ajuste-f",
+                                "nombre": "F",
+                                "categoria": "privacidad",
+                                "descripcion": "d",
+                                "riesgo": "bajo",
+                                "claves": [{"path": "Software\\X", "nombre": "Y", "tipo": "binario", "recomendado": 0}],
+                            }
+                        ],
+                    }
+                ),
+                "texto-donde-numero.json": json.dumps(
+                    {
+                        "id": "tipo2",
+                        "nombre": "Tipo2",
+                        "ajustes": [
+                            {
+                                "id": "ajuste-g",
+                                "nombre": "G",
+                                "categoria": "privacidad",
+                                "descripcion": "d",
+                                "riesgo": "bajo",
+                                "claves": [{"path": "Software\\X", "nombre": "Y", "recomendado": "sí"}],
+                            }
+                        ],
+                    }
+                ),
+                "sin-claves.json": json.dumps(
+                    {
+                        "id": "vacio",
+                        "nombre": "Vacío",
+                        "ajustes": [
+                            {"id": "ajuste-h", "nombre": "H", "categoria": "privacidad", "descripcion": "d", "riesgo": "bajo", "claves": []}
+                        ],
+                    }
+                ),
+                # Un archivo enorme: no se lee ni se analiza, y se dice por qué.
+                "demasiado-grande.json": json.dumps(
+                    {
+                        "id": "grande",
+                        "nombre": "Grande",
+                        "ajustes": [
+                            {
+                                "id": "ajuste-z",
+                                "nombre": "Z",
+                                "categoria": "privacidad",
+                                "descripcion": "d" * 300_000,
+                                "riesgo": "bajo",
+                                "claves": [{"path": "Software\\X", "nombre": "Y", "recomendado": 0}],
+                            }
+                        ],
+                    }
+                ),
+            }
+            for nombre, contenido in malos.items():
+                (carpeta / nombre).write_text(contenido, encoding="utf-8")
+            rechazo = plugins.load()
+            check(
+                "Un plugin con el esquema mal escrito se rechaza entero, con su motivo",
+                not rechazo.plugins and len(rechazo.errors) == len(malos),
+                f"rechazados: {len(rechazo.errors)} de {len(malos)}",
+            )
+            motivos = {nombre: motivo for nombre, motivo in rechazo.errors}
+            check(
+                "El motivo apunta a la errata concreta (no un «error al cargar» genérico)",
+                "riesgo" in motivos["riesgo-raro.json"]
+                and "categoria" in motivos["categoria-rara.json"]
+                and "juegos" not in motivos["categoria-rara.json"]
+                and "HKEY_LOCAL_MACHINE" in motivos["hkln-sin-admin.json"]
+                and "rriesgo" in motivos["errata.json"]
+                and "tipo" in motivos["tipo-raro.json"]
+                and "número" in motivos["texto-donde-numero.json"]
+                and "KB" in motivos["demasiado-grande.json"],
+                motivos["errata.json"][:80],
+            )
+            check(
+                "Nada de un plugin rechazado llega al catálogo",
+                not any(setting.from_plugin for setting in ajustes.catalog()),
+            )
+            for nombre in malos:
+                (carpeta / nombre).unlink()
+
+            # --- Un plugin bueno: carga, bloqueo y aceptación ----------------
+            (carpeta / "ejemplo.json").write_text(plugins.example_text(), encoding="utf-8")
+            cargado = plugins.load_into_catalog()
+            info = cargado.plugins[0]
+            ajuste = next(setting for setting in ajustes.catalog() if setting.from_plugin)
+            check(
+                "Un plugin válido entra en el catálogo con su identificador propio",
+                cargado.ok and info.count == 1 and ajuste.id.startswith("plugin.ejemplo.")
+                and ajustes.BY_ID[ajuste.id] is ajuste,
+                f"{ajuste.id} ({ajuste.name})",
+            )
+            check(
+                "Cada ajuste del plugin sale con su riesgo, su categoría y su ayuda",
+                ajuste.risk in ajustes.RISK_ORDER
+                and ajuste.category in ajustes.CATEGORIES
+                and "plugin" in ajuste.help_text()
+                and ajuste.registry_lines,
+                ajuste.registry_lines[0],
+            )
+            permitido, motivo = ajustes.can_apply(ajuste)
+            estado = ajustes.analyse_one(ajuste)
+            check(
+                "Un plugin sin confirmar no se puede aplicar ni sale como recomendado",
+                not permitido
+                and "no has revisado" in motivo
+                and estado.status == ajustes.STATUS_UNAVAILABLE,
+                motivo[:70],
+            )
+            aplicado, mensaje = ajustes.apply_setting(ajuste)
+            check(
+                "Ni con el botón de aplicar: la comprobación para el cambio antes de escribir",
+                not aplicado and "revisado" in mensaje,
+                mensaje[:70],
+            )
+            plugins.accept(info)
+            check(
+                "Al aceptar el plugin, su ajuste pasa a poder aplicarse",
+                ajustes.can_apply(ajuste)[0] and plugins.load().plugins[0].trusted,
+            )
+            # --- Y se aplica de verdad, con la misma vuelta atrás ------------
+            with tempfile.TemporaryDirectory() as tmp2:
+                store = undo.UndoStore(Path(tmp2) / "deshacer.jsonl")
+                ok, detalle = ajustes.apply_setting(ajuste, store=store)
+                accion = store.recent(1)[0] if store.count() else None
+                devuelto = undo.revert_action(store, accion) if accion else (False, "sin apunte")
+                check(
+                    "Un ajuste de plugin se aplica y se deshace como los del catálogo",
+                    ok and accion is not None and devuelto[0],
+                    detalle,
+                )
+            # --- Si el archivo cambia, la confianza se cae -------------------
+            cambiado = plugins.example_text().replace("Mis ajustes", "Mis ajustes (retocados)")
+            (carpeta / "ejemplo.json").write_text(cambiado, encoding="utf-8")
+            plugins.reload_into_catalog()
+            ajuste_nuevo = next(setting for setting in ajustes.catalog() if setting.from_plugin)
+            check(
+                "Si el archivo cambia después de aceptarlo, vuelve a pedir revisión",
+                not ajustes.can_apply(ajuste_nuevo)[0]
+                and not plugins.load().plugins[0].trusted,
+                ajustes.can_apply(ajuste_nuevo)[1][:70],
+            )
+            plugins.revoke("ejemplo")
+            plugins.reload_into_catalog()
+            ajuste_revocado = next(s for s in ajustes.catalog() if s.from_plugin)
+            check(
+                "Retirar la confianza vuelve a bloquear sus ajustes",
+                not ajustes.can_apply(ajuste_revocado)[0],
+                ajustes.can_apply(ajuste_revocado)[1][:60],
+            )
+
+            # --- Repeticiones y recarga --------------------------------------
+            # El caso real es una copia del mismo plugin: mismo identificador, mismo ajuste.
+            copia = plugins.example_text().replace('"nombre": "Mis ajustes"', '"nombre": "Copia"')
+            (carpeta / "copia.json").write_text(copia, encoding="utf-8")
+            con_repetido = plugins.reload_into_catalog()
+            check(
+                "Una copia del mismo plugin no duplica sus ajustes: se rechaza la segunda",
+                len(con_repetido.plugins) == 1
+                and len(con_repetido.errors) == 1
+                and "ya está cargado" in con_repetido.errors[0][1]
+                and len([s for s in ajustes.catalog() if s.from_plugin]) == 1,
+                con_repetido.errors[0][1][:80],
+            )
+            (carpeta / "copia.json").unlink()
+            plugins.reload_into_catalog()
+            check(
+                "Volver a leer la carpeta no duplica los ajustes del catálogo",
+                len([s for s in ajustes.catalog() if s.from_plugin]) == 1,
+                str(len([s for s in ajustes.catalog() if s.from_plugin])),
+            )
+            ajustes.forget_plugin_settings()
+            check(
+                "Al olvidar los plugins, sus ajustes salen del catálogo y de la lista por identificador",
+                not any(setting.from_plugin for setting in ajustes.catalog())
+                and not any(clave.startswith("plugin.") for clave in ajustes.BY_ID),
+            )
+
+            # --- La ventana de plugins -------------------------------------
+            from PySide6.QtWidgets import QApplication, QLabel as QLabelVentana
+
+            from pctoolkit.ui.plugins_ui import PluginsDialog
+
+            def textos_de(widget) -> str:
+                return " ".join(etiqueta.text() for etiqueta in widget.findChildren(QLabelVentana))
+
+            app = QApplication.instance() or QApplication(sys.argv[:1])
+            plugins.load_into_catalog()
+            dialogo = PluginsDialog(plugins.loaded())
+            dialogo.show()
+            _settle(app, 120)
+            tarjeta = dialogo.rows_layout.itemAt(0).widget()
+            detalle_tarjeta = textos_de(tarjeta) if tarjeta is not None else ""
+            check(
+                "La ventana de plugins enseña el plugin, su estado y las claves que toca",
+                tarjeta is not None
+                and tarjeta.estado.text() == "Sin confirmar"
+                and "Mis ajustes" in detalle_tarjeta
+                and "Quitar los anuncios del menú Inicio" in detalle_tarjeta
+                and "SubscribedContent-338388Enabled" in detalle_tarjeta,
+                detalle_tarjeta[:110],
+            )
+            dialogo._accept(dialogo.load_result.plugins[0])  # noqa: SLF001
+            _settle(app, 80)
+            nueva = dialogo.rows_layout.itemAt(0).widget()
+            suelto = next(s for s in ajustes.catalog() if s.from_plugin)
+            check(
+                "Aceptar desde la ventana deja el plugin aceptado y su ajuste aplicable",
+                plugins.loaded().plugins[0].trusted
+                and nueva is not None
+                and nueva.estado.text() == "Aceptado"
+                and ajustes.can_apply(suelto)[0],
+                plugins.summary_text().splitlines()[2],
+            )
+            dialogo._revoke(dialogo.load_result.plugins[0])  # noqa: SLF001
+            _settle(app, 80)
+            check(
+                "Retirar desde la ventana vuelve a bloquear sus ajustes",
+                not plugins.loaded().plugins[0].trusted and not ajustes.can_apply(suelto)[0],
+                plugins.summary_text().splitlines()[2],
+            )
+            (carpeta / "roto.json").write_text("{", encoding="utf-8")
+            con_error = plugins.load()
+            dialogo = PluginsDialog(con_error)
+            _settle(app, 80)
+            aviso_error = textos_de(dialogo.rows_layout.itemAt(1).widget())
+            (carpeta / "roto.json").unlink()
+            dialogo.close()
+            check(
+                "Un plugin con errores se enseña aparte con su motivo, sin cargarse",
+                not con_error.ok
+                and "no es JSON válido" in aviso_error
+                and "con errores" in con_error.summary(),
+                aviso_error[:110],
+            )
+
+            # --- La plantilla de ejemplo, escrita de verdad -------------------
+            plantilla = plugins.write_example(carpeta / "plantilla.json")
+            primera = plantilla.read_text(encoding="utf-8") if plantilla else ""
+            segunda = plugins.write_example(carpeta / "plantilla.json")
+            check(
+                "El plugin de ejemplo se escribe una vez y no se pisa si ya está",
+                plantilla is not None
+                and "{" in primera
+                and segunda is not None
+                and segunda.read_text(encoding="utf-8") == primera,
+                plantilla.name if plantilla else "sin plantilla",
+            )
+            (carpeta / "plantilla.json").unlink()
+        finally:
+            ajustes.forget_plugin_settings()
+            if sin_carpeta is None:
+                os.environ.pop(plugins.PLUGINS_DIR_ENV, None)
+            else:
+                os.environ[plugins.PLUGINS_DIR_ENV] = sin_carpeta
+            if sin_raiz is None:
+                os.environ.pop(ajustes.TEST_ROOT_ENV, None)
+            else:
+                os.environ[ajustes.TEST_ROOT_ENV] = sin_raiz
+            _borrar_arbol_de_registro(raiz)
+
+
+def winreg_key_exists(ruta: str) -> bool:
+    """¿Existe esa clave en HKCU? (solo para las pruebas)"""
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, ruta, 0, winreg.KEY_READ):
+            return True
+    except OSError:
+        return False
+
+
 def test_maintenance() -> None:
     """Mantenimiento desatendido: simulación, registro y tolerancia a fallos."""
     schedule = MaintenanceSchedule(enabled=True, clean_temp=True, export_report=True, release_memory=False)
@@ -2605,7 +3654,7 @@ def test_interface() -> None:
     guarda.stop_listening()
     guarda.release()
     check("El bloqueo se suelta al terminar", not guarda.held, "bloqueo liberado")
-    check("Ocho páginas cargadas", window.stack.count() == 8, str(window.stack.count()))
+    check("Nueve páginas cargadas", window.stack.count() == 9, str(window.stack.count()))
     # Arrancar no debe lanzar trabajo en segundo plano (una consulta del
     # Programador de tareas son varios segundos de PowerShell): el estado real se
     # lee al abrir esa página. La única que puede estar en marcha es la de la tarjeta
@@ -2628,7 +3677,7 @@ def test_interface() -> None:
         not window.schedule_page.status_loaded and window.schedule_page.state_badge.text() == "Sin consultar",
         window.schedule_page.state_badge.text(),
     )
-    for key in ("home", "memory", "startup", "disk", "tools", "tasks", "reports", "schedule"):
+    for key in ("home", "memory", "startup", "windows", "disk", "tools", "tasks", "reports", "schedule"):
         window.navigate(key)
         check(f"Navegación a {key}", window.stack.currentWidget() is window._pages[key])  # noqa: SLF001
     check(
@@ -3273,7 +4322,7 @@ def test_interface() -> None:
     for size in ((1360, 860), (1180, 740)):
         window.resize(*size)
         _settle(app, 250)
-        for key in ("home", "memory", "disk", "tools", "tasks", "reports", "schedule"):
+        for key in ("home", "memory", "startup", "windows", "disk", "tools", "tasks", "reports", "schedule"):
             window.navigate(key)
             _settle(app, 250)
             page = window._pages[key]  # noqa: SLF001
@@ -3503,8 +4552,19 @@ def test_interface() -> None:
     tarjeta.close()
 
     # Atajos de teclado: cada sección, en el orden de la barra lateral.
-    check("Nueve atajos de sección registrados", len(window.nav_shortcuts) == 9, str(len(window.nav_shortcuts)))
-    secciones = ("home", "memory", "startup", "disk", "tools", "tasks", "reports", "schedule")
+    # Nueve secciones con su atajo (Ctrl+1…Ctrl+9) y los ajustes en Ctrl+0.
+    check("Diez atajos de sección registrados", len(window.nav_shortcuts) == 10, str(len(window.nav_shortcuts)))
+    secciones = (
+        "home",
+        "memory",
+        "startup",
+        "windows",
+        "disk",
+        "tools",
+        "tasks",
+        "reports",
+        "schedule",
+    )
     fallos_atajo: list[str] = []
     for indice, clave in enumerate(secciones, start=1):
         # Los atajos de ventana solo responden si la ventana es la activa: las
@@ -3522,7 +4582,7 @@ def test_interface() -> None:
                 break
         else:
             fallos_atajo.append(f"Ctrl+{indice} no abrió {clave} (ventana activa: {activa})")
-    check("Los atajos Ctrl+1…Ctrl+8 cambian de sección", not fallos_atajo, "; ".join(fallos_atajo))
+    check("Los atajos Ctrl+1…Ctrl+9 cambian de sección", not fallos_atajo, "; ".join(fallos_atajo))
 
     # --- Anuncios para lectores de pantalla --------------------------------
     from pctoolkit.ui import accessibility
@@ -3911,6 +4971,7 @@ def test_interface() -> None:
     from pctoolkit.ui.alert_settings import AlertSettingsDialog
     from pctoolkit.ui.chart import HistoryChart
     from pctoolkit.ui.tools_page import ToolTile
+    from pctoolkit.ui.windows_settings_page import SettingRow as FilaDeAjuste
     from pctoolkit.ui.widgets import (
         ActionCard as TarjetaPulsable,
         ArcGauge as Indicador,
@@ -3941,6 +5002,9 @@ def test_interface() -> None:
         (ToolTile, QAccessible.Role.Button),
         (TarjetaPulsable, QAccessible.Role.Button),
         (FilaDisco, QAccessible.Role.Button),
+        # Cada fila del catálogo de ajustes de Windows es un elemento de la lista (lleva
+        # dentro la casilla, el estado y el riesgo), aunque por dentro sea una tarjeta.
+        (FilaDeAjuste, QAccessible.Role.ListItem),
         (Tarjeta, QAccessible.Role.Grouping),
         (TituloSeccion, QAccessible.Role.Heading),
         (Indicador, QAccessible.Role.Chart),
@@ -4237,7 +5301,7 @@ def test_interface() -> None:
 
     shots = Path(_TEMP_HOME) / "capturas_prueba"
     shots.mkdir(parents=True, exist_ok=True)
-    for key in ("home", "memory", "startup", "disk", "tools", "tasks", "reports", "schedule"):
+    for key in ("home", "memory", "startup", "windows", "disk", "tools", "tasks", "reports", "schedule"):
         window.navigate(key)
         app.processEvents()
         saved = window.grab().save(str(shots / f"{key}.png"))
@@ -5121,7 +6185,10 @@ def revisar_guiones_de_la_aplicacion() -> None:
         # el guion tal cual; quien comprueba de verdad es el analizador de PowerShell.
         try:
             legible = guion.format_map(collections.defaultdict(str))
-        except (KeyError, IndexError, ValueError, TypeError):
+        # (`AttributeError`): un bloque `if($paquete){ … $paquete.InstallLocation … }` se lee
+        # como el atributo «InstallLocation» del hueco. En todos los casos vale el guion tal
+        # cual; quien comprueba de verdad es el analizador de PowerShell.
+        except (KeyError, IndexError, ValueError, TypeError, AttributeError):
             legible = guion
         (carpeta / f"guion{numero}.ps1").write_text(legible, encoding="utf-8-sig")
         # El nombre se guarda al lado para poder decir cuál falla.
@@ -5403,6 +6470,50 @@ def test_config() -> None:
         "version_info.txt",
     )
 
+    # La compilación no puede llevarse por delante lo que necesita `ssl`. La 1.3.1 se
+    # publicó sin estas bibliotecas (se creían de Qt, porque QtNetwork se quita entero, y
+    # son de Python) y el comprobador de actualizaciones fallaba en todos los equipos con
+    # «no se pudo conectar con GitHub» mientras que desde el código fuente funcionaba: la
+    # máquina de desarrollo sí las tiene. Esta comprobación existe para que no vuelva.
+    podadas = [
+        nombre
+        for nombre in build_exe.PRUNE_FILES
+        if "libssl" in nombre.lower() or "libcrypto" in nombre.lower()
+    ]
+    check(
+        "La compilación no deja fuera las bibliotecas de `ssl` (https)",
+        not podadas
+        and "_ssl.pyd" in build_exe.NEEDED_FOR_HTTPS
+        and "libssl-3*.dll" in build_exe.NEEDED_FOR_HTTPS
+        and "libcrypto-3*.dll" in build_exe.NEEDED_FOR_HTTPS,
+        f"podadas: {podadas or 'ninguna'}",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        # Paquete en carpeta vacío: se echan en falta las tres piezas.
+        carpeta = Path(tmp) / build_exe.APP_NAME
+        (carpeta / "_internal").mkdir(parents=True)
+        sin_nada = build_exe.missing_https_files(carpeta / build_exe.APP_EXE)
+        # Con los nombres que usa el Python de python.org y con los que usan otras
+        # distribuciones: los dos valen, así que ninguno puede dar el paquete por roto.
+        for sufijo in ("", "-x64"):
+            (carpeta / "_internal" / "_ssl.pyd").write_bytes(b"")
+            (carpeta / "_internal" / f"libssl-3{sufijo}.dll").write_bytes(b"")
+            (carpeta / "_internal" / f"libcrypto-3{sufijo}.dll").write_bytes(b"")
+            completo = build_exe.missing_https_files(carpeta / build_exe.APP_EXE)
+            check(
+                f"El paquete con `libssl-3{sufijo}.dll` se da por bueno",
+                not completo,
+                f"faltarían: {completo or 'nada'}",
+            )
+        # El ejecutable único guarda todo dentro: ahí lo pregunta el propio programa
+        # (`--comprobar-https`), así que no se puede mirar desde fuera y no se acusa en falso.
+        check(
+            "Con el ejecutable único no se comprueba desde fuera (lo pregunta el .exe)",
+            build_exe.missing_https_files(Path(tmp) / build_exe.APP_EXE) == []
+            and len(sin_nada) == len(build_exe.NEEDED_FOR_HTTPS),
+            f"sin nada faltaban: {len(sin_nada)}",
+        )
+
 
 def _normalizar_distribucion(nombre: str) -> str:
     """Nombre de paquete comparable: `PyInstaller` y `pyinstaller` son el mismo."""
@@ -5618,6 +6729,9 @@ def main(argv: list[str] | None = None) -> int:
     test_memory()
     test_scheduler()
     test_startup()
+    test_ajustes_windows()
+    test_aplicaciones()
+    test_plugins()
     test_maintenance()
     test_installer()
     test_firma()
@@ -5631,7 +6745,34 @@ def main(argv: list[str] | None = None) -> int:
         # esta misma pasada, así que necesita que ya estén todas hechas.
         verificar_documentacion()
 
+    cerrar_ventanas_de_la_prueba()
     return report()
+
+
+def cerrar_ventanas_de_la_prueba() -> None:
+    """Cierra las ventanas que quedan abiertas antes de terminar la pasada.
+
+    Las pruebas crean ventanas y diálogos (algunos sin padre, a propósito, para probarlos
+    sueltos). Si se dejan ahí, Qt las destruye al final del intérprete —cuando la aplicación
+    ya no existe— y en algunos equipos eso termina con un error del sistema *después* de
+    haber dado el resultado: la suite imprimía «851/851» y el proceso se iba con un código
+    de salida distinto de cero. Cerrarlas y vaciar los borrados diferidos mientras todo está
+    vivo deja el final limpio, igual que `workers.shutdown_background` hace con los hilos.
+    """
+    from pctoolkit.ui import workers
+
+    app = QApplication.instance()
+    if app is None:
+        return
+    for ventana in app.topLevelWidgets():
+        ventana.close()
+        ventana.deleteLater()
+    # Los borrados diferidos (`deleteLater`) se atienden en el bucle de eventos: hay que
+    # dejarlo correr para que los widgets se destruyan ahora y no al cerrar el intérprete.
+    workers.shutdown_background(2000)
+    for _ in range(3):
+        workers.pump_events(60)
+    app.processEvents()
 
 
 if __name__ == "__main__":

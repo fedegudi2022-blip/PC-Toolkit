@@ -48,6 +48,7 @@ from .schedule_page import MaintenanceSchedulePage
 from .startup_page import StartupPage
 from .tasks_page import TasksPage
 from .tools_page import ToolsPage
+from .windows_settings_page import WindowsSettingsPage
 from .theme import apply_theme
 from .tray import TrayController, tray_available
 from .widgets import BrandLogo
@@ -167,11 +168,16 @@ class MainWindow(QMainWindow):
         self.tools_page = ToolsPage(self._launch_tool, self._log_tool)
         self.tasks_page = TasksPage(self.task_store)
         self.reports_page = ReportsPage(self.metrics, self.task_store, self.disk_page)
+        # Los ajustes recomendados de Windows: catálogo propio, con análisis previo y
+        # vuelta atrás anotada en el historial de deshacer (el mismo que usa el resto
+        # de la aplicación).
+        self.windows_page = WindowsSettingsPage(self.undo_store)
 
         for key, page in (
             ("home", self.dashboard),
             ("memory", self.optimize_page),
             ("startup", self.startup_page),
+            ("windows", self.windows_page),
             ("disk", self.disk_page),
             ("tools", self.tools_page),
             ("tasks", self.tasks_page),
@@ -231,6 +237,7 @@ class MainWindow(QMainWindow):
             ("home", "Inicio", "home"),
             ("memory", "Optimizar memoria", "memory"),
             ("startup", "Programas de inicio", "power"),
+            ("windows", "Ajustes de Windows", "gear"),
             ("disk", "Analizar disco", "analyze"),
             ("tools", "Herramientas", "tool"),
             ("tasks", "Tareas", "list"),
@@ -266,11 +273,13 @@ class MainWindow(QMainWindow):
         self.alert_button.setToolTip(
             "Umbrales de CPU, memoria y disco, bandeja del sistema, modo eco, historial y"
             " actualizaciones."
-            "  ·  Ctrl+9"
+            "  ·  Ctrl+0"
         )
         self.alert_button.clicked.connect(self.open_alert_settings)
         layout.addWidget(self.alert_button)
-        settings_shortcut = QShortcut(QKeySequence("Ctrl+9"), self)
+        # Los ajustes van en Ctrl+0 (no en Ctrl+9) porque con «Ajustes de Windows» las
+        # secciones son ya nueve: el cero queda al lado y no le quita el número a ninguna.
+        settings_shortcut = QShortcut(QKeySequence("Ctrl+0"), self)
         settings_shortcut.activated.connect(self.open_alert_settings)
         self._shortcuts.append(settings_shortcut)
 
@@ -305,6 +314,7 @@ class MainWindow(QMainWindow):
         self.dashboard.status.connect(self.set_status)
         self.optimize_page.status.connect(self.set_status)
         self.startup_page.status.connect(self.set_status)
+        self.windows_page.status.connect(self.set_status)
         # Reiniciar con permisos deja la copia elevada esperando: esta tiene que cerrarse
         # para soltar el bloqueo de instancia única y que solo quede una ventana abierta.
         self.optimize_page.restart_requested.connect(self._restart_as_admin)
@@ -319,7 +329,7 @@ class MainWindow(QMainWindow):
 
     @property
     def nav_shortcuts(self) -> list[QShortcut]:
-        """Atajos de teclado de las páginas (Ctrl+1…Ctrl+8) y de los ajustes (Ctrl+9)."""
+        """Atajos de teclado de las páginas (Ctrl+1…Ctrl+9) y de los ajustes (Ctrl+0)."""
         return list(self._shortcuts)
 
     def _save_auto_log(self, checked: bool) -> None:
@@ -559,6 +569,10 @@ class MainWindow(QMainWindow):
             # El estado real de la tarea se consulta la primera vez que se abre
             # la página (así el arranque no lanza PowerShell sin necesidad).
             self.schedule_page.ensure_status()
+        if key == "windows" and not self.windows_page.analysed:
+            # El primer vistazo a los ajustes se analiza solo: leer el registro es
+            # inmediato y así la página nunca aparece «sin analizar».
+            self.windows_page.analyse()
         self._apply_power_profile(refresh=True)
 
     # --- Consumo ----------------------------------------------------------

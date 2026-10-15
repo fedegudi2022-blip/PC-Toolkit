@@ -8,6 +8,9 @@ Uso:
                                       sin tocar las preferencias guardadas.
     python app.py --mantenimiento     Mantenimiento desatendido (sin ventana);
                                       es lo que ejecuta la tarea programada.
+    python app.py --comprobar-https   Comprueba que esta copia puede usar https (sin red).
+    python app.py --comprobar-actualizaciones
+                                      Cuenta si hay una versión nueva y sale.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import urllib.request
 from pathlib import Path
 
 # Permite importar el paquete cuando se ejecuta desde otra carpeta.
@@ -88,6 +92,7 @@ def _capture_screens(window, output: Path, analyze_path: str | None = None) -> i
         ("home", "Inicio"),
         ("memory", "Optimizar memoria"),
         ("startup", "Programas de inicio"),
+        ("windows", "Ajustes de Windows"),
         ("disk", "Analizador de disco"),
         ("tools", "Herramientas de Windows"),
         ("tasks", "Registro de tareas"),
@@ -177,6 +182,52 @@ def _run_maintenance(args) -> int:
     return 0 if report.ok else 1
 
 
+def _run_https_check() -> int:
+    """Comprueba que esta copia puede usar `https` (lo que necesita la actualización).
+
+    Sin salir a la red: mira si el módulo `ssl` carga y si `urllib` tiene el manejador de
+    https. Es lo que falta cuando el ejecutable compilado se queda sin las DLL de OpenSSL al
+    adelgazarlo —desde el código fuente siempre funciona—, y por eso lo pregunta la
+    comprobación final de `build_exe.py`: para que un paquete sin TLS no se publique.
+    """
+    try:
+        import ssl
+
+        version = ssl.OPENSSL_VERSION
+    except Exception as exc:  # noqa: BLE001 - cualquier fallo de importación es el fallo
+        print(f"Sin soporte seguro (https): no se pudo cargar ssl ({exc})")
+        return 1
+    # La prueba de verdad es si el abridor tiene con qué atender una dirección `https`:
+    # `urllib` solo registra ese manejador si `ssl` se pudo cargar.
+    abridor = urllib.request.build_opener()
+    tiene_https = bool(abridor.handle_open.get("https"))
+    print(f"ssl: {version}")
+    print(f"manejador https: {'sí' if tiene_https else 'no'}")
+    if not tiene_https:
+        print("Esta copia no puede usar direcciones seguras: la actualización no funcionará.")
+        return 1
+    return 0
+
+
+def _run_update_check() -> int:
+    """Consulta si hay versión nueva desde la consola (útil para pedir ayuda)."""
+    from pctoolkit.core import actualizador
+
+    print(f"{APP_NAME} {APP_VERSION} · {actualizador.API_LATEST}")
+    try:
+        release = actualizador.fetch_latest()
+    except actualizador.UpdateError as exc:
+        print(f"No se pudo comprobar: {exc}")
+        return 1
+    if release is None:
+        print("Estás al día: no hay ninguna versión más nueva publicada.")
+        return 0
+    print(f"Hay una versión nueva: {release.version} ({release.published_at or 'sin fecha'})")
+    print(f"Instalador: {release.asset.name}")
+    print(f"SHA-256: {'publicado' if release.sha256 else 'NO publicado (no se podrá verificar)'}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     # El registro se prepara antes que nada: así queda anotado lo que falle incluso en el
     # modo desatendido, que no tiene interfaz donde contarlo.
@@ -234,9 +285,23 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Muestra lo que haría el mantenimiento sin cambiar nada",
     )
+    parser.add_argument(
+        "--comprobar-https",
+        action="store_true",
+        help="Comprueba (sin salir a la red) que esta copia puede usar direcciones seguras y sale",
+    )
+    parser.add_argument(
+        "--comprobar-actualizaciones",
+        action="store_true",
+        help="Consulta si hay una versión nueva, lo cuenta y sale",
+    )
     parser.add_argument("--version", action="version", version=f"{APP_NAME} {APP_VERSION}")
     args = parser.parse_args(argv)
 
+    if args.comprobar_https:
+        return _run_https_check()
+    if args.comprobar_actualizaciones:
+        return _run_update_check()
     if args.mantenimiento:
         return _run_maintenance(args)
 

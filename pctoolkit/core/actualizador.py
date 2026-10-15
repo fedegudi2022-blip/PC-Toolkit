@@ -37,6 +37,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -348,7 +349,23 @@ def _request(url: str, timeout: float = TIMEOUT) -> urllib.request.Request:
 
 
 def _explain(exc: BaseException, url: str) -> UpdateError:
-    """Convierte un fallo de red en un mensaje que se pueda leer."""
+    """Convierte un fallo de red en un mensaje que se pueda leer.
+
+    Todo lo que falla queda anotado en el registro con la dirección que se consultaba: el
+    mensaje de la ventana dice lo que puede entender quien lo lee, pero cuando alguien pide
+    ayuda hace falta saber si fue el DNS, un certificado, un 403 o un tiempo agotado.
+    """
+    logs.warning(f"Fallo consultando {url}", exc, name="actualizador")
+    # Sin soporte https no es la conexión de quien lo usa: es esta copia del programa. Se
+    # mira antes que nada porque el síntoma puede llegar como `URLError`, como `ValueError`
+    # («unknown url type») o como un fallo al cargar la DLL de OpenSSL.
+    texto = f"{exc} {getattr(exc, 'reason', '')}".lower()
+    if "unknown url type" in texto or "no module named 'ssl'" in texto or "dll load failed" in texto:
+        return UpdateError(
+            "Esta copia del programa no puede usar direcciones seguras (https), así que no "
+            "puede comprobar actualizaciones. Es un fallo del paquete, no de tu conexión: "
+            "vuelve a descargarlo desde la página del proyecto."
+        )
     if isinstance(exc, urllib.error.HTTPError):
         if exc.code in (403, 429):
             return UpdateError(
@@ -364,9 +381,32 @@ def _explain(exc: BaseException, url: str) -> UpdateError:
         return UpdateError("La respuesta de GitHub no se pudo leer (no es el formato esperado).")
     if isinstance(exc, (urllib.error.URLError, TimeoutError, OSError)):
         # Un `URLError` envuelve los fallos de socket (sin red, DNS, tiempo agotado) y
-        # también el corte a mitad de una descarga.
+        # también el corte a mitad de una descarga. El motivo de verdad viene en `reason`, y
+        # conviene decirlo: «revisa la conexión» no sirve de nada a quien **sí** tiene
+        # conexión y lo que falla es el DNS de su red, un cortafuegos o el certificado de un
+        # antivirus que revisa el tráfico.
+        motivo = getattr(exc, "reason", None)
+        if isinstance(motivo, socket.gaierror) or "getaddrinfo" in texto:
+            return UpdateError(
+                "No se pudo encontrar la dirección de GitHub (el nombre no se resuelve): "
+                "suele ser el DNS del equipo o de la red, o que no hay internet."
+            )
+        if (
+            isinstance(motivo, (TimeoutError, socket.timeout))
+            or isinstance(exc, TimeoutError)
+            or "timed out" in texto
+        ):
+            return UpdateError(
+                "GitHub no respondió a tiempo. Si tu conexión va bien, puede ser un "
+                "cortafuegos o un antivirus que está cortando la conexión."
+            )
+        if "certificate" in texto or "handshake" in texto or "wrong version number" in texto:
+            return UpdateError(
+                "La conexión con GitHub no se pudo cifrar (certificado o TLS). Suele pasar "
+                "cuando un antivirus o un proxy revisa el tráfico: prueba a desactivarlo un "
+                "momento o darte de alta en su lista de excepciones."
+            )
         return UpdateError("No se pudo conectar con GitHub: revisa la conexión a internet.")
-    logs.warning(f"Fallo consultando {url}", exc, name="actualizador")
     return UpdateError(f"No se pudo comprobar si hay una versión nueva: {exc}")
 
 

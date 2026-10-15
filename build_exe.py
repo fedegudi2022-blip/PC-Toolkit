@@ -93,6 +93,13 @@ EXCLUDES = (
 
 # Archivos y carpetas que la aplicación (solo QtWidgets + psutil) no usa.
 # Se eliminan tras el empaquetado y la verificación final confirma que todo sigue bien.
+#
+# Aquí **no** se tocan `libssl-3*.dll` ni `libcrypto-3*.dll`: parecen de Qt (QtNetwork se
+# quita entero, y con él su TLS), pero son de Python. `ssl` las carga de verdad y sin ellas
+# `urllib` se queda sin `https`: el comprobador de actualizaciones fallaba siempre con «no
+# se pudo conectar con GitHub» y desde el código fuente funcionaba (el entorno de desarrollo
+# sí tiene las DLL), así que no lo veía ninguna prueba. Cuestan ~7 MB y son la diferencia
+# entre poder descargar una versión nueva o no.
 PRUNE_FILES = (
     "opengl32sw.dll",
     "Qt6Quick.dll",
@@ -105,15 +112,23 @@ PRUNE_FILES = (
     "Qt6VirtualKeyboard.dll",
     "QtNetwork.pyd",
     "Qt6Network.dll",
-    "libcrypto-3.dll",
-    "libcrypto-3-x64.dll",
-    "libssl-3.dll",
-    "libssl-3-x64.dll",
     "QtPdf.pyd",
     "QtQml.pyd",
     "QtQuick.pyd",
     "QtOpenGL.pyd",
     "QtSvg.pyd",
+)
+
+# Lo que **tiene** que sobrevivir en el ejecutable compilado. `verify` lo comprueba dos
+# veces: mirando el paquete en disco y preguntándole al propio .exe (`--comprobar-https`).
+#
+# Se aceptan los dos nombres de cada biblioteca porque no los reparte igual todo el mundo:
+# el Python de python.org usa `libssl-3.dll` y el que viene con algunas distribuciones usa
+# `libssl-3-x64.dll`. Con el patrón valen los dos.
+NEEDED_FOR_HTTPS = (
+    "_ssl.pyd",
+    "libssl-3*.dll",
+    "libcrypto-3*.dll",
 )
 PRUNE_DIRS = (
     "PySide6/plugins/qmltooling",
@@ -276,9 +291,36 @@ def folder_size(path: Path) -> tuple[int, int]:
     return total, count
 
 
+def missing_https_files(exe: Path) -> list[str]:
+    """Qué archivos de los que necesita `https` faltan en el paquete ya montado.
+
+    Solo tiene sentido con el paquete en carpeta (`--onedir`): en el ejecutable único todo
+    va comprimido dentro y no se puede mirar desde fuera, así que allí la comprobación la
+    hace el propio .exe.
+    """
+    folder = exe.parent
+    if folder.name != APP_NAME:
+        return []
+    internal = folder / "_internal"
+    base = internal if internal.is_dir() else folder
+    return [name for name in NEEDED_FOR_HTTPS if not list(base.rglob(name))]
+
+
 def verify(exe: Path) -> bool:
     """Ejecuta el ejecutable y comprueba que genera las capturas."""
     print("Comprobando el ejecutable (análisis de disco, historial y capturas)…")
+    # Primero lo barato y lo que más veces se rompió: que el paquete siga trayendo el
+    # soporte de https. Estas DLL son de Python, no de Qt, y quitarlas deja el comprobador
+    # de actualizaciones fallando con «no se pudo conectar con GitHub» sin que ninguna
+    # prueba del código fuente lo note (el entorno de desarrollo sí las tiene).
+    faltan = missing_https_files(exe)
+    if faltan:
+        print("  [!] El paquete no lleva lo que necesita https: " + ", ".join(faltan))
+        print("      Son bibliotecas de Python (`ssl`), no de Qt: sin ellas `urllib` se queda")
+        print("      sin direcciones seguras y no se pueden comprobar las actualizaciones.")
+        return False
+    if exe.parent.name == APP_NAME:
+        print("  Soporte de https en el paquete: completo")
     output = Path(tempfile.mkdtemp(prefix="pctoolkit_exe_"))
     sample = output / "carpeta_de_prueba"
     sample.mkdir(parents=True, exist_ok=True)
@@ -307,7 +349,17 @@ def verify(exe: Path) -> bool:
         print(f"  [!] Código de salida {result.returncode}")
         print((result.stderr or result.stdout or "").strip()[:800])
         return False
-    pages = ("home", "memory", "startup", "disk", "tools", "tasks", "reports", "schedule")
+    pages = (
+        "home",
+        "memory",
+        "startup",
+        "windows",
+        "disk",
+        "tools",
+        "tasks",
+        "reports",
+        "schedule",
+    )
     missing = [name for name in pages if not (output / f"{name}.png").exists()]
     if missing:
         print(f"  [!] Faltan capturas: {', '.join(missing)}")
@@ -324,10 +376,47 @@ def verify(exe: Path) -> bool:
     # dentro del .exe; en simulación, para no tocar nada del equipo.
     if not _verify_maintenance(exe, environment):
         return False
+    # Y tiene que poder hablar por https: es lo que necesita el comprobador de
+    # actualizaciones, y lo que se rompió al adelgazar el paquete quitando las DLL de
+    # OpenSSL (que parecen de Qt y son de Python). Se pregunta dentro del propio .exe, sin
+    # salir a la red, así que vale también en un servidor sin salida a internet.
+    if not _verify_https(exe, environment):
+        return False
     print(f"  Ejecutable verificado en {elapsed:.1f} s: {len(pages)} capturas, "
           f"entre {min(sizes) // 1024} y {max(sizes) // 1024} KB cada una, "
-          f"{len(lines)} muestra(s) de historial y mantenimiento desatendido en simulación")
+          f"{len(lines)} muestra(s) de historial, mantenimiento desatendido en simulación "
+          f"y https en marcha")
     shutil.rmtree(output, ignore_errors=True)
+    return True
+
+
+def _verify_https(exe: Path, environment: dict) -> bool:
+    """Comprueba que el ejecutable compilado puede usar direcciones seguras (https).
+
+    Se ejecuta dentro del propio .exe (`--comprobar-https`) y **sin salir a la red**:
+    mira si `ssl` carga y si `urllib` tiene el manejador de https, que es justo lo que
+    falta cuando el empaquetado deja fuera las DLL de OpenSSL. Sin esto, la comprobación
+    final pasaba y el fallo solo aparecía al pulsar «Buscar actualizaciones» en el programa
+    ya instalado.
+    """
+    try:
+        result = subprocess.run(
+            [str(exe), "--comprobar-https"],
+            cwd=str(exe.parent),
+            env=environment,
+            timeout=120,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.TimeoutExpired:
+        print("  [!] La comprobación de https dentro del ejecutable no terminó a tiempo.")
+        return False
+    salida = (result.stdout or "") + (result.stderr or "")
+    if result.returncode != 0:
+        print(f"  [!] El ejecutable no puede usar https (código {result.returncode})")
+        print(salida.strip()[:600])
+        return False
+    print(f"  https dentro del ejecutable: {salida.strip().splitlines()[-1][:120] if salida.strip() else 'correcto'}")
     return True
 
 
