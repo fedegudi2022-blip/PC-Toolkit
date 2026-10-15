@@ -4294,6 +4294,30 @@ if ($fallos -gt 0) {{ exit 1 }}
     )
 
 
+def _bloque_run(texto: str, cual: int = 0) -> str:
+    """Saca el `cual`-ésimo bloque `run: |` de un flujo, sin la sangría del YAML."""
+    lineas = texto.splitlines()
+    vistos = -1
+    indice = 0
+    while indice < len(lineas):
+        desnuda = lineas[indice].strip()
+        if desnuda.startswith("run: |"):
+            vistos += 1
+            if vistos == cual:
+                sangria = len(lineas[indice]) - len(lineas[indice].lstrip())
+                bloque: list[str] = []
+                indice += 1
+                while indice < len(lineas) and (
+                    not lineas[indice].strip()
+                    or (len(lineas[indice]) - len(lineas[indice].lstrip())) > sangria
+                ):
+                    bloque.append(lineas[indice][sangria + 2:] if lineas[indice].strip() else "")
+                    indice += 1
+                return "\n".join(bloque)
+        indice += 1
+    return ""
+
+
 def test_publicacion() -> None:
     """El flujo de publicación: publica al empujar una etiqueta y sin exponer secretos.
 
@@ -4320,12 +4344,17 @@ def test_publicacion() -> None:
         and "v$version-ensayo" in publicar,
         "en la publicación de verdad no se pasa ningún argumento de borrador",
     )
+    # Ese primer paso corre antes de instalar nada: si importara el programa (que necesita
+    # PySide6) fallaría en el servidor aunque en local funcionara. La versión se lee como texto.
+    primer_paso = _bloque_run(publicar, 0)
     check(
         "La etiqueta y la versión del código tienen que coincidir",
         "APP_VERSION" in publicar
         and "APP_VERSION dice" in publicar
-        and publicar.index("APP_VERSION dice") < publicar.index("build_exe.py"),
-        "la comprobación va antes de compilar",
+        and publicar.index("APP_VERSION dice") < publicar.index("build_exe.py")
+        and "from pctoolkit" not in primer_paso
+        and "PySide6" not in primer_paso,
+        "la comprobación va antes de compilar y sin importar el programa",
     )
     check(
         "La publicación no usa ningún secreto",

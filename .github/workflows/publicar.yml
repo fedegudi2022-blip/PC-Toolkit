@@ -73,8 +73,13 @@ jobs:
           ETIQUETA_PEDIDA: ${{ inputs.etiqueta }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $version = python -c "import sys; sys.path.insert(0, '.'); from pctoolkit.core.config import APP_VERSION; print(APP_VERSION)"
-          if ($LASTEXITCODE -ne 0) { throw "No se pudo leer APP_VERSION de pctoolkit/core/config.py" }
+          # La versión se lee como texto y sin importar el módulo: este paso corre antes de
+          # instalar las dependencias, y `config.py` las necesita (aún no están).
+          # Importarlo desde aquí hacía fallar el paso en el servidor aunque en local
+          # funcionara (lo comprueba la suite en los flujos).
+          $linea = Select-String -Path 'pctoolkit/core/config.py' -Pattern '^APP_VERSION\s*=\s*"([^"]+)"' | Select-Object -First 1
+          if (-not $linea) { throw "No se encontró APP_VERSION en pctoolkit/core/config.py" }
+          $version = $linea.Matches[0].Groups[1].Value
 
           if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
             $etiqueta = if ($env:ETIQUETA_PEDIDA) { $env:ETIQUETA_PEDIDA } else { "v$version-ensayo" }
