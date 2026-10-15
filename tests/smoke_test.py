@@ -6755,8 +6755,12 @@ def main(argv: list[str] | None = None) -> int:
         # esta misma pasada, así que necesita que ya estén todas hechas.
         verificar_documentacion()
 
+    # El informe se imprime **antes** de desmontar: si el cierre se llevara por delante el
+    # proceso (Qt y los hilos al despedirse), el resultado de la pasada ya está escrito y en
+    # el registro del servidor se lee qué pasó, en vez de quedarse sin decir nada.
+    codigo = report()
     cerrar_ventanas_de_la_prueba()
-    return report()
+    return codigo
 
 
 def cerrar_ventanas_de_la_prueba() -> None:
@@ -6774,9 +6778,21 @@ def cerrar_ventanas_de_la_prueba() -> None:
     app = QApplication.instance()
     if app is None:
         return
-    for ventana in app.topLevelWidgets():
-        ventana.close()
-        ventana.deleteLater()
+    # Las ventanas se cierran todas primero y se borran después: al cerrar una puede
+    # desaparecer otra que colgaba de ella (un diálogo de su ventana), y borrar y vaciar los
+    # borrados dentro del mismo recorrido dejaba la lista con objetos ya destruidos —un fallo
+    # que aparecía unas veces sí y otras no, según el orden en que Qt devolviera las ventanas.
+    ventanas = list(app.topLevelWidgets())
+    for ventana in ventanas:
+        try:
+            ventana.close()
+        except RuntimeError:
+            continue  # ya no existe: la destruyó el cierre de otra
+    for ventana in ventanas:
+        try:
+            ventana.deleteLater()
+        except RuntimeError:
+            continue
     # Los borrados diferidos (`deleteLater`) se atienden en el bucle de eventos: hay que
     # dejarlo correr para que los widgets se destruyan ahora y no al cerrar el intérprete.
     workers.shutdown_background(2000)
