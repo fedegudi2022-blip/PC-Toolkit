@@ -116,6 +116,18 @@ jobs:
               Write-Host "::error title=Fallo de la suite::$texto"
             }
           }
+
+          # El informe entero, plegado al final del resumen: en un servidor el registro no se
+          # puede abrir desde otro equipo (GitHub pide sesión hasta en un repositorio público),
+          # y hay fallos que solo se ven con la lista completa delante. El caso que lo trajo
+          # aquí: la guarda de recuentos dice cuántas comprobaciones salieron, pero para saber
+          # **cuál** falta hace falta comparar esta lista con la de un equipo completo.
+          if (Test-Path $registro) {
+            $cuerpo = @('', '<details><summary>Las comprobaciones de esta pasada</summary>', '', '```')
+            $cuerpo += @(Get-Content -LiteralPath $registro -Encoding utf8)
+            $cuerpo += @('```', '</details>')
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ($cuerpo -join "`n") -Encoding utf8
+          }
           exit $codigo
 
       # El registro en archivo es nuevo: si algo falla, conviene poder mirarlo sin volver a
