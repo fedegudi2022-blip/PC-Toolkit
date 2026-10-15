@@ -50,6 +50,14 @@ def build_report(
             "cpu_porcentaje": round(snapshot.cpu_percent, 1),
             "cpu_frecuencia_mhz": snapshot.cpu_freq_mhz,
             "cpu_temperatura": snapshot.cpu_temp,
+            # La gráfica va aquí y no entre los datos «de psutil» porque no lo es: la lee
+            # el vigía de la GPU (`core/gpu.py`) por los contadores de rendimiento.
+            # `gpu_porcentaje` nulo significa que no hubo lectura, y así se deja en el
+            # informe: un 0 sería decir que la tarjeta está parada sin haberlo medido.
+            "gpu_porcentaje": snapshot.gpu_percent,
+            "gpu_nombre": snapshot.gpu_name,
+            "gpu_controlador": snapshot.gpu_driver,
+            "gpu_motor": snapshot.gpu_engine,
             "ram_porcentaje": round(snapshot.ram_percent, 1),
             "ram_usada": snapshot.ram_used,
             "ram_usada_display": format_bytes(snapshot.ram_used),
@@ -357,6 +365,26 @@ def _html(report: dict[str, Any]) -> str:
     cpu_temp = resumen.get("cpu_temperatura")
     temp_row = f"<li><span>Temperatura</span><strong>{cpu_temp:.0f} °C</strong></li>" if cpu_temp else ""
 
+    # La gráfica entra en el resumen y en la ficha del equipo solo si se pudo leer: en un
+    # equipo sin contadores de GPU (o sin tarjeta) esas líneas no tendrían nada que decir.
+    gpu_nombre = str(resumen.get("gpu_nombre") or "").strip()
+    gpu_controlador = str(resumen.get("gpu_controlador") or "").strip()
+    gpu_porcentaje = resumen.get("gpu_porcentaje")
+    gpu_row = (
+        f"<li><span>Gráfica</span><strong>{_escape(gpu_nombre)}"
+        + (f" · {gpu_porcentaje:.0f} %" if gpu_porcentaje is not None else "")
+        + "</strong></li>"
+        if gpu_nombre
+        else ""
+    )
+    gpu_equipo_row = (
+        f"<li><span>Gráfica</span><strong>{_escape(gpu_nombre)}"
+        + (f" · controlador {_escape(gpu_controlador)}" if gpu_controlador else "")
+        + "</strong></li>"
+        if gpu_nombre
+        else ""
+    )
+
     # La cabecera sí lleva la paleta oscura (la identidad de la aplicación) y las barras
     # de categorías, los tres tonos de dato.
     grafito = DARK_COLORS
@@ -428,6 +456,7 @@ def _html(report: dict[str, Any]) -> str:
     <ul class="kv">
       <li><span>CPU</span><strong>{resumen.get('cpu_porcentaje', 0):.1f} %</strong></li>
       {temp_row}
+      {gpu_row}
       <li><span>Memoria</span><strong>{resumen.get('ram_usada_display', '')} / {resumen.get('ram_total_display', '')}</strong></li>
       <li><span>Disco del sistema</span><strong>{resumen.get('disco_porcentaje', 0):.1f} %</strong></li>
       <li><span>Espacio libre</span><strong>{resumen.get('disco_libre_display', '')}</strong></li>
@@ -462,6 +491,7 @@ def _html(report: dict[str, Any]) -> str:
         <li><span>Núcleos / hilos</span><strong>{equipo.get('nucleos_fisicos', 0)} / {equipo.get('procesadores_logicos', 0)}</strong></li>
         <li><span>Arquitectura</span><strong>{_escape(equipo.get('arquitectura', ''))}</strong></li>
         <li><span>Versión de Windows</span><strong>{_escape(equipo.get('version', ''))}</strong></li>
+        {gpu_equipo_row}
       </ul>
     </div>
   </section>

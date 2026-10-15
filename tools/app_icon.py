@@ -1,11 +1,16 @@
-"""Genera el icono de PC Toolkit y el archivo .ico para el ejecutable.
+"""Genera el icono de PC Toolkit (el .ico del ejecutable y su PNG) desde el logotipo.
 
-El dibujo se hace con QPainter (sin ventanas ni recursos externos) y el .ico
-se arma a mano con imágenes PNG, formato que Windows acepta desde Vista.
+El logotipo original vive en `assets\\pc_toolkit_logo.png` (1024×1024, con
+transparencia) y es la única fuente: aquí no se dibuja nada. Se reescala a cada tamaño
+del .ico y el .ico se arma a mano con imágenes PNG, formato que Windows acepta desde
+Vista.
 
-Los colores salen de `DARK_COLORS`: el icono es una imagen fija, así que se pinta
-siempre con la paleta oscura (la identidad de la aplicación) y no con la que el
-usuario tenga elegida en ese momento en la interfaz.
+El .ico y el PNG de `assets\\` **están en el repositorio**, así que si el logotipo
+cambia hay que volver a ejecutar esto (`python tools\\app_icon.py`); la suite comprueba
+que siguen coincidiendo con el original, de modo que un olvido se nota.
+
+El archivo no se pinta con la paleta de la interfaz a propósito: es la marca de la
+aplicación, igual en tema claro y oscuro, y no sigue a los colores que el usuario elija.
 
 Uso:
     python tools/app_icon.py [destino.ico]
@@ -21,90 +26,53 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from PySide6.QtCore import QPointF, QRectF, Qt  # noqa: E402
-from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPen  # noqa: E402
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt  # noqa: E402
+from PySide6.QtGui import QImage  # noqa: E402
 
-from pctoolkit.core.config import DARK_COLORS  # noqa: E402
-
-BASE = 256
+LOGO = ROOT / "assets" / "pc_toolkit_logo.png"
 ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
 DEFAULT_TARGET = ROOT / "assets" / "pc_toolkit.ico"
 
+_LOGO: QImage | None = None
 
-def icon_image(size: int = BASE) -> QImage:
-    """Icono de la app: chip casi blanco sobre un cuadrado redondeado grafito (D2)."""
-    image = QImage(BASE, BASE, QImage.Format_ARGB32)
-    image.fill(Qt.transparent)
-    painter = QPainter(image)
-    painter.setRenderHint(QPainter.Antialiasing, True)
 
-    # Fondo con degradado: los grises de las tarjetas de la aplicación.
-    gradient = QLinearGradient(0, 0, BASE, BASE)
-    # Sube hasta el gris del borde y no baja al negro del fondo: así el cuadrado se
-    # distingue de una barra de tareas negra en vez de fundirse con ella.
-    gradient.setColorAt(0.0, QColor(DARK_COLORS["panel_alt"]))
-    gradient.setColorAt(0.6, QColor(DARK_COLORS["panel"]))
-    gradient.setColorAt(1.0, QColor(DARK_COLORS["border"]))
-    painter.setPen(Qt.NoPen)
-    painter.setBrush(gradient)
-    radius = BASE * 0.23
-    painter.drawRoundedRect(QRectF(0, 0, BASE, BASE), radius, radius)
+def logo_image() -> QImage:
+    """El logotipo original, leído una sola vez por ejecución."""
+    global _LOGO
+    if _LOGO is None:
+        if not LOGO.is_file():
+            raise FileNotFoundError(f"Falta el logotipo: {LOGO}")
+        imagen = QImage(str(LOGO))
+        if imagen.isNull():
+            raise ValueError(f"No se pudo leer el logotipo: {LOGO}")
+        _LOGO = imagen
+    return _LOGO
 
-    # Brillo superior: el mismo casi blanco del acento, muy transparente. Se lee de la
-    # paleta en vez de escribir un blanco fijo, para que el icono no se quede con un
-    # color de otro diseño si el acento cambia.
-    brillo = QColor(DARK_COLORS["accent_glow"])
-    brillo.setAlpha(46)
-    glow = QLinearGradient(0, 0, 0, BASE * 0.6)
-    glow.setColorAt(0.0, brillo)
-    glow.setColorAt(1.0, QColor(brillo.red(), brillo.green(), brillo.blue(), 0))
-    painter.setBrush(glow)
-    painter.drawRoundedRect(QRectF(BASE * 0.04, BASE * 0.04, BASE * 0.92, BASE * 0.55), radius, radius)
 
-    # Chip, en el acento de la interfaz (casi blanco en el tema oscuro).
-    chip = QRectF(BASE * 0.28, BASE * 0.28, BASE * 0.44, BASE * 0.44)
-    pen = QPen(QColor(DARK_COLORS["accent"]))
-    pen.setWidthF(BASE * 0.055)
-    pen.setJoinStyle(Qt.RoundJoin)
-    painter.setPen(pen)
-    painter.setBrush(Qt.NoBrush)
-    painter.drawRoundedRect(chip, BASE * 0.05, BASE * 0.05)
+def icon_image(size: int = 256) -> QImage:
+    """Icono en el tamaño pedido, reescalado desde el logotipo.
 
-    # Núcleo interior, un poco más claro que las patillas.
-    painter.setPen(Qt.NoPen)
-    painter.setBrush(QColor(DARK_COLORS["accent_glow"]))
-    painter.drawRoundedRect(
-        QRectF(BASE * 0.42, BASE * 0.42, BASE * 0.16, BASE * 0.16), BASE * 0.03, BASE * 0.03
-    )
-
-    # Patillas
-    pen.setWidthF(BASE * 0.05)
-    pen.setCapStyle(Qt.RoundCap)
-    painter.setPen(pen)
-    for offset in (0.38, 0.5, 0.62):
-        painter.drawLine(
-            QPointF(BASE * offset, BASE * 0.19), QPointF(BASE * offset, BASE * 0.28)
+    El original tiene 1024 px y los iconos pequeños son de 16: bajar de golpe a 16
+    dejaría el trazo sucio (Qt promedia una ventana mucho mayor que el resultado), así
+    que se parte por mitades hasta quedar cerca del tamaño final y se remata con un
+    ajuste suave. Es más lento, pero esto se ejecuta al empaquetar, no al abrir.
+    """
+    size = max(1, int(size))
+    actual = logo_image()
+    while actual.width() // 2 >= size:
+        actual = actual.scaled(
+            actual.width() // 2,
+            actual.height() // 2,
+            Qt.IgnoreAspectRatio,
+            Qt.SmoothTransformation,
         )
-        painter.drawLine(
-            QPointF(BASE * offset, BASE * 0.72), QPointF(BASE * offset, BASE * 0.81)
-        )
-        painter.drawLine(
-            QPointF(BASE * 0.19, BASE * offset), QPointF(BASE * 0.28, BASE * offset)
-        )
-        painter.drawLine(
-            QPointF(BASE * 0.72, BASE * offset), QPointF(BASE * 0.81, BASE * offset)
-        )
-    painter.end()
-
-    if size == BASE:
-        return image
-    return image.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    if actual.width() != size:
+        actual = actual.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    return actual
 
 
 def png_bytes(size: int) -> bytes:
     """Devuelve el PNG del icono en el tamaño indicado."""
-    from PySide6.QtCore import QBuffer, QByteArray, QIODevice
-
     data = QByteArray()
     buffer = QBuffer(data)
     buffer.open(QIODevice.WriteOnly)
@@ -136,7 +104,7 @@ def write_ico(target: Path | str = DEFAULT_TARGET, sizes: tuple[int, ...] = ICO_
 
 
 def write_png(target: Path | str, size: int = 256) -> Path:
-    """Guarda el icono como PNG (para la documentación)."""
+    """Guarda el icono como PNG (para la documentación y las revisiones)."""
     target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     icon_image(size).save(str(target), "PNG")
@@ -147,12 +115,12 @@ def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     target = Path(args[0]) if args else DEFAULT_TARGET
     written = write_ico(target)
-    print(f"Icono generado: {written} ({written.stat().st_size:,} bytes)")
+    print(f"Icono generado desde {LOGO.name}: {written} ({written.stat().st_size:,} bytes)")
     return 0
 
 
 if __name__ == "__main__":
-    # QPainter sobre QImage funciona sin ventana, pero Qt necesita una app.
+    # Re escalar imágenes no necesita ventana, pero Qt necesita una aplicación.
     from PySide6.QtGui import QGuiApplication
 
     app = QGuiApplication.instance() or QGuiApplication(sys.argv[:1])

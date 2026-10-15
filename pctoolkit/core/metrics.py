@@ -59,6 +59,13 @@ class MetricsSnapshot:
     net_down_rate: float = 0.0
     net_sent: int = 0
     net_recv: int = 0
+    # La tarjeta gráfica no la lee psutil: la trae el vigía de la GPU (`core/gpu.py`) y
+    # el servicio la guarda aquí. `None` significa «todavía no se sabe» (la primera
+    # lectura tarda unos segundos); un 0 es un dato: la tarjeta está parada.
+    gpu_percent: float | None = None
+    gpu_name: str = ""
+    gpu_driver: str = ""
+    gpu_engine: str = ""
     boot_time: float = 0.0
     process_count: int = 0
     battery_percent: float | None = None
@@ -186,6 +193,11 @@ class MetricsService(QObject):
         self._last_net_io: tuple[float, int, int] | None = None
         self._last_time = time.time()
         self._snapshot = MetricsSnapshot()
+        self._gpu: Any | None = None
+        self._gpu_failed = False
+        # ¿Está el vigía consultando la tarjeta ahora mismo? El historial lo necesita para
+        # saber si el uso que trae la muestra es una lectura viva o el último valor conocido.
+        self._gpu_watched = False
         self._temp_available = self._probe_temperatures()
         self._drive = system_drive()
         self._disk_error_logged = False
@@ -207,6 +219,40 @@ class MetricsService(QObject):
     @property
     def supports_temperature(self) -> bool:
         return self._temp_available
+
+    def set_gpu(self, info: Any | None) -> None:
+        """Guarda lo que leyó el vigía de la GPU.
+
+        No se toca la muestra ya publicada: el dato entra en la siguiente (≤1,2 s después),
+        que es cuando la ventana repinta de todos modos. Así la lectura lenta de la GPU no
+        obliga a repintar por su cuenta ni interfiere con el muestreo normal.
+
+        Con `None` —una lectura que se quedó sin datos, o un equipo cuyos contadores no
+        existen— se marca `gpu_failed`, para que la interfaz pueda decir que no hay datos
+        en lugar de quedarse en «leyendo» para siempre.
+        """
+        self._gpu = info
+        self._gpu_failed = info is None
+
+    @property
+    def gpu_failed(self) -> bool:
+        """¿La última lectura de la tarjeta gráfica se quedó sin datos?"""
+        return self._gpu_failed
+
+    def set_gpu_watched(self, watched: bool) -> None:
+        """Avisa de si el vigía está consultando la tarjeta ahora mismo.
+
+        Lo pone la ventana al ajustar el consumo (`_apply_power_profile`). Con la consulta
+        parada, el último uso leído se queda en la tarjeta del panel pero **no** entra en el
+        historial: guardarlo como si fuera de este momento dibujaría una línea plana que la
+        tarjeta no hizo.
+        """
+        self._gpu_watched = bool(watched)
+
+    @property
+    def gpu_watched(self) -> bool:
+        """¿Hay una consulta de la tarjeta en marcha? (el historial deja huecos sin ella)"""
+        return self._gpu_watched
 
     @property
     def snapshot(self) -> MetricsSnapshot:
@@ -268,6 +314,12 @@ class MetricsService(QObject):
             snap.cpu_freq_mhz = None
         if self._temp_available:
             snap.cpu_temp = self._read_temperature()
+        # La GPU viene ya leída (y de una vuelta reciente): aquí solo se copia.
+        if self._gpu is not None:
+            snap.gpu_percent = self._gpu.usage
+            snap.gpu_name = self._gpu.name
+            snap.gpu_driver = self._gpu.driver
+            snap.gpu_engine = self._gpu.engine
 
         # --- Memoria -------------------------------------------------
         vm = psutil.virtual_memory()
@@ -376,6 +428,8 @@ class MetricsService(QObject):
             "version": platform.version(),
             "arquitectura": platform.machine(),
             "procesador": self._cpu_name,
+            "grafica": self._snapshot.gpu_name,
+            "controlador_grafico": self._snapshot.gpu_driver,
             "nucleos_fisicos": self._snapshot.cpu_cores,
             "procesadores_logicos": self._snapshot.cpu_threads,
             "python": platform.python_version(),

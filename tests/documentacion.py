@@ -175,7 +175,18 @@ def verificar_documentacion(*, comprobar_recuentos: bool = True) -> None:
     # Sin bandeja, sin signtool o sin `dist\\` compilado se omiten unas cuantas, así que en un
     # equipo incompleto la guía puede pedir un número mayor. En uno completo tiene que ser el
     # mismo: si no, alguien añadió pruebas (o quitó) sin actualizar la documentación.
-    completo = tray_available() and firmar.find_signtool() is not None and bool(firmar.artifacts())
+    # Sin bandeja, sin signtool, sin `dist` compilado o sin los contadores de la GPU se
+    # omiten unas cuantas, así que en un equipo incompleto la guía puede pedir un número
+    # mayor. En uno completo tiene que ser el mismo: si no, alguien añadió pruebas (o quitó)
+    # sin actualizar la documentación.
+    from pctoolkit.core import gpu as gpu_core
+
+    completo = (
+        tray_available()
+        and firmar.find_signtool() is not None
+        and bool(firmar.artifacts())
+        and gpu_core.engine_counters_available()
+    )
     coinciden = bool(documentados) and len(set(documentados)) == 1
     documentado = documentados[0] if coinciden else 0
     check(

@@ -29,6 +29,9 @@ from pctoolkit.core.config import APP_NAME, APP_VERSION, format_bytes  # noqa: E
 
 ASSETS = ROOT / "assets"
 ICON = ASSETS / "pc_toolkit.ico"
+# El logotipo original: es la fuente del .ico (al empaquetar) y el icono de la ventana
+# (en tiempo de ejecución), así que viaja dentro del ejecutable.
+LOGO = ASSETS / "pc_toolkit_logo.png"
 VERSION_FILE = ASSETS / "version_info.txt"
 DIST = ROOT / "dist"
 BUILD = ROOT / "build"
@@ -224,6 +227,10 @@ def build_command(onefile: bool, debug: bool) -> list[str]:
         str(BUILD),
         "--onefile" if onefile else "--onedir",
         "--console" if debug else "--windowed",
+        # El .ico solo lo usa Windows al abrir el ejecutable; el icono de la ventana lo
+        # pone la aplicación leyendo el logotipo, que por eso va empaquetado.
+        "--add-data",
+        f"{LOGO}{os.pathsep}assets",
     ]
     for module in EXCLUDES:
         command += ["--exclude-module", module]

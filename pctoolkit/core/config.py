@@ -16,7 +16,7 @@ APP_TAGLINE = "Herramientas para controlar y mantener tu PC"
 # publicar una versión: se sube este número, se regeneran las capturas de la
 # documentación (`tools\\capturar_documentacion.py`) y se empuja una etiqueta `v…`
 # igual a la versión (lo detalla DOCUMENTACION.md).
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 ORG_NAME = "PCToolkit"
 # Repositorio del que salen las actualizaciones (`pctoolkit.core.actualizador`).
 GITHUB_REPO = "fedegudi2022-blip/PC-Toolkit"

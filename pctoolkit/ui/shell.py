@@ -41,6 +41,7 @@ from .actualizaciones import UpdateController
 from .alert_settings import AlertSettingsDialog
 from .dashboard import DashboardPage
 from .disk_page import DiskAnalyzerPage
+from .gpu_monitor import GpuMonitor
 from .optimize_page import OptimizeMemoryPage
 from .reports_page import ReportsPage
 from .schedule_page import MaintenanceSchedulePage
@@ -49,6 +50,7 @@ from .tasks_page import TasksPage
 from .tools_page import ToolsPage
 from .theme import apply_theme
 from .tray import TrayController, tray_available
+from .widgets import BrandLogo
 from .workers import run_in_background, shutdown_background, wait_thread
 
 # Herramienta -> categoría del registro de mantenimiento
@@ -88,7 +90,11 @@ class MainWindow(QMainWindow):
     def __init__(self, settings: AppSettings | None = None, history: HistoryStore | None = None) -> None:
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} — {APP_TAGLINE}")
-        self.setWindowIcon(QIcon(icons.pixmap_for("cpu", 64, COLORS["accent_glow"])))
+        # El icono de la ventana (y el de la barra de tareas) es el logotipo de la
+        # aplicación. Si no estuviera el archivo, se usa el glifo dibujado: la ventana
+        # nunca se queda sin icono.
+        logotipo = icons.logo_pixmap(64)
+        self.setWindowIcon(QIcon(logotipo) if logotipo is not None else icons.icon("cpu", 64, COLORS["accent_glow"]))
         self.resize(1320, 840)
         self.setMinimumSize(1180, 740)
 
@@ -96,6 +102,9 @@ class MainWindow(QMainWindow):
         self.task_store = TaskStore(self)
         self.undo_store = UndoStore()
         self.metrics = MetricsService(parent=self)
+        # La tarjeta gráfica se lee aparte del muestreo: cada vuelta cuesta un proceso de
+        # PowerShell (~2,5 s), así que va en su propio vigía, en segundo plano y lento.
+        self.gpu_monitor = GpuMonitor(parent=self)
         self.history = history or HistoryStore()
         self.recorder = HistoryRecorder(
             self.metrics,
@@ -198,12 +207,24 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(16, 20, 16, 18)
         layout.setSpacing(8)
 
+        # La marca: el logotipo de la aplicación y, a su lado, el nombre. El logotipo es una
+        # imagen, así que lleva nombre accesible (lo pone `BrandLogo`): sin él, un lector de
+        # pantalla pasaría de largo por la marca.
+        marca = QHBoxLayout()
+        marca.setSpacing(10)
+        self.brand_logo = BrandLogo(36, f"Logotipo de {APP_NAME}")
+        marca.addWidget(self.brand_logo, 0, Qt.AlignTop)
+        textos_marca = QVBoxLayout()
+        textos_marca.setSpacing(0)
         brand = QLabel("PC TOOLKIT")
         brand.setObjectName("BrandLabel")
-        layout.addWidget(brand)
         subtitle = QLabel("MANTENIMIENTO")
         subtitle.setObjectName("BrandSub")
-        layout.addWidget(subtitle)
+        textos_marca.addWidget(brand)
+        textos_marca.addWidget(subtitle)
+        marca.addLayout(textos_marca)
+        marca.addStretch(1)
+        layout.addLayout(marca)
         layout.addSpacing(14)
 
         items = [
@@ -272,6 +293,7 @@ class MainWindow(QMainWindow):
     def _wire(self) -> None:
         self.metrics.sampled.connect(self._on_sample)
         self.metrics.profile_changed.connect(self._on_profile_changed)
+        self.gpu_monitor.sampled.connect(self._on_gpu)
         self.recorder.recorded.connect(self._on_history_sample)
         self.tray.open_requested.connect(self.open_from_tray)
         self.tray.quit_requested.connect(self.quit_application)
@@ -426,6 +448,14 @@ class MainWindow(QMainWindow):
             else "Muestreo completo activado."
         )
 
+    def _on_gpu(self, info) -> None:
+        """Ficha de la tarjeta gráfica: la lee su vigía, en segundo plano.
+
+        Con `None` (la vuelta no trajo datos) se avisa igualmente al servicio, que así
+        puede decir que no hay datos en vez de dejarlo en «leyendo» para siempre.
+        """
+        self.metrics.set_gpu(info)
+
     def _on_memory_settings(self, options) -> None:
         self.memory_guard.options = options
         self.set_status(
@@ -533,14 +563,39 @@ class MainWindow(QMainWindow):
 
     # --- Consumo ----------------------------------------------------------
     def _apply_power_profile(self, refresh: bool = False) -> None:
-        """Ajusta el muestreo a lo que se está viendo (perfil completo o eco)."""
+        """Ajusta el muestreo a lo que se está viendo (perfil completo o eco).
+
+        Con la ventana cerrándose no se toca nada: al aceptar el cierre, Qt la oculta y manda
+        un `hideEvent` **después** de haber esperado a lo que estaba en marcha, y este ajuste
+        volvería a poner en marcha el vigía de la tarjeta (con los contadores se consulta
+        aunque la ventana no se vea, que es la regla normal). Esa lectura dejaría un hilo
+        vivo mientras Qt destruye la ventana, y el proceso acabaría en un error de verdad al
+        salir: se vio midiendo el recorrido de `--screenshot` (código 0xC0000409).
+        """
+        if self._force_quit:
+            return
         visible = self.isVisible()
         eco = self.settings.eco_mode or (self.settings.eco_when_hidden and not visible)
         self.metrics.set_profile(PROFILE_ECO if eco else PROFILE_FULL)
+        # La tarjeta gráfica se consulta más allá de donde se enseña cuando el dato sale de
+        # los contadores de Windows: ese camino no abre ningún proceso, así que seguir
+        # mirando con la ventana oculta es lo que hace que la serie de la GPU en el historial
+        # no tenga agujeros. Donde Windows no publica el contador, cada vuelta es un
+        # PowerShell de ~2,5 s y vale la regla de siempre: solo con la tarjeta a la vista
+        # (la portada o los informes). La cadencia sigue al perfil (15 s en completo, un
+        # minuto en eco), y el modo eco **no** la apaga porque es el de fábrica: si la
+        # apagara, la tarjeta no se llenaría nunca.
+        a_la_vista = visible and self.stack.currentWidget() in (self.dashboard, self.reports_page)
+        self.gpu_monitor.set_eco(eco)
+        # El aviso de la tarjeta dice la cadencia y el alcance de verdad: en eco es un minuto
+        # y, con contadores, se consulta aunque la ventana no se vea.
+        self.dashboard.set_gpu_cadence(self.gpu_monitor.interval_ms, continua=self.gpu_monitor.cheap_route)
+        self.gpu_monitor.set_active(a_la_vista or self.gpu_monitor.cheap_route)
+        # El historial necesita saber si la lectura está viva: sin consulta no se guarda el
+        # último uso conocido (sería una línea plana que la tarjeta no hizo).
+        self.metrics.set_gpu_watched(self.gpu_monitor.active)
         # La lista de procesos (lo más caro) solo se recorre si de verdad se ve.
-        self.metrics.set_process_detail(
-            visible and self.stack.currentWidget() in (self.dashboard, self.reports_page)
-        )
+        self.metrics.set_process_detail(a_la_vista)
         if refresh and self.metrics.profile == PROFILE_FULL:
             self.metrics.poll()
 
@@ -603,6 +658,7 @@ class MainWindow(QMainWindow):
             )
             return
         self.metrics.stop()
+        self.gpu_monitor.stop()
         # Se deja terminar la limpieza de memoria, la consulta de tareas o lo que
         # haya en marcha. `shutdown_background` las encuentra todas (no depende de
         # una lista de páginas) y espera cediendo el bucle de eventos, así que

@@ -41,7 +41,7 @@ from installer import installer_core as core  # noqa: E402
 from pctoolkit.core.config import APP_TAGLINE, APP_VERSION, COLORS  # noqa: E402
 from pctoolkit.ui import icons  # noqa: E402
 from pctoolkit.ui.theme import apply_theme  # noqa: E402
-from pctoolkit.ui.widgets import Card, IconBadge, Muted, SectionTitle, hline  # noqa: E402
+from pctoolkit.ui.widgets import BrandLogo, Card, IconBadge, Muted, SectionTitle, hline  # noqa: E402
 
 WINDOW_TITLE = f"Instalador de {core.APP_DISPLAY_NAME}"
 
@@ -74,7 +74,10 @@ class InstallerWindow(QWidget):
         self.result: core.InstallResult | None = None
         self.worker: Worker | None = None
         self.setWindowTitle(WINDOW_TITLE)
-        self.setWindowIcon(QIcon(icons.pixmap_for("cpu", 64, COLORS["accent"])))
+        logotipo = icons.logo_pixmap(64)
+        self.setWindowIcon(
+            QIcon(logotipo) if logotipo is not None else QIcon(icons.pixmap_for("cpu", 64, COLORS["accent"]))
+        )
         self.setFixedSize(660, 520)
         self._build()
         self._refresh_state()
@@ -87,7 +90,10 @@ class InstallerWindow(QWidget):
 
         head = QHBoxLayout()
         head.setSpacing(12)
-        head.addWidget(IconBadge("cpu", 40, 22, COLORS["accent"]))
+        # La marca del asistente es el mismo logotipo de la aplicación (con su nombre para el
+        # lector de pantalla); sin el archivo, `BrandLogo` dibuja el glifo de siempre.
+        self.logo = BrandLogo(40, f"Logotipo de {core.APP_DISPLAY_NAME}")
+        head.addWidget(self.logo)
         texts = QVBoxLayout()
         texts.setSpacing(1)
         title = QLabel(

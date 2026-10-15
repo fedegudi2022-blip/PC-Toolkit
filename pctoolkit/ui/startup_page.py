@@ -32,6 +32,7 @@ KIND_ICONS = {
     startup_core.KIND_REGISTRO: "gear",
     startup_core.KIND_CARPETA: "folder",
     startup_core.KIND_TAREA: "calendar",
+    startup_core.KIND_STORE: "cloud",
 }
 
 # El coste es una estimación del tipo de entrada, no una alerta: solo el «Medio»
@@ -322,22 +323,27 @@ class StartupPage(QWidget):
         # lista» vuelve a hacerlo cuando el usuario lo pide.
         if with_tasks and not self._scan_running and (force or not self._scan_done):
             self._scan_running = True
-            self.tasks_note.setText("Buscando tareas de inicio de sesión…")
-            run_in_background(self, startup_core.read_task_entries, self._on_tasks)
+            self.tasks_note.setText("Buscando tareas de inicio de sesión y aplicaciones de la Store…")
+            run_in_background(self, startup_core.read_slow_entries, self._on_tasks)
         self._render()
 
     def _on_tasks(self, result) -> None:
         self._scan_running = False
         self._scan_done = True
         if isinstance(result, Exception):
-            self.tasks_note.setText("No se pudo consultar el Programador de tareas.")
+            self.tasks_note.setText("No se pudieron consultar las tareas de inicio de sesión.")
             return
         self._task_entries = list(result)
-        self.tasks_note.setText(
-            f"{len(self._task_entries)} tareas de inicio de sesión"
-            if self._task_entries
-            else "Sin tareas de inicio de sesión"
-        )
+        # La lectura trae dos orígenes a la vez (tareas de inicio de sesión y aplicaciones
+        # de la Store), así que el aviso dice cuántas hay de cada uno.
+        tareas = sum(1 for entry in self._task_entries if entry.source == startup_core.SOURCE_TAREA)
+        store = sum(1 for entry in self._task_entries if entry.source == startup_core.SOURCE_STORE)
+        partes: list[str] = []
+        if tareas:
+            partes.append(f"{tareas} tarea{'s' if tareas != 1 else ''} de inicio de sesión")
+        if store:
+            partes.append(f"{store} aplicación{'es' if store != 1 else ''} de la Store")
+        self.tasks_note.setText(" · ".join(partes) if partes else "Sin tareas de inicio de sesión")
         self._render()
 
     def _render(self) -> None:

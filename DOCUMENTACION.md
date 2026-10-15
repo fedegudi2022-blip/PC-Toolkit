@@ -1,4 +1,4 @@
-# PC Toolkit 1.3.0 — qué es, qué hace y cómo funciona
+# PC Toolkit 1.3.1 — qué es, qué hace y cómo funciona
 
 Aplicación de escritorio para **Windows 10 y 11** que reúne el mantenimiento del equipo en un solo
 sitio: libera memoria RAM cuando hace falta, programa el mantenimiento en el propio Windows, vigila
@@ -20,7 +20,7 @@ desinstalador), sin necesidad de ser administrador.
 
 | Módulo | Qué hace |
 | --- | --- |
-| **Inicio** | Medidores de CPU, memoria, disco y red, puntuación de salud del equipo, gráfica del historial de las últimas 24 h, detalles del sistema y los procesos que más consumen. |
+| **Inicio** | Medidores de CPU, memoria, disco y red, **tarjeta gráfica** (uso por motor, nombre y controlador), puntuación de salud del equipo, gráfica del historial de las últimas 24 h —CPU, memoria, disco y **tarjeta gráfica**—, detalles del sistema y los procesos que más consumen. |
 | **Optimizar memoria** | Libera RAM recortando los conjuntos de trabajo de los procesos y vaciando la caché del sistema (estilo MemReduct), a mano o **automáticamente** al superar un umbral; mide de verdad lo liberado. |
 | **Programas de inicio** | Lista lo que Windows abre solo al encender el equipo (registro, carpetas de inicio y tareas al iniciar sesión), avisa de las entradas que apuntan a programas que ya no están y **desactiva sin borrar nada**, con cada cambio apuntado para deshacerlo. |
 | **Mantenimiento** | Crea una tarea en el **Programador de tareas de Windows** para limpiar temporales, liberar memoria y generar informes sin abrir la aplicación; muestra próxima ejecución, último resultado e histórico. |
@@ -232,8 +232,11 @@ python app.py --mantenimiento --sin-limpieza --sin-informe --sin-registro
   acaben N tarea(s) en curso…»— en lugar de destruir trabajo a medias. Es lo que evita que Windows
   muestre un error del programa justo al cerrarlo.
 - El **historial** guarda una muestra cada 30 s (configurable) en JSON Lines y conserva 24 horas; en
-  Inicio se dibuja con una línea por métrica, leyenda para ocultar series y cursor con los valores
-  exactos de cada instante.
+  Inicio se dibuja con una línea por métrica —CPU, memoria, disco y **tarjeta gráfica**—, leyenda para
+  ocultar series y cursor con los valores exactos de cada instante. La tarjeta gráfica es la única que
+  no mide el muestreo normal (la lee su vigía), así que su serie solo tiene dato mientras se consulta:
+  donde falte, la línea se **corta** en vez de unir los extremos, porque una recta por el hueco
+  afirmaría un uso que nadie midió.
 
 ### 3.4 Analizador de disco
 
@@ -284,11 +287,54 @@ Medido con `tools\medir_consumo.py` (16 s por perfil):
 
 | Perfil | CPU (% de un núcleo) | RAM | Actualizaciones |
 |---|---|---|---|
-| Completo, a la vista | 2,79 % | 103,3 MB | 13 |
-| Eco, a la vista | 1,23 % | 102,6 MB | 4 |
-| En segundo plano (bandeja) | **0,52 %** | 97,6 MB | 4 |
+| Completo, a la vista | 2,25 % | 111,1 MB | 13 |
+| Eco, a la vista | 1,25 % | 110,2 MB | 4 |
+| En segundo plano (bandeja) | **0,45 %** | 104,6 MB | 4 |
 
-En segundo plano el consumo baja un **81 %** respecto al muestreo completo.
+En segundo plano el consumo baja un **80 %** respecto al muestreo completo.
+
+La **tarjeta gráfica** se consulta con la cadencia del perfil (cada 15 s en completo y cada minuto en
+eco) y, cuando el dato sale de los contadores de Windows, **también con la ventana oculta o en la
+bandeja**: ese camino no abre ningún proceso y es lo que hace que su serie del historial de 24 h se
+llene sin agujeros. Donde Windows no publica el contador la consulta cuesta un proceso de PowerShell,
+y entonces solo se hace con la portada o los informes a la vista (en la bandeja o mirando otra página
+no se pregunta nada); la serie queda con huecos y la gráfica los deja en blanco. El modo eco **no** la
+apaga a propósito: es el de fábrica, y si la apagara la tarjeta no se llenaría nunca. La propia
+tarjeta dice su cadencia y hasta dónde llega la consulta (y cambia con el perfil: «cada minuto» en
+eco), para que un porcentaje que no se mueve cada segundo no parezca un dato viejo. Esa consulta entra
+en la fila «Completo» de la tabla y su coste queda **por debajo del ruido** de este equipo: en una
+comparación directa con la consulta apagada y encendida salieron 2,89 % y 2,25 %, mientras que dos
+pasadas de la misma configuración varían ±0,7 puntos.
+
+El uso de la GPU se lee **sin arrancar ningún proceso**: Windows lo publica en su API de contadores
+de rendimiento (PDH, la que usa el Administrador de tareas) y eso es lo que hace `core/pdh.py`; la
+tarjeta y su controlador salen del registro de clases de dispositivos (`DriverDesc` y
+`DriverVersion`, lo mismo que enseña el Administrador de dispositivos), y CIM solo se usa de
+reserva. Medido en un equipo real (Windows 11, PowerShell 5.1) contando reloj, CPU y memoria de
+las tres vías, que dan el mismo dato (diferencias de 0,0 puntos entre las muestras seguidas):
+
+| Vía | Reloj por vuelta | CPU | Memoria |
+|---|---|---|---|
+| **Contadores (PDH)** — la de siempre | **1,00 s** (la ventana de medida, sin CPU) | **3 ms** | **nada** |
+| Proceso vivo de PowerShell (reserva) | 0,37 s | 38 ms del hijo | USS 50 MB |
+| Un proceso por lectura (reserva) | 2,28 s | ~4 s del hijo | se cierra solo |
+
+El segundo y el tercero son las reservas para un equipo donde Windows no publique el contador de la
+GPU (una máquina virtual sin GPU, por ejemplo): el vigía abre entonces **un** proceso de PowerShell
+y le pide una lectura por línea —arrancar el intérprete son casi todas las 2,4 s de una consulta
+suelta—, cerrándolo en cuanto la tarjeta deja de verse (otra página, la bandeja o al salir de la
+aplicación). La CPU de la vuelta suelta es la del arranque, medido donde se puede leer el tiempo del
+hijo; con el proceso vivo el perfil completo ahorraba unos **16 minutos de CPU por hora** de portada
+abierta, y con los contadores no hay nada que ahorrar: no se gasta. Reserva y camino barato se
+distinguen justo en eso: con los contadores no hay proceso que abrir ni cerrar, así que la tarjeta se
+sigue leyendo con la ventana oculta —y la serie de la GPU se llena como las demás—; con PowerShell, la
+lectura se para en cuanto la tarjeta deja de verse.
+
+Un detalle de PDH que explica su segundo de reloj: un contador de porcentaje necesita **dos
+recogidas** y lo que se mide es la ventana entre ellas. Se usa un segundo, como el Administrador de
+tareas, porque menos da un dato que no es el mismo: medido con el mismo contador, con 5 ms daba
+21,7 % donde con un segundo daba 3,6 %. Ese segundo es una espera del hilo que lee (la lectura va en
+segundo plano), no trabajo: la CPU propia de la vuelta son 3 ms.
 
 ### 3.8 Programas de inicio y deshacer
 
@@ -303,6 +349,7 @@ Lee las mismas fuentes que usa Windows, sin escanear nada de más:
 | Todos los usuarios | `HKLM\...\Run` (vistas de 64 y 32 bits), `RunOnce` | Sí, con permisos de administrador |
 | Carpetas de inicio | `%APPDATA%` y `%ProgramData%`, ruta `...\Start Menu\Programs\Startup` | Sí (la común, con permisos) |
 | Tareas al iniciar sesión | Tareas del Programador con disparador de inicio de sesión, fuera de las de Microsoft | Sí, con `schtasks` |
+| Aplicaciones de la Store | Tareas de inicio de los paquetes AppX, en `HKCU\...\AppModel\SystemAppData\<paquete>` | Sí, escribiendo su estado (2 activada / 1 desactivada) |
 
 **Desactivar no borra nada.** Se escribe la misma marca que escribe el Administrador de tareas en
 `...\Explorer\StartupApproved\Run` (o `Run32`, o `StartupFolder`): un valor binario cuyo primer byte
@@ -331,8 +378,16 @@ Otras decisiones que se ven en pantalla:
   que la calcula por su cuenta.
 - **Dos vistas del registro de sistema**: las entradas de 32 bits viven en `WOW6432Node` y se leen
   aparte, porque los programas antiguos las instalan ahí.
-- **Lo que no se ve**: las aplicaciones de la Microsoft Store (Windows las arranca sin una clave
-  pública estable) y los servicios, que están en *Herramientas → Servicios*.
+- **Aplicaciones de la Store**: no viven en ninguna clave `Run` (por eso no salían antes). Declaran
+  una **tarea de inicio** en su manifiesto y Windows guarda su estado en el registro del usuario, con
+  los mismos valores que publica `Windows.ApplicationModel.StartupTaskState`: `0` desactivada, `1`
+  desactivada por el usuario, `2` activada, `3` desactivada por directiva y `4` activada por
+  directiva. Aquí se escribe `2` o `1`, exactamente lo que deja el Administrador de tareas, y se
+  **relee** para comprobar que quedó escrito; un estado fuera de esa lista (o un paquete con
+  separadores en el nombre) no se toca. El nombre que se enseña es el del menú Inicio («PC Manager»),
+  y si Windows no lo da, la identidad del paquete.
+- **Lo que no se ve**: los servicios, que están en *Herramientas → Servicios*, y las tareas de inicio
+  de Windows que todavía no han escrito su estado (no hay nada que leer ni que cambiar).
 
 El **registro de deshacer** (`undo.py`) apunta cada cambio con su título, cómo estaba antes, cómo
 quedó, su fecha y su origen (`a mano` o `automático`) en `%APPDATA%\PCToolkit\deshacer.jsonl`. Quien
@@ -345,7 +400,11 @@ verifica la lectura, la marca binaria escrita byte a byte, el cambio reversible 
 registro y otra de una carpeta de inicio, el apunte de deshacer con su origen y que un cambio no se
 deshaga dos veces. En la pantalla, que haya una fila por entrada, que ninguna se salga del ancho (ni
 su botón), que no aparezca desplazamiento horizontal y que el botón **Deshacer** devuelva la entrada a
-como estaba.
+como estaba. La lectura de las aplicaciones de la Store se prueba sobre una clave propia del usuario
+(creada y borrada por la suite) y también de punta a punta: activar escribe `2`, el apunte de deshacer
+queda con su origen y deshacer la deja desactivada por el usuario (`1`). Además, todos los guiones de
+PowerShell que la aplicación lleva dentro se le pasan al **analizador** de PowerShell, que los lee sin
+ejecutarlos: así un error de sintaxis no espera a que alguien abra la página que los usa.
 
 ---
 
@@ -499,7 +558,12 @@ en `text_muted`, no con el acento, que en oscuro brillaría más que el propio c
 tiene significado: **verde** para lo saludable, **ámbar** para lo que pide atención y **rojo** para
 los errores. Los datos llevan cuatro tonos propios —CPU azul, memoria cian, disco naranja y red gris
 azulado— que se distinguen en la gráfica, la leyenda y los medidores sin parecer una alerta cuando el
-valor es normal.
+valor es normal. La **tarjeta gráfica** es la única serie sin tono propio: se midió si la paleta
+admitía un quinto color de datos con la separación que se exige (ΔE00 sobre las matrices de Machado)
+y no lo admite —el mejor candidato del tema claro se queda en 19,2 frente al 19,5 de las cuatro
+series y los tres estados—, así que lleva el **neutro** del acento, el mismo de su medidor y su
+tarjeta, y se distingue por eso y por la leyenda en vez de por un matiz que pareciera el de otra
+métrica.
 
 **Comprobado:** el contraste WCAG 4,5:1 de los pares texto/fondo y de los estados en **las dos
 paletas**, el 3:1 de las series, el foco y el borde de selección, que el acento sea neutro y que
@@ -511,6 +575,13 @@ cada paleta tenga su marca de verificación (la del tema oscuro es blanca y sobr
 desaparecería), que el modo `auto` resuelva al del sistema y que un valor ilegible caiga en `auto`,
 además del render claro de la portada (fondo claro, texto oscuro y acento presentes) y del render
 oscuro sin restos del violeta anterior.
+
+De la **tarjeta gráfica** en el historial se comprueba, además, que su serie lleva el neutro de su
+medidor y no el color de otra métrica, que la línea se **corta** donde no hay lectura (y que sin
+ninguna no se dibuja), que su resumen dice «sin datos» en vez de un 0 %, que una muestra sin lectura
+guarda la GPU en blanco (no como cero), que el grabador solo la escribe si el vigía está consultando
+—para no repetir el último valor conocido— y que el vigía sigue consultando con la ventana oculta
+solo cuando el camino es barato (contadores).
 
 ## 4. Línea de comandos
 
@@ -535,6 +606,12 @@ parches/                        Cambios preparados que esperan una comprobación
 build_exe.py / build_exe.bat    Empaquetado de la aplicación con PyInstaller
 build_installer.py / .bat       Empaquetado del instalador y del desinstalador
 firmar.py / firmar.bat          Firma digital con signtool (SHA-256, sello RFC 3161 y verificación)
+assets/
+  pc_toolkit_logo.png           Logotipo original (1024×1024): la fuente del icono
+  pc_toolkit.ico                Icono del ejecutable, generado desde el logotipo con
+                                `tools\app_icon.py` (la suite comprueba que está al día)
+  pc_toolkit_icono.png          El mismo icono en PNG, para revisiones y documentación
+  version_info.txt              Propiedades de versión del ejecutable
 .github/workflows/
   integracion.yml               Comprobaciones de cada envío: compila el ejecutable y el
                                 instalador y pasa la suite (sin firma)
@@ -547,20 +624,22 @@ installer/
   setup_app.py                  Asistente de instalación (y modo silencioso)
   uninstall_app.py              Desinstalador mínimo, sin dependencias gráficas
 pctoolkit/
-  core/                         Lógica sin interfaz: métricas, memoria, arranque de Windows,
-                                mantenimiento, disco, herramientas, tareas, informes, historial,
-                                alertas, preferencias, registro de deshacer y actualizaciones
-                                desde GitHub (`actualizador.py`)
+  core/                         Lógica sin interfaz: métricas, tarjeta gráfica (`gpu.py`),
+                                contadores de rendimiento de Windows (`pdh.py`), memoria,
+                                arranque de Windows, mantenimiento, disco, herramientas, tareas,
+                                informes, historial, alertas, preferencias, registro de deshacer y
+                                actualizaciones desde GitHub (`actualizador.py`)
   ui/                           Interfaz PySide6: temas (claro y oscuro), anuncios accesibles y
-                                roles de los widgets propios, iconos, tarjetas, gráfica, bandeja,
-                                ventana principal y una página por módulo
-tests/smoke_test.py             681 comprobaciones automáticas (núcleo, interfaz, instalador,
-                                firma, dependencias y actualizaciones)
+                                roles de los widgets propios, iconos, tarjetas, gráfica, vigía de la
+                                GPU (`gpu_monitor.py`), bandeja, ventana principal y una página por
+                                módulo
+tests/smoke_test.py             767 comprobaciones automáticas (núcleo, interfaz, instalador,
+                                firma, dependencias, logotipo y actualizaciones)
   _checks.py                    Recuento de comprobaciones, compartido con las guardas
   documentacion.py              Guardas de documentación: capturas, informe de muestra y recuentos
                                 de las guías (se pueden dejar fuera, véase el apartado 7)
 tools/
-  app_icon.py                   Dibuja el icono de la aplicación
+  app_icon.py                   Genera el icono del ejecutable desde el logotipo (y el PNG)
   medir_consumo.py              Mide el consumo de CPU/RAM de cada perfil de muestreo
   capturar_documentacion.py     Rehace todas las capturas de la documentación
   capturar_instalador.py        Capturas del asistente y del desinstalador
@@ -640,7 +719,7 @@ de instalar, ejecutar y desinstalar.
 Pruebas:
 
 ```bat
-.venv\Scripts\python.exe tests\smoke_test.py            681 comprobaciones
+.venv\Scripts\python.exe tests\smoke_test.py            767 comprobaciones
 .venv\Scripts\python.exe tools\verificar_instalacion.py  Instala de verdad y desinstala al terminar
 .venv\Scripts\python.exe tests\documentacion.py         Solo las guardas de documentación
 .venv\Scripts\python.exe tests\smoke_test.py --sin-documentacion   Sin las guardas de documentación
@@ -654,7 +733,7 @@ pruebas de código: así una captura todavía por rehacer no bloquea la comproba
 comprueba únicamente cuando se ejecutan como última parte de la suite.
 
 El total depende del equipo: unas pocas comprobaciones solo se hacen si el sistema tiene bandeja,
-si hay `signtool` disponible o si `dist\` ya está compilado. Con la plataforma real de Qt salen 681;
+si hay `signtool` disponible o si `dist\` ya está compilado. Con la plataforma real de Qt salen 767;
 en modo sin pantalla son unas cuantas menos, porque las que necesitan una bandeja de verdad no se
 ejecutan (la comprobación de que la bandeja solo se usa si el sistema la tiene sí se hace siempre).
 
@@ -693,17 +772,17 @@ Publicar es empujar la rama y la etiqueta con el mismo número:
 
 ```bat
 git push origin main
-git push origin v1.3.0
+git push origin v1.3.1
 ```
 
 Antes del día del estreno conviene **ensayarlo**: en «Actions → Publicar la versión (Windows) → Run
-workflow» se lanza el mismo flujo a mano, con una etiqueta de prueba (`v1.3.0-ensayo` si no se dice
+workflow» se lanza el mismo flujo a mano, con una etiqueta de prueba (`v1.3.1-ensayo` si no se dice
 otra). Compila, pasa la suite —incluida la instalación y desinstalación reales—, calcula los SHA-256
 y crea la publicación con sus archivos adjuntos, pero la deja **en borrador y preliminar**: no sale
 en `/releases/latest` (que es lo que consulta el actualizador), no la ve nadie que no pueda ver el
 repositorio y **no gasta ningún número de versión**. Si la etiqueta del ensayo no empieza por
 `v<versión>-`, el trabajo se para antes de compilar, porque se ensaya la versión que dice el código
-y no otra. Una publicación de ensayo se borra con `gh release delete v1.3.0-ensayo --cleanup-tag`.
+y no otra. Una publicación de ensayo se borra con `gh release delete v1.3.1-ensayo --cleanup-tag`.
 
 La etiqueta dispara [`.github/workflows/publicar.yml`](.github/workflows/publicar.yml), que hace
 todo lo demás: comprueba que la etiqueta y `APP_VERSION` coinciden (si no, se para antes de compilar:
@@ -1071,8 +1150,11 @@ mismo camino (`--firmar` con las opciones en `PCTOOLKIT_SIGN_ARGS`) que usarías
 
 ## 9. Notas y limitaciones
 
-- **Temperatura y GPU**: `psutil` solo expone sensores térmicos en Linux y no da datos de GPU, así
-  que la cuarta tarjeta de Inicio muestra el **tráfico de red**.
+- **Temperatura**: `psutil` solo expone sensores térmicos en Linux, y las vías de Windows que sí los
+  dan exigen permisos de administrador y un controlador con firma (y en muchos equipos la clase de
+  temperatura no existe). Por eso no hay tarjeta de temperatura; la **tarjeta gráfica sí** se muestra
+  (uso por motor, nombre y controlador) con los contadores de rendimiento de Windows. La cuarta
+  tarjeta de Inicio sigue siendo el **tráfico de red**.
 - **Permisos**: sin administrador funcionan el recorte de conjuntos de trabajo, el analizador, las
   alertas, el historial, las tareas, los informes y el mantenimiento programado; el vaciado de
   cachés del sistema y las herramientas marcadas con escudo piden UAC.
@@ -1081,9 +1163,10 @@ mismo camino (`--firmar` con las opciones en `PCTOOLKIT_SIGN_ARGS`) que usarías
 - **Antivirus de terceros** pueden analizar el ejecutable la primera vez (tarda unos segundos).
 - **Bandeja**: si el sistema no tiene bandeja disponible, la aplicación funciona igual sin segundo
   plano y lo avisa en su diálogo de configuración.
-- **Programas de inicio**: las aplicaciones de la Microsoft Store no aparecen en la lista (Windows las
-  arranca sin una clave del registro estable) y los servicios se administran aparte. El «coste» de
-  cada entrada es una estimación propia a partir de su tipo, no la cifra del Administrador de tareas.
+- **Programas de inicio**: las aplicaciones de la Microsoft Store sí aparecen (con su tarea de inicio
+  y el estado que escribe el Administrador de tareas) y los servicios se administran aparte. El
+  «coste» de cada entrada es una estimación propia a partir de su tipo, no la cifra del Administrador
+  de tareas.
 
 ---
 

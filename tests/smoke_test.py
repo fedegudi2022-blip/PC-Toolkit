@@ -95,6 +95,255 @@ def test_metrics() -> None:
     check("Información del equipo", bool(info.get("sistema")) and bool(info.get("nombre_equipo")), info.get("sistema", ""))
 
 
+def test_gpu() -> None:
+    """Tarjeta gráfica: la lectura por los contadores de rendimiento de Windows.
+
+    Aquí lo que hay que probar es el cálculo, porque es donde se puede mentir sin querer:
+    sumar motores distintos daría un número que no existe en ningún sitio, y perder un
+    nombre de motor con otro formato devolvería un 0 con la tarjeta trabajando.
+    """
+    from pctoolkit.core import gpu
+
+    def fila(pid: int, luid: str, eng: int, tipo: str, uso: float) -> dict:
+        return {
+            "motor": f"pid_{pid}_luid_0x00000000_{luid}_phys_0_eng_{eng}_engtype_{tipo}",
+            "uso": uso,
+        }
+
+    filas = [
+        fila(1240, "0x0000897A", 0, "3D", 20.0),
+        fila(6400, "0x0000897A", 3, "3D", 5.0),  # el mismo motor: se suma
+        fila(1240, "0x0000897A", 1, "Copy", 40.0),
+        fila(1240, "0x0000900E", 0, "3D", 70.0),  # otro adaptador: otro motor
+    ]
+    totales = gpu.engine_totals(filas)
+    check(
+        "El uso se suma por motor, no por proceso",
+        totales[("0x00000000_0x0000897a", 0, "3d")] == 25.0,
+        str(totales),
+    )
+    check("Los motores de adaptadores distintos no se mezclan", len(totales) == 3, str(len(totales)))
+    uso, motor = gpu.usage_summary(filas)
+    check("El porcentaje es el del motor más cargado", (uso, motor) == (70.0, "3D"), f"{uso} {motor}")
+    check("Sin ningún motor trabajando, el uso es 0 (que es un dato)", gpu.usage_summary([]) == (0.0, ""))
+    copia = gpu.usage_summary([fila(1, "0x0000897A", 0, "Copy", 9.0)])[1]
+    check("El tipo de motor se enseña en castellano", copia == "copia", copia)
+    # Con la tarjeta parada el uso redondea a 0 % y sigue habiendo un motor «más cargado»
+    # (todos a cero): un 0 % no quiere decir «sin motor», quiere decir «ninguno trabaja».
+    parada = gpu.usage_summary([fila(1, "0x0000897A", 0, "3D", 0.4)])
+    check("Un uso que redondea a 0 sigue trayendo su motor", parada == (0.0, "3D"), str(parada))
+    check(
+        "El uso no puede pasar del 100 %",
+        gpu.usage_summary([fila(1, "0x0000897A", 0, "3D", 60.0), fila(2, "0x0000897A", 0, "3D", 60.0)])[0] == 100.0,
+    )
+
+    salida = json.dumps(
+        {
+            "tarjetas": [{"nombre": "Intel(R) UHD Graphics 730", "controlador": "32.0.101.7092"}],
+            "motores": filas,
+        }
+    )
+    info = gpu.gpu_info_from_output(salida)
+    check(
+        "La ficha trae la tarjeta, su controlador y su uso",
+        info is not None
+        and (info.name, info.driver, info.usage, info.engine)
+        == ("Intel(R) UHD Graphics 730", "32.0.101.7092", 70.0, "3D"),
+        str(info),
+    )
+    nuevo = gpu.gpu_info_from_output(
+        json.dumps({"tarjetas": [], "motores": [{"motor": "formato_nuevo_de_windows", "uso": 77.0}]})
+    )
+    check(
+        "Un nombre de motor con otro formato no se pierde (ni se convierte en un 0)",
+        nuevo is not None and nuevo.usage == 77.0,
+        str(nuevo),
+    )
+    check(
+        "Una salida que no es JSON no se interpreta, y una vacía sí",
+        gpu.gpu_info_from_output("no hay datos") is None and gpu.gpu_info_from_output("{}") is not None,
+    )
+    check("Varias tarjetas se enseñan con su cuenta", gpu.GpuInfo(name="A", cards=("A", "B")).label == "A (+1)")
+
+    # --- Lo que ve el resto de la aplicación ------------------------------
+    servicio = MetricsService()
+    servicio.set_gpu(info)
+    muestra = servicio.poll()
+    check(
+        "La muestra lleva la tarjeta, su controlador y su motor",
+        (muestra.gpu_name, muestra.gpu_driver, muestra.gpu_percent, muestra.gpu_engine)
+        == ("Intel(R) UHD Graphics 730", "32.0.101.7092", 70.0, "3D"),
+        f"{muestra.gpu_name} {muestra.gpu_percent}",
+    )
+    ficha = servicio.system_info()
+    check(
+        "La ficha del equipo lleva la tarjeta y su controlador",
+        ficha["grafica"] == "Intel(R) UHD Graphics 730" and ficha["controlador_grafico"] == "32.0.101.7092",
+        str(ficha.get("grafica")),
+    )
+    servicio.set_gpu(None)
+    check(
+        "Sin lectura, la muestra no inventa un 0 y el servicio lo deja dicho",
+        servicio.gpu_failed
+        and servicio.poll().gpu_percent is None
+        and servicio.system_info()["grafica"] == "",
+    )
+
+    # --- El proceso vivo --------------------------------------------------
+    # Arrancar PowerShell son ~2,2 s de los ~2,4 s de una lectura (medido: 2,22 s de reloj y
+    # ~4 s de CPU por vuelta suelta, 0,36 s de reloj y 0,04 s de CPU con el proceso vivo), así
+    # que mientras la tarjeta está a la vista se mantiene uno y se le pide una lectura por
+    # línea. Con un guion de mentira se comprueba el protocolo sin tocar los contadores del
+    # equipo: un solo proceso para varias lecturas, el ruido de la salida se salta y, si el
+    # proceso se muere, la lectura siguiente arranca otro.
+    if os.name == "nt":
+        import psutil
+
+        from pctoolkit.ui.gpu_monitor import GpuMonitor
+
+        def canario(nombre: str = "GPU de mentira") -> str:
+            """Guion de mentira: ensucia la salida y contesta siempre la misma ficha."""
+            ficha = json.dumps(
+                {
+                    "tarjetas": [{"nombre": nombre, "controlador": "1.2.3"}],
+                    "motores": [
+                        {
+                            "motor": "pid_7_luid_0x00000000_0x0000897A_phys_0_eng_0_engtype_3D",
+                            "uso": 37,
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            )
+            return (
+                "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+                "$ErrorActionPreference='SilentlyContinue';"
+                "while ($true) { $p = [Console]::In.ReadLine(); if ($null -eq $p) { break };"
+                " [Console]::Out.WriteLine('ruido que no es una respuesta');"
+                f" [Console]::Out.WriteLine('{gpu.RESPUESTA}{ficha}');"
+                " [Console]::Out.Flush() }"
+            )
+
+        lector = gpu.GpuReader(script=canario())
+        try:
+            lecturas = [lector.read() for _ in range(3)]
+            check(
+                "El proceso vivo contesta varias lecturas sin volver a arrancar",
+                lector.starts == 1
+                and lector.reads == 3
+                and [info.usage if info else None for info in lecturas] == [37, 37, 37],
+                f"{lector.starts} arranque(s), {lector.reads} lectura(s), pid={lector.pid}",
+            )
+            check(
+                "El ruido que suelta el guion por la salida no descoloca la conversación",
+                all(info is not None and info.name == "GPU de mentira" for info in lecturas),
+                str(lecturas[0]),
+            )
+            pid = lector.pid
+            psutil.Process(pid).kill()
+            time.sleep(0.4)
+            de_nuevo = lector.read()
+            check(
+                "Si el proceso se muere, la lectura siguiente arranca otro",
+                de_nuevo is not None and lector.starts == 2 and lector.pid not in (None, pid),
+                f"arranques {lector.starts}, pid nuevo {lector.pid}",
+            )
+        finally:
+            lector.close()
+        check("El proceso vivo se cierra al pedirlo (no queda nada de fondo)", not lector.alive)
+
+        # Y quien decide cuándo vive es el vigía: se abre al empezar a mirar la tarjeta y se
+        # cierra al dejar de mirarla. La lectura se sustituye por una falsa para no arrancar
+        # un PowerShell de verdad en mitad de la suite.
+        app = QApplication.instance() or QApplication(sys.argv[:1])
+        original_read = gpu.read_gpu_info
+        gpu.read_gpu_info = lambda *a, **k: None
+        try:
+            vigia = GpuMonitor()
+            vigia.start()
+            abierto = gpu.reader_open()
+            # La lectura va en un hilo: se espera a que termine antes de soltar el vigía
+            # (un hilo vivo mientras Qt destruye su objeto aborta el proceso).
+            for _ in range(30):
+                if not vigia.busy:
+                    break
+                _settle(app, 100)
+            vigia.stop()
+            cerrado = not gpu.reader_open()
+        finally:
+            gpu.read_gpu_info = original_read
+        check(
+            "El proceso vivo vive lo que dura el vistazo a la tarjeta",
+            abierto and cerrado,
+            f"al vigilar abierto={abierto}, al parar cerrado={cerrado}",
+        )
+
+    # --- El camino directo: contadores de Windows, sin ningún proceso ------
+    # El uso de la GPU se puede leer por PDH (la API que usa el Administrador de tareas) y la
+    # tarjeta por el registro: milisegundos y ninguna memoria, frente a los ~2,4 s y el
+    # proceso de PowerShell. Se comprueba con un contador que existe en cualquier Windows que
+    # el mecanismo funciona (abrir, recoger, leer el array de instancias), y con el de la GPU
+    # —si el equipo lo publica— que coincide con el camino de PowerShell.
+    from pctoolkit.core import pdh
+
+    procesos = pdh.sample(r"\Process(*)\ID Process", window_s=0.05)
+    identificadores = [valor for _, valor in procesos if valor > 0]
+    check(
+        "Los contadores de Windows se leen sin arrancar nada (y el array se entiende)",
+        len(identificadores) >= 3 and all(valor == int(valor) for valor in identificadores[:10]),
+        f"{len(procesos)} instancias, {len(identificadores)} con identificador",
+    )
+
+    if os.name == "nt" and gpu.engine_counters_available():
+        arranque = time.perf_counter()
+        directo = gpu.read_gpu_info_pdh()
+        reloj_directo = time.perf_counter() - arranque
+        check(
+            "El uso de la GPU se lee por los contadores, sin ningún proceso",
+            directo is not None
+            and 0.0 <= directo.usage <= 100.0
+            # La equivalencia va en un solo sentido: con la tarjeta parada el uso redondea a
+            # 0 % y el motor más cargado sigue teniendo nombre (todos están a cero), pero un
+            # uso que no sea cero siempre trae motor. Pedirla completa hacía que la
+            # comprobación fallara en un equipo con la gráfica en reposo, que es lo normal.
+            and (directo.usage == 0.0 or bool(directo.engine)),
+            f"{directo.usage if directo else None} % · {directo.engine if directo else ''} · en {reloj_directo:.2f} s",
+        )
+        # Con los contadores a mano, el proceso de reserva no debe arrancar ni una vez: es el
+        # ahorro entero (~50 MB y toda la CPU de la vuelta).
+        reserva = gpu.open_reader()
+        try:
+            gpu.read_gpu_info()
+            arranques = reserva.starts
+        finally:
+            gpu.close_reader()
+        check(
+            "Con los contadores a mano no se arranca el proceso de reserva",
+            arranques == 0,
+            f"{arranques} arranque(s) del proceso de PowerShell",
+        )
+        # Y los dos caminos tienen que contar la misma historia: misma tarjeta, mismo
+        # controlador y un uso que se parezca (las dos muestras no son del mismo instante,
+        # así que se compara contra el ruido de muestreo, no exactamente).
+        original_pdh = gpu.read_gpu_info_pdh
+        gpu.read_gpu_info_pdh = lambda: None
+        try:
+            por_powershell = gpu.read_gpu_info()
+        finally:
+            gpu.read_gpu_info_pdh = original_pdh
+        check(
+            "El camino directo y el de PowerShell ven la misma tarjeta",
+            por_powershell is not None
+            and (directo.name, directo.driver, directo.cards) == (por_powershell.name, por_powershell.driver, por_powershell.cards),
+            f"PDH {directo.label!r}/{directo.driver!r} · PowerShell {por_powershell.label!r}/{por_powershell.driver!r}",
+        )
+        check(
+            "Y miden el mismo uso (dentro del ruido de dos muestras seguidas)",
+            por_powershell is not None and abs(directo.usage - por_powershell.usage) <= 15.0,
+            f"PDH {directo.usage} % · PowerShell {por_powershell.usage if por_powershell else None} %",
+        )
+
+
 def test_disk() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         base = build_sample_tree(Path(tmp) / "muestra")
@@ -257,6 +506,37 @@ def test_reports() -> None:
         check("JSON válido", json_file.read_text(encoding="utf-8").startswith("{"))
         check("Nombres con extensión correcta", {html.suffix, csv_file.suffix, json_file.suffix} == {".html", ".csv", ".json"})
         check("Resumen corto", len(list(reports.summary_lines(report))) >= 5)
+        # La tarjeta gráfica entra en el informe si se pudo leer, y no aparece si no: un 0
+        # sería decir que está parada sin haberlo medido.
+        import dataclasses as _dataclasses
+
+        con_grafica = _dataclasses.replace(
+            snap,
+            gpu_name="Intel(R) UHD Graphics 730",
+            gpu_driver="32.0.101.7092",
+            gpu_percent=42.0,
+            gpu_engine="3D",
+        )
+        informe_grafica = reports.build_report(
+            snapshot=con_grafica, system_info=service.system_info(), drives=[], tasks=[]
+        )
+        check(
+            "El informe lleva la tarjeta gráfica en su resumen",
+            informe_grafica["resumen"]["gpu_nombre"] == "Intel(R) UHD Graphics 730"
+            and informe_grafica["resumen"]["gpu_porcentaje"] == 42.0
+            and informe_grafica["resumen"]["gpu_motor"] == "3D",
+            str(informe_grafica["resumen"].get("gpu_nombre")),
+        )
+        html_grafica = reports._html(informe_grafica)
+        check(
+            "El HTML del informe enseña la tarjeta con su controlador",
+            "Gráfica" in html_grafica and "32.0.101.7092" in html_grafica,
+        )
+        sin_lectura = reports.build_report(snapshot=snap, system_info=service.system_info(), drives=[], tasks=[])
+        check(
+            "Sin lectura de la tarjeta, el informe no la menciona ni inventa un 0",
+            sin_lectura["resumen"]["gpu_porcentaje"] is None and "Gráfica" not in reports._html(sin_lectura),
+        )
         target = reports.unique_path(out, "informe.html")
         check("No sobrescribe archivos", target.name == "informe_1.html", target.name)
 
@@ -382,11 +662,41 @@ def test_history() -> None:
         store.clear()
         check("Historial borrado", not path.exists() and store.count() == 0)
 
+        # --- La GPU: una serie con huecos ---------------------------------
+        # Su uso no sale del muestreo normal sino de su vigía, así que solo existe mientras se
+        # consulta la tarjeta. Se comprueba el trato: la clave se escribe solo cuando hay dato
+        # (las muestras guardadas antes se leen igual), sin lectura la muestra queda en blanco
+        # —el hueco, no un 0 %— y las estadísticas cuentan las lecturas aparte.
+        store = HistoryStore(path)
+        store.append(Sample(timestamp=now - 600, cpu=10.0, ram=20.0, disk=30.0))
+        store.append(Sample(timestamp=now - 300, cpu=11.0, ram=21.0, disk=31.0, gpu=17.0))
+        store.append(Sample(timestamp=now, cpu=12.0, ram=22.0, disk=32.0, gpu=45.0))
+        lineas = [json.loads(linea) for linea in path.read_text(encoding="utf-8").splitlines()]
+        check("El uso de la GPU se guarda en la muestra", lineas[-1]["g"] == 45.0, str(lineas[-1]))
+        check("Y no ocupa sitio en las muestras sin lectura", "g" not in lineas[0], str(lineas[0]))
+        guardadas = store.load(hours=24, now=now)
+        check(
+            "Sin lectura, la GPU queda en blanco y no en cero",
+            guardadas[0].gpu is None and guardadas[-1].gpu == 45.0,
+            str([muestra.gpu for muestra in guardadas]),
+        )
+        stats = store.stats(hours=24, now=now)
+        check(
+            "Las estadísticas de la GPU cuentan solo sus lecturas",
+            stats["gpu"]["media"] == 31.0 and stats["gpu"]["maximo"] == 45.0 and stats["gpu"]["datos"] == 2,
+            str(stats["gpu"]),
+        )
+        check("Y cada métrica dice con cuántas muestras se calculó", stats["cpu"]["datos"] == 3, str(stats["cpu"]))
+        store.clear()
+
         # Recorder: guarda como máximo una muestra por intervalo.
         from PySide6.QtCore import QObject, Signal
 
         class FakeMetrics(QObject):
             sampled = Signal(object)
+            # El vigía de la GPU: con la consulta parada, el último uso leído sigue en el
+            # instantáneo, así que el grabador tiene que saber que ya no está vivo.
+            gpu_watched = False
 
         class FakeSnapshot:
             cpu_percent = 12.0
@@ -394,6 +704,7 @@ def test_history() -> None:
             disk_percent = 56.0
             net_down_rate = 1024.0
             net_up_rate = 512.0
+            gpu_percent = 61.0
 
         store = HistoryStore(path)
         metrics = FakeMetrics()
@@ -409,6 +720,14 @@ def test_history() -> None:
         check("Muestra forzada guardada", store.count() == 2)
         saved = store.load(hours=24, now=time_module.time() + 60)
         check("Valores guardados correctos", saved[-1].ram == 34.0 and saved[-1].net_down == 1024.0, str(saved[-1]))
+        # El uso de la GPU solo se guarda si su vigía está consultando la tarjeta: con la
+        # consulta parada, repetir el último valor conocido muestra tras muestra dibujaría
+        # una línea plana que la tarjeta no hizo.
+        check("Con el vigía parado la muestra no lleva GPU", saved[-1].gpu is None, str(saved[-1].gpu))
+        metrics.gpu_watched = True
+        con_vigia = recorder.record(FakeSnapshot(), now=time_module.time() + 120)
+        check("Con el vigía consultando, el uso entra en la muestra", con_vigia.gpu == 61.0, str(con_vigia.gpu))
+        metrics.gpu_watched = False
         check("Archivo de historial en la carpeta de datos", HistoryStore().path.parent.name == "PCToolkit", str(HistoryStore().path))
 
 
@@ -1130,6 +1449,148 @@ def test_startup() -> None:
         check("El almacén se vacía", almacen.count() == 0 and almacen.pending() == [])
     finally:
         startup.APPROVED_PATHS = claves_permitidas
+
+    # --- Aplicaciones de la Microsoft Store -------------------------------
+    # El estado de sus tareas de inicio vive en otra rama del registro, así que se prueba en
+    # una clave propia del usuario (y se borra al terminar): el mismo camino que usa la
+    # aplicación con una aplicación de verdad, sin tocar ninguna.
+    clave_store = r"Software\PCToolkit\PruebaStore"
+    paquete = "Prueba.PaqueteDeLaStore_abc123"
+    tarea = "TareaDeInicio"
+    ruta_store_original = startup.STORE_PATH
+    almacen_store = undo.UndoStore(Path(_TEMP_HOME) / "deshacer_store.jsonl")
+    almacen_store.clear()
+    try:
+        with winreg.CreateKeyEx(
+            winreg.HKEY_CURRENT_USER, f"{clave_store}\\{paquete}\\{tarea}", 0, winreg.KEY_ALL_ACCESS
+        ) as clave:
+            winreg.SetValueEx(clave, startup.STORE_STATE_VALUE, 0, winreg.REG_DWORD, 0)
+        lectura = json.dumps(
+            [
+                {
+                    "paquete": paquete,
+                    "tarea": tarea,
+                    "estado": 0,
+                    "nombre": "PC Manager",
+                    "identidad": "Microsoft.PCManager",
+                }
+            ]
+        )
+        entrada = startup.store_entries_from_output(lectura)[0]
+        check(
+            "Una aplicación de la Store se lee con el nombre que enseña Windows",
+            entrada.name == "PC Manager"
+            and entrada.source == startup.SOURCE_STORE
+            and entrada.kind == startup.KIND_STORE
+            and not entrada.enabled,
+            f"{entrada.name} · {entrada.source} · {entrada.status_label}",
+        )
+        check(
+            "Una aplicación de la Store no tiene comando: no hay ruta que enseñar",
+            entrada.command == "" and entrada.target_exists is None and not entrada.problem,
+            str(entrada.target_exists),
+        )
+        check(
+            "Su coste es una estimación explicada, como el de una tarea",
+            entrada.cost[0] == startup.COST_MEDIO and "Store" in entrada.cost[1],
+            entrada.cost[1],
+        )
+        sin_nombre = startup.store_entries_from_output(
+            json.dumps([{"paquete": paquete, "tarea": tarea, "estado": 2}])
+        )[0]
+        check(
+            "Sin nombre en el menú Inicio se usa la identidad del paquete",
+            sin_nombre.name == "Prueba.PaqueteDeLaStore",
+            sin_nombre.name,
+        )
+        check(
+            "Los estados que publica Windows se leen todos",
+            {valor: startup.store_state_enabled(valor) for valor in range(5)}
+            == {0: False, 1: False, 2: True, 3: False, 4: True},
+        )
+        check(
+            "Un estado que Windows no documenta no se adivina",
+            startup.store_state_enabled(9) is None and startup.store_state_enabled(None) is None,
+        )
+        check(
+            "Una tarea con estado desconocido no se enseña ni se toca",
+            startup.store_entries_from_output(
+                json.dumps([{"paquete": paquete, "tarea": tarea, "estado": 9}])
+            )
+            == [],
+        )
+        check(
+            "Un paquete con separadores no llega al registro",
+            startup.store_entries_from_output(json.dumps([{"paquete": r"..\..\Run", "tarea": "X", "estado": 2}])) == [],
+        )
+        check(
+            "Las aplicaciones de la Store van al final de la lista, como un origen más",
+            startup.SOURCE_STORE in startup.SOURCES_ORDER
+            and startup.source_order(startup.SOURCE_STORE) == len(startup.SOURCES_ORDER) - 1,
+        )
+        check(
+            "El resumen las cuenta en su origen",
+            startup.summary([entrada])["por_origen"].get(startup.SOURCE_STORE) == 1,
+            str(startup.summary([entrada])["por_origen"]),
+        )
+        # El estado se escribe en la clave del paquete y se relee, igual que las marcas de
+        # Windows: un cambio que no quedó escrito no se puede contar como hecho.
+        startup.STORE_PATH = clave_store
+        ok, mensaje = startup.move(entrada, True, almacen_store)
+        check("Activar la tarea de una aplicación de la Store", ok, mensaje)
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, f"{clave_store}\\{paquete}\\{tarea}") as clave:
+            estado, _tipo = winreg.QueryValueEx(clave, startup.STORE_STATE_VALUE)
+        check(
+            "Windows guarda el estado de activada (2), el mismo del Administrador de tareas",
+            estado == 2,
+            str(estado),
+        )
+        apunte = almacen_store.all()[0]
+        check(
+            "El cambio queda apuntado para deshacer",
+            apunte.kind == undo.KIND_ARRANQUE
+            and apunte.before == "Desactivada"
+            and apunte.after == "Activada",
+            apunte.summary,
+        )
+        deshecho, mensaje = undo.revert_action(almacen_store, apunte)
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, f"{clave_store}\\{paquete}\\{tarea}") as clave:
+            estado, _tipo = winreg.QueryValueEx(clave, startup.STORE_STATE_VALUE)
+        check(
+            "Deshacer la deja desactivada por el usuario (1)",
+            deshecho and estado == 1,
+            f"{mensaje} · estado {estado}",
+        )
+        check("La lectura de la Store en este equipo no se cae", isinstance(startup.read_store_entries(), list))
+        # Las dos lecturas lentas de la página van juntas: un solo trabajo de fondo.
+        entrada_tarea = startup.StartupEntry(
+            id="tarea|\\Prueba",
+            name="Prueba",
+            command="",
+            source=startup.SOURCE_TAREA,
+            location="",
+            kind=startup.KIND_TAREA,
+            enabled=True,
+        )
+        de_tareas, de_store = startup.read_task_entries, startup.read_store_entries
+        startup.read_task_entries = lambda: [entrada_tarea]
+        startup.read_store_entries = lambda: [entrada]
+        try:
+            juntas = startup.read_slow_entries()
+            check(
+                "Las dos lecturas lentas llegan juntas a la página",
+                [item.id for item in juntas] == [entrada_tarea.id, entrada.id],
+                str([item.id for item in juntas]),
+            )
+        finally:
+            startup.read_task_entries, startup.read_store_entries = de_tareas, de_store
+    finally:
+        startup.STORE_PATH = ruta_store_original
+        for ruta in (f"{clave_store}\\{paquete}\\{tarea}", f"{clave_store}\\{paquete}", clave_store):
+            try:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, ruta)
+            except OSError:
+                pass
         _borrar_clave_registro(winreg.HKEY_CURRENT_USER, base)
     check("La clave de prueba del registro se elimina", not _existe_clave_registro(winreg.HKEY_CURRENT_USER, base))
 
@@ -1987,7 +2448,8 @@ def test_installer() -> None:
 
 
 def test_interface() -> None:
-    from PySide6.QtCore import QSettings, QTime, Qt
+    from PySide6.QtCore import QPoint, QSettings, QTime, Qt
+    from PySide6.QtGui import QAccessible
 
     from pctoolkit.core.alerts import METRIC_CPU, METRIC_DISK, METRIC_RAM, AlertConfig
     from pctoolkit.core.history import HistoryStore
@@ -2023,6 +2485,51 @@ def test_interface() -> None:
     window._on_sample(snap)  # noqa: SLF001
     check("Ventana creada", window.centralWidget() is not None)
 
+    # El icono de la ventana es el logotipo de la aplicación, no un glifo dibujado: se
+    # reconoce por su verde, que ningún icono de la interfaz tiene (son monocromos).
+    icono_ventana = window.windowIcon().pixmap(64).toImage()
+    verdes = sum(
+        1
+        for x in range(0, icono_ventana.width(), 3)
+        for y in range(0, icono_ventana.height(), 3)
+        if (color := icono_ventana.pixelColor(x, y)).alpha()
+        and color.green() - max(color.red(), color.blue()) > 40
+    )
+    check(
+        "El icono de la ventana es el logotipo (lleva su verde, no el glifo dibujado)",
+        verdes > 0,
+        f"{verdes} muestras con verde dominante",
+    )
+
+    # La marca de la barra lateral: el logotipo con nombre accesible (una imagen no se lee
+    # sola) y arriba, donde está el nombre de la aplicación.
+    from pctoolkit.ui import accessibility as accesibilidad
+    from pctoolkit.ui.widgets import BrandLogo
+
+    logotipo_lateral = window.brand_logo
+    esquina = logotipo_lateral.mapTo(window, QPoint(0, 0))
+    verde_marca = sum(
+        1
+        for x in range(0, logotipo_lateral.pixmap().width(), 3)
+        for y in range(0, logotipo_lateral.pixmap().height(), 3)
+        if (color := logotipo_lateral.pixmap().toImage().pixelColor(x, y)).alpha()
+        and color.green() - max(color.red(), color.blue()) > 40
+    )
+    check(
+        "La barra lateral enseña el logotipo, con nombre para el lector de pantalla",
+        isinstance(logotipo_lateral, BrandLogo)
+        and "Logotipo" in logotipo_lateral.accessibleName()
+        and verde_marca > 0,
+        f"{logotipo_lateral.accessibleName()!r} · {verde_marca} muestras verdes",
+    )
+    check(
+        "El logotipo va en la esquina de la marca, sobre el nombre de la aplicación",
+        accesibilidad.role_of(logotipo_lateral) == QAccessible.Role.Graphic
+        and esquina.x() < 60
+        and esquina.y() < 100,
+        f"en ({esquina.x()}, {esquina.y()})",
+    )
+
     # --- La guarda de instancia única ---------------------------------------
     # Con la copia abierta como administrador y el acceso directo lanzado normal, Windows
     # descarta los mensajes entre niveles de integridad distintos: la ventana se quedaría
@@ -2044,14 +2551,20 @@ def test_interface() -> None:
     check("Ocho páginas cargadas", window.stack.count() == 8, str(window.stack.count()))
     # Arrancar no debe lanzar trabajo en segundo plano (una consulta del
     # Programador de tareas son varios segundos de PowerShell): el estado real se
-    # lee al abrir esa página.
+    # lee al abrir esa página. La única que puede estar en marcha es la de la tarjeta
+    # gráfica, y no por arrancar sino por estar abierta la portada, que es donde se
+    # enseña: cuando el usuario mire otra página, esa consulta se para.
+    from pctoolkit.core import gpu as gpu_core_arranque
     from pctoolkit.ui import workers as workers_ui
 
-    en_marcha_al_arrancar = workers_ui.pending_calls()
+    permitida = {gpu_core_arranque.read_gpu_info.__name__}
+    en_marcha_al_arrancar = [
+        call for call in workers_ui.pending_calls() if call.describe() not in permitida
+    ]
     check(
-        "Sin consultas en segundo plano al arrancar",
+        "Al arrancar no se consulta nada en segundo plano (salvo la tarjeta de la portada)",
         not en_marcha_al_arrancar,
-        ", ".join(call.describe() for call in en_marcha_al_arrancar),
+        ", ".join(call.describe() for call in en_marcha_al_arrancar) or "nada más",
     )
     check(
         "El estado del mantenimiento no se consulta hasta abrir la página",
@@ -2432,6 +2945,9 @@ def test_interface() -> None:
             cpu=20 + index % 10,
             ram=50 + index % 7,
             disk=60.0,
+            # La GPU va por su cuenta (y alta a propósito, para que su línea no se cruce con
+            # las otras tres y cada una se pueda buscar en su sitio).
+            gpu=85 + index % 4 * 2,
         )
         for index in range(40)
     ]
@@ -2450,6 +2966,35 @@ def test_interface() -> None:
         and "máx" in window.dashboard.history_stats["disk"].text(),
         window.dashboard.history_stats["cpu"].text(),
     )
+    # El resumen de la GPU sale de la misma cuenta que el de las demás (media y máximo de sus
+    # lecturas) y, con ninguna lectura, dice «sin datos» en vez de un 0 %, que diría que la
+    # tarjeta no trabajó justo cuando lo que pasó es que nadie la miró. Se prueba con muestras
+    # conocidas —el archivo lo comparte el grabador de la ventana, que sigue escribiendo— y se
+    # comprueba el texto exacto que sale a la pantalla.
+    resumen = [
+        Sample(timestamp=base - 1200, cpu=10.0, ram=20.0, disk=30.0, gpu=85.0),
+        Sample(timestamp=base - 600, cpu=10.0, ram=20.0, disk=30.0),
+        Sample(timestamp=base, cpu=10.0, ram=20.0, disk=30.0, gpu=91.0),
+    ]
+    guardado = window.dashboard._samples  # noqa: SLF001
+    window.dashboard._samples = resumen  # noqa: SLF001
+    window.dashboard._render_history()  # noqa: SLF001
+    check(
+        "La GPU se resume como las demás series (media y máximo de sus lecturas)",
+        window.dashboard.history_stats["gpu"].text() == "GPU: media 88% · máx 91%",
+        window.dashboard.history_stats["gpu"].text(),
+    )
+    window.dashboard._samples = [  # noqa: SLF001
+        Sample(timestamp=base - (3 - index) * 600, cpu=10.0, ram=20.0, disk=30.0) for index in range(3)
+    ]
+    window.dashboard._render_history()  # noqa: SLF001
+    check(
+        "Y sin ninguna lectura dice que no hay datos, no un 0 %",
+        window.dashboard.history_stats["gpu"].text() == "GPU: sin datos",
+        window.dashboard.history_stats["gpu"].text(),
+    )
+    window.dashboard._samples = guardado  # noqa: SLF001
+    window.dashboard.reload_history()
     check("Etiqueta de rango temporal", "Datos de l" in window.dashboard.history_range.text(), window.dashboard.history_range.text())
     window.dashboard._toggle_series("disk", False)  # noqa: SLF001
     check("Serie oculta desde la leyenda", window.dashboard.chart.is_series_visible("disk") is False)
@@ -2496,7 +3041,35 @@ def test_interface() -> None:
                 best = distance if best is None else min(best, distance)
             if best is not None and best <= 70:
                 hits[key] += 1
-    check("Las tres series se pintan en su posición", all(value >= 5 for value in hits.values()), str(hits))
+    check("Las cuatro series se pintan en su posición", all(value >= 5 for value in hits.values()), str(hits))
+    check(
+        "La serie de la GPU lleva el neutro de su medidor, no el color de otra métrica",
+        [color for key, _label, color in SERIES if key == "gpu"] == ["accent_soft"]
+        and len({color for _key, _label, color in SERIES}) == len(SERIES),
+        str(SERIES),
+    )
+    # La GPU solo tiene dato mientras se consulta la tarjeta, así que su serie lleva huecos:
+    # la línea se corta donde no hay lectura en vez de unir los extremos (una recta por el
+    # hueco afirmaría un uso que nadie midió).
+    huecos = [
+        Sample(timestamp=base - 3000, cpu=10.0, ram=10.0, disk=10.0, gpu=20.0),
+        Sample(timestamp=base - 2400, cpu=10.0, ram=10.0, disk=10.0),
+        Sample(timestamp=base - 1800, cpu=10.0, ram=10.0, disk=10.0, gpu=40.0),
+    ]
+    chart.set_samples(huecos)
+    tramos = chart._series_runs(chart._plot_rect(), "gpu")  # noqa: SLF001
+    check(
+        "La serie de la GPU se corta donde no hay lectura",
+        [len(tramo) for tramo in tramos] == [1, 1],
+        str([len(tramo) for tramo in tramos]),
+    )
+    chart.set_samples([Sample(timestamp=base, cpu=10.0, ram=10.0, disk=10.0)] * 3)
+    check(
+        "Y sin ninguna lectura no dibuja línea de GPU",
+        chart._series_runs(chart._plot_rect(), "gpu") == [],  # noqa: SLF001
+        str(chart.sample_count),
+    )
+    window.dashboard.reload_history()
     empty_chart = window.dashboard.history
     empty_chart.clear()
     window.dashboard.reload_history()
@@ -2592,7 +3165,10 @@ def test_interface() -> None:
     check("Intervalo se acota al guardar", AppSettings(QSettings(str(Path(_TEMP_HOME) / "ajustes_prueba.ini"), QSettings.IniFormat)).history_interval_seconds == 15)
     window.settings.history_interval_seconds = 30
 
-    # Cerrar con la bandeja activa mantiene la app en segundo plano.
+    # Cerrar con la bandeja activa mantiene la app en segundo plano. Se fuerza el camino
+    # barato de la tarjeta (contadores de Windows) para que la comprobación del cierre valga
+    # igual en un equipo que no los publique.
+    window.gpu_monitor._cheap = True  # noqa: SLF001
     if tray_available():
         window.show()
         _settle(app, 150)
@@ -2604,6 +3180,18 @@ def test_interface() -> None:
         check("Salir desde la bandeja cierra de verdad", window._force_quit is True)  # noqa: SLF001
     else:
         window.quit_application()
+
+    # Cerrar no puede volver a poner en marcha el vigía de la tarjeta. Al aceptar el cierre,
+    # Qt oculta la ventana y manda un `hideEvent` **después** de haber parado el vigía, y ese
+    # ajuste lo arrancaba otra vez (con los contadores de Windows la tarjeta se consulta
+    # aunque la ventana no se vea, que es la regla normal). La lectura que arrancaba dejaba un
+    # hilo vivo mientras Qt destruía la ventana, y el proceso abortaba al salir (0xC0000409):
+    # es el fallo que tumbaba la comprobación del ejecutable y con ella la publicación.
+    check(
+        "Cerrar no vuelve a poner en marcha la tarjeta (dejaría un hilo vivo al salir)",
+        not window.gpu_monitor.active,
+        f"vigía={'activo' if window.gpu_monitor.active else 'parado'}",
+    )
 
     # Se reabre para el resto de comprobaciones de interfaz.
     window = MainWindow(app_settings, history_store)
@@ -3047,6 +3635,214 @@ def test_interface() -> None:
         window.dashboard.health_meter.accessibleDescription(),
     )
 
+    # --- Tarjeta gráfica en la portada -------------------------------------
+    # El dato no viene del muestreo: lo trae el vigía de la GPU. Se comprueba lo que enseña
+    # con él y sin él, que es cuando tiene que decir por qué no hay nada.
+    import threading
+
+    from pctoolkit.core import gpu as gpu_core
+    from pctoolkit.ui import gpu_monitor
+    from pctoolkit.ui.gpu_monitor import GpuMonitor
+
+    # El vigía sigue a la página que la enseña, con una excepción que es justo lo que llena
+    # la serie del historial: con los contadores de Windows el uso se lee sin abrir ningún
+    # proceso, así que la tarjeta se sigue mirando aunque su tarjeta no se vea. Donde Windows
+    # no publica el contador el camino es un PowerShell de ~2,5 s, y entonces vale la regla de
+    # siempre: solo con la tarjeta delante.
+    barato = gpu_core.engine_counters_available()
+    window.navigate("home")
+    _settle(app, 250)
+    check(
+        "La tarjeta se consulta mientras se ve la portada",
+        window.gpu_monitor.active,
+        str(window.gpu_monitor.active),
+    )
+    window.navigate("tools")
+    _settle(app, 250)
+    check(
+        "Con la tarjeta fuera de la vista se sigue consultando si el camino es barato",
+        window.gpu_monitor.active == barato,
+        f"vigía={'activo' if window.gpu_monitor.active else 'parado'}; contadores de Windows={barato}",
+    )
+    check(
+        "Y el historial sabe si la lectura está viva (para no repetir la última)",
+        window.metrics.gpu_watched == window.gpu_monitor.active,
+        f"gpu_watched={window.metrics.gpu_watched}; vigía={'activo' if window.gpu_monitor.active else 'parado'}",
+    )
+    window.navigate("home")
+    _settle(app, 250)
+
+    ficha = gpu_core.GpuInfo(
+        name="Intel(R) UHD Graphics 730",
+        driver="32.0.101.7092",
+        usage=42.0,
+        engine="3D",
+        cards=("Intel(R) UHD Graphics 730",),
+    )
+    con_grafica = _dataclasses.replace(
+        instantaneo,
+        gpu_name=ficha.name,
+        gpu_driver=ficha.driver,
+        gpu_percent=ficha.usage,
+        gpu_engine=ficha.engine,
+    )
+    window.metrics.set_gpu(ficha)
+    tablero.update_snapshot(con_grafica, window.metrics.system_info())
+    check(
+        "La portada enseña la tarjeta gráfica con su uso",
+        tablero.gpu_state.text() == "Intel(R) UHD Graphics 730"
+        and tablero.gpu_rows["controlador"].text() == "32.0.101.7092"
+        and tablero.gpu_rows["motor"].text() == "3D"
+        and tablero.gpu_gauge._display == "42 %",  # noqa: SLF001
+        f"{tablero.gpu_state.text()} · {tablero.gpu_gauge._display}",  # noqa: SLF001
+    )
+    check(
+        "El medidor de la gráfica usa el neutro: la paleta no tiene quinta serie de datos",
+        tablero.gpu_gauge._accent == COLORS["accent_soft"],  # noqa: SLF001
+        tablero.gpu_gauge._accent,  # noqa: SLF001
+    )
+    check(
+        "El medidor de la gráfica se lee con lector de pantalla",
+        "42" in tablero.gpu_gauge.accessibleDescription()
+        and "Intel(R) UHD Graphics 730" in tablero.gpu_gauge.accessibleDescription(),
+        tablero.gpu_gauge.accessibleDescription(),
+    )
+    # El aviso de cadencia tiene que decir la de verdad. En eco —el ajuste de fábrica— la
+    # tarjeta se lee cada minuto, así que un «cada 15 s» escrito a mano sería mentira justo
+    # en el caso normal: el texto lo pone el vigía y sigue al perfil.
+    eco_original = window.settings.eco_mode
+    avisos: list[str] = []
+    for eco in (True, False):
+        window.settings.eco_mode = eco
+        window._apply_power_profile()  # noqa: SLF001
+        avisos.append(f"{tablero.gpu_cadence.text()} [{window.gpu_monitor.interval_ms} ms]")
+    window.settings.eco_mode = eco_original
+    window._apply_power_profile()  # noqa: SLF001
+    check(
+        "El aviso de cadencia de la tarjeta sigue al vigía (minuto en eco, 15 s en completo)",
+        "cada minuto" in avisos[0]
+        and str(gpu_core.ECO_INTERVAL_MS) in avisos[0]
+        and "cada 15 s" in avisos[1]
+        and str(gpu_core.USAGE_INTERVAL_MS) in avisos[1],
+        " | ".join(avisos),
+    )
+    check(
+        "Y dice hasta dónde llega la consulta, igual que el vigía",
+        all(("también con esta ventana oculta" in aviso) == window.gpu_monitor.cheap_route for aviso in avisos),
+        " | ".join(avisos) + f" · contadores de Windows={window.gpu_monitor.cheap_route}",
+    )
+
+    sin_lectura = _dataclasses.replace(instantaneo, gpu_percent=None, gpu_name="", gpu_driver="", gpu_engine="")
+    tablero.update_snapshot(sin_lectura, window.metrics.system_info())
+    check(
+        "Mientras se lee, la tarjeta lo dice en vez de enseñar un 0",
+        tablero.gpu_gauge._display == "—" and "Leyendo" in tablero.gpu_state.text(),  # noqa: SLF001
+        f"{tablero.gpu_gauge._display} · {tablero.gpu_state.text()}",  # noqa: SLF001
+    )
+    window.metrics.set_gpu(None)
+    tablero.update_snapshot(sin_lectura, window.metrics.system_info())
+    check(
+        "Con una lectura sin datos, la tarjeta dice por qué no hay nada",
+        "no trajo datos" in tablero.gpu_state.text(),
+        tablero.gpu_state.text(),
+    )
+    window.metrics.set_gpu(ficha)
+
+    # El vigía consulta en segundo plano, no encadena dos lecturas a la vez y se para en
+    # modo eco (que es cuando la aplicación tiene que consumir lo mínimo).
+    lecturas: list[int] = []
+    en_curso = threading.Event()
+    permiso = threading.Event()
+
+    def lectura_falsa(*_args, **_kwargs):
+        lecturas.append(1)
+        en_curso.set()  # avisa de que ya está dentro, para no medir una carrera
+        permiso.wait(timeout=5)
+        return ficha
+
+    original_gpu = gpu_core.read_gpu_info
+    vigia = GpuMonitor()
+    recibidas: list = []
+    vigia.sampled.connect(recibidas.append)
+    gpu_core.read_gpu_info = lectura_falsa
+    try:
+        vigia.start()
+        en_curso.wait(5)
+        vigia.poll()
+        check(
+            "El vigía pide una lectura y no encadena otra mientras la primera trabaja",
+            len(lecturas) == 1 and vigia.busy,
+            f"{len(lecturas)} lecturas",
+        )
+        permiso.set()
+        _settle(app, 400)
+        check(
+            "La ficha llega por su señal y el vigía la guarda",
+            bool(recibidas) and recibidas[0].name == "Intel(R) UHD Graphics 730" and vigia.info is not None,
+            str(recibidas[:1]),
+        )
+        check(
+            "El vigía consulta cada 15 s, no en cada muestra",
+            vigia.interval_ms == gpu_core.USAGE_INTERVAL_MS >= 10_000,
+            str(vigia.interval_ms),
+        )
+        vigia.set_eco(True)
+        check(
+            "En modo eco (el de fábrica) pregunta cada minuto, no cada 15 s",
+            vigia.interval_ms == gpu_core.ECO_INTERVAL_MS > gpu_core.USAGE_INTERVAL_MS,
+            str(vigia.interval_ms),
+        )
+        vigia.set_eco(False)
+        check("Y vuelve a los 15 s al salir de eco", vigia.interval_ms == gpu_core.USAGE_INTERVAL_MS, str(vigia.interval_ms))
+        check(
+            "El modo eco no apaga la tarjeta: es el de fábrica y la tarjeta tiene que llenarse",
+            vigia.active,
+            str(vigia.active),
+        )
+        gpu_core.read_gpu_info = lambda *a, **k: None
+        recibidas.clear()
+        vigia.poll()
+        _settle(app, 400)
+        check("Una lectura sin datos se avisa igual, para poder decirlo", recibidas == [None], str(recibidas))
+        check("Y no borra la última ficha buena", vigia.info is not None and vigia.info.usage == 42.0)
+        # Sin ningún dato todavía, un fallo no puede esperar al turno siguiente (en eco son
+        # 60 s): se reintenta pronto, y solo unos pocos intentos.
+        vigia.info = None
+        vigia.poll()
+        _settle(app, 400)
+        check(
+            "Si la tarjeta no ha dado nada, se reintenta pronto (y solo unas veces)",
+            vigia.retries == 1 and vigia.retries <= gpu_monitor.RETRIES,
+            f"reintentos {vigia.retries}",
+        )
+        gpu_core.read_gpu_info = lambda *a, **k: ficha
+        vigia.poll()
+        _settle(app, 400)
+        check("Y con datos el contador de reintentos se reinicia", vigia.retries == 0, f"reintentos {vigia.retries}")
+        vigia.set_active(False)
+        check(
+            "En modo eco el vigía se para",
+            not vigia.active and not vigia._timer.isActive(),  # noqa: SLF001
+            str(vigia.active),
+        )
+        vigia.set_active(True)
+        check(
+            "Y vuelve a consultar cuando la ventana se ve",
+            vigia.active and vigia._timer.isActive(),  # noqa: SLF001
+            str(vigia.active),
+        )
+    finally:
+        gpu_core.read_gpu_info = original_gpu
+        vigia.stop()
+        # Cualquier lectura en marcha termina ya (`permiso`) y se deja soltar: el hilo es
+        # de `workers`, que los espera todos al cerrar, pero aquí no conviene dejar nada
+        # vivo tocando la ventana que se está recogiendo.
+        permiso.set()
+        for _ in range(20):
+            if not vigia.busy:
+                break
+            _settle(app, 100)
+
     # --- Rol accesible de los widgets propios ------------------------------
     # Qt da a cada clase un rol fijo: un `QFrame` es «borde» y un `QWidget` es
     # «cliente». Los widgets propios (tarjetas, medidores, barras) dicen lo que
@@ -3335,6 +4131,20 @@ def test_interface() -> None:
         "Asistente de instalación pintado",
         not wizard_image.isNull() and wizard_image.width() > 500,
         f"{wizard_image.width()}x{wizard_image.height()}",
+    )
+    # La cabecera del asistente lleva el logotipo de la aplicación, con su nombre para el
+    # lector de pantalla (es una imagen: sin nombre, no se lee).
+    verde_asistente = sum(
+        1
+        for x in range(0, wizard.logo.pixmap().width(), 3)
+        for y in range(0, wizard.logo.pixmap().height(), 3)
+        if (color := wizard.logo.pixmap().toImage().pixelColor(x, y)).alpha()
+        and color.green() - max(color.red(), color.blue()) > 40
+    )
+    check(
+        "La cabecera del asistente lleva el logotipo, con nombre accesible",
+        "Logotipo" in wizard.logo.accessibleName() and verde_asistente > 0,
+        f"{wizard.logo.accessibleName()!r} · {verde_asistente} muestras verdes",
     )
     check("Botón principal del asistente", wizard.main_button.text() == "Instalar", wizard.main_button.text())
     # El asistente avisa de la situación real del equipo (instalación previa,
@@ -4204,6 +5014,90 @@ def _es_cancelacion(accion) -> bool:
     return False
 
 
+def revisar_guiones_de_la_aplicacion() -> None:
+    """Los guiones de PowerShell que la aplicación lleva dentro tienen que entenderse.
+
+    No son los de los flujos (esos se leen al publicar, en su propia comprobación): estos
+    se ejecutan en el equipo del usuario, así que un error de sintaxis no se descubre hasta
+    que alguien abre la página que los usa. Se le pasan al analizador de PowerShell, que
+    los lee **sin ejecutar nada**: una llave de cierre de menos hacía, por ejemplo, que las
+    aplicaciones de la Store no aparecieran nunca en la lista.
+    """
+    import importlib
+    import pkgutil
+    import shutil
+
+    import pctoolkit.core as paquete
+
+    guiones: dict[str, str] = {}
+    for info in pkgutil.iter_modules(paquete.__path__):
+        try:
+            modulo = importlib.import_module(f"{paquete.__name__}.{info.name}")
+        except Exception:  # noqa: BLE001 - un módulo que no importa se ve en sus pruebas
+            continue
+        for nombre in dir(modulo):
+            if nombre.endswith("_SCRIPT"):
+                valor = getattr(modulo, nombre)
+                if isinstance(valor, str) and valor.strip():
+                    guiones[f"{info.name}.py · {nombre}"] = valor
+
+    interpretes = [camino for camino in (shutil.which("pwsh"), shutil.which("powershell")) if camino]
+    if not interpretes:
+        check(
+            "Los guiones de PowerShell de la aplicación se entienden",
+            False,
+            "no hay ningún PowerShell a mano para leerlos",
+        )
+        return
+
+    import collections
+
+    carpeta = Path(_TEMP_HOME) / "guiones"
+    carpeta.mkdir(parents=True, exist_ok=True)
+    for numero, (nombre, guion) in enumerate(sorted(guiones.items())):
+        # Alguno es una plantilla (la rellena `.format()` antes de usarla), así que sus
+        # huecos se resuelven con el mismo formateador y un valor cualquiera: lo que se
+        # lee aquí es la sintaxis, no el dato. Lo que no es plantilla se lee tal cual, y el
+        # formateador lo dice de varias maneras: `KeyError`/`ValueError` por una llave que no
+        # es un hueco (un bloque `{ … }`) y `TypeError` por un índice sobre el hueco
+        # (`{nombre=[string]$_.Name}` lo lee como `algo["nombre=…"]`). En los tres casos vale
+        # el guion tal cual; quien comprueba de verdad es el analizador de PowerShell.
+        try:
+            legible = guion.format_map(collections.defaultdict(str))
+        except (KeyError, IndexError, ValueError, TypeError):
+            legible = guion
+        (carpeta / f"guion{numero}.ps1").write_text(legible, encoding="utf-8-sig")
+        # El nombre se guarda al lado para poder decir cuál falla.
+        (carpeta / f"guion{numero}.txt").write_text(nombre, encoding="utf-8")
+
+    orden = f"""
+$fallos = 0
+Get-ChildItem -LiteralPath '{carpeta}' -Filter 'guion*.ps1' | Sort-Object Name | ForEach-Object {{
+  $errores = $null
+  [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errores)
+  if ($errores.Count) {{
+    $fallos += 1
+    Write-Host (Get-Content (Join-Path '{carpeta}' ($_.BaseName + '.txt')))
+    foreach ($e in $errores) {{ Write-Host ('  linea ' + $e.Extent.StartLineNumber + ': ' + $e.Message) }}
+  }}
+}}
+if ($fallos -gt 0) {{ exit 1 }}
+"""
+    resultado = subprocess.run(
+        [interpretes[0], "-NoProfile", "-NonInteractive", "-Command", orden],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    problemas = ((resultado.stdout or "") + (resultado.stderr or "")).strip()
+    check(
+        "Los guiones de PowerShell de la aplicación se entienden",
+        bool(guiones) and resultado.returncode == 0,
+        " · ".join(problemas.splitlines())[:300]
+        or f"{len(guiones)} guiones, leídos por {Path(interpretes[0]).name}",
+    )
+
+
 def revisar_guiones_de_los_flujos() -> None:
     """Los pasos de PowerShell de los flujos tienen que ser PowerShell que se entienda.
 
@@ -4553,15 +5447,109 @@ def test_registro() -> None:
     )
 
 
+def test_logotipo() -> None:
+    """El logotipo es la marca: el .ico del ejecutable y el icono de la ventana salen de él.
+
+    Se comprueba la cadena entera, que es donde se falla sin verlo: que el original esté
+    donde se espera, que el .ico del repositorio se haya regenerado desde él (un logotipo
+    nuevo con el .ico viejo solo se nota cuando el ejecutable ya sale con la marca anterior)
+    y que la ventana lo enseñe.
+    """
+    import struct
+
+    from PySide6.QtGui import QImage
+
+    from tools import app_icon
+
+    original = app_icon.LOGO
+    imagen = QImage(str(original))
+    check(
+        "El logotipo original está y sirve de icono (cuadrado, con transparencia y grande)",
+        original.is_file()
+        and not imagen.isNull()
+        and imagen.width() == imagen.height() >= 256
+        and imagen.hasAlphaChannel(),
+        f"{imagen.width()}x{imagen.height()} · alfa={imagen.hasAlphaChannel()}",
+    )
+
+    ico = app_icon.DEFAULT_TARGET
+    datos = ico.read_bytes() if ico.is_file() else b""
+    cabecera = struct.unpack("<HHH", datos[:6]) if len(datos) >= 6 else (0, 0, 0)
+    entradas: list[tuple[int, bytes]] = []
+    for indice in range(cabecera[2]):
+        base = 6 + 16 * indice
+        ancho, _, _, _, _, _, tamano, offset = struct.unpack("<BBBBHHII", datos[base : base + 16])
+        # En un .ico el 256 se escribe como 0 (el campo es de un byte).
+        entradas.append((256 if ancho == 0 else ancho, datos[offset : offset + tamano]))
+
+    def diferencia_media(guardada: QImage, esperada: QImage) -> float:
+        """Diferencia media por canal entre dos imágenes del mismo tamaño."""
+        a = guardada.convertToFormat(QImage.Format.Format_RGBA8888)
+        b = esperada.convertToFormat(QImage.Format.Format_RGBA8888)
+        total = 0
+        for y in range(a.height()):
+            fila_a, fila_b = a.constScanLine(y), b.constScanLine(y)
+            for x in range(a.width() * 4):
+                total += abs(fila_a[x] - fila_b[x])
+        return total / (a.width() * a.height() * 4) if a.height() else 0.0
+
+    # Se comparan los **píxeles**, no los archivos: el PNG que escribe Qt lleva metadatos
+    # de densidad (`pHYs`) que cambian entre ejecuciones, así que una igualdad byte a byte
+    # daría un fallo falso con la marca perfectamente al día.
+    al_dia = 0
+    peor = 0.0
+    for size, png in entradas:
+        guardada = QImage.fromData(png, "PNG")
+        esperada = app_icon.icon_image(size)
+        if guardada.size() != esperada.size():
+            continue
+        diferencia = diferencia_media(guardada, esperada)
+        peor = max(peor, diferencia)
+        if diferencia <= 2.0:
+            al_dia += 1
+    # La prueba de verdad de un logotipo es el tamaño pequeño: en la barra de tareas son
+    # 16 px y ahí se pierde casi todo el detalle. Si un logotipo nuevo llega sin sus dos
+    # tonos —o convertido en una mancha de un solo color—, el icono deja de reconocerse, y
+    # esto lo avisa antes de que salga publicado. Las dos hélices tienen que sobrevivir.
+    pequeno = app_icon.icon_image(16)
+    verdes_p = claros_p = 0
+    for y in range(pequeno.height()):
+        for x in range(pequeno.width()):
+            color = pequeno.pixelColor(x, y)
+            if color.alpha() < 128:
+                continue
+            if color.green() - max(color.red(), color.blue()) > 40:
+                verdes_p += 1
+            elif color.red() + color.green() + color.blue() > 570:
+                claros_p += 1
+    check(
+        "El logotipo aguanta a 16 px: los dos tonos de la marca siguen ahí",
+        verdes_p >= 4 and claros_p >= 3,
+        f"16 px: {verdes_p} muestras del tono verde y {claros_p} del claro",
+    )
+
+    check(
+        "El .ico del ejecutable está al día con el logotipo, tamaño a tamaño",
+        cabecera[:2] == (0, 1)
+        and [size for size, _ in entradas] == list(app_icon.ICO_SIZES)
+        and al_dia == len(app_icon.ICO_SIZES),
+        f"{al_dia}/{len(app_icon.ICO_SIZES)} tamaños son el logotipo de hoy"
+        f" (peor diferencia {peor:.2f}/255)",
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     argumentos = list(sys.argv[1:] if argv is None else argv)
     # Las guardas de documentación se pueden dejar fuera: si una captura está por rehacer,
     # no tiene por qué impedir comprobar un cambio de código.
     sin_documentacion = "--sin-documentacion" in argumentos
     test_metrics()
+    test_gpu()
     test_config()
     test_dependencias()
+    test_logotipo()
     test_publicacion()
+    revisar_guiones_de_la_aplicacion()
     test_actualizaciones()
     test_theme()
     test_disk()

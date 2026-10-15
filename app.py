@@ -97,6 +97,18 @@ def _capture_screens(window, output: Path, analyze_path: str | None = None) -> i
     for key, _label in pages:
         window.navigate(key)
         _wait(500)
+        if key == "home":
+            # La tarjeta gráfica se lee en segundo plano (~2,5 s de PowerShell) y el panel
+            # la pinta en el muestreo siguiente, así que la captura espera al dato **ya
+            # pintado** (`gpu_percent`), no solo leído: esperar al vigía documentaba un
+            # «Leyendo…» aunque la lectura hubiera llegado. En un equipo sin contadores de
+            # GPU no llega nunca y se agota la espera: entonces la captura enseña el aviso
+            # de que no hay datos, que es la verdad.
+            waited = 0
+            while waited < 20_000 and window.metrics.snapshot.gpu_percent is None:
+                _wait(300)
+                waited += 300
+            _wait(300)
         if key == "startup":
             # Las tareas de inicio de sesión se buscan en segundo plano (PowerShell
             # tarda unos segundos): la captura espera a que la lista esté completa.

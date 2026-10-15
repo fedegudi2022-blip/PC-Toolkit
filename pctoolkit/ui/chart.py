@@ -1,4 +1,4 @@
-"""Gráfica del historial de CPU, memoria y disco."""
+"""Gráfica del historial de CPU, memoria, disco y tarjeta gráfica."""
 
 from __future__ import annotations
 
@@ -28,10 +28,17 @@ from . import accessibility, theme
 # Los colores de serie son de datos, no de estado: azul, cian, naranja y gris azulado
 # se distinguen entre sí (también con daltonismo) sin parecer una alerta cuando el valor
 # es normal (el ámbar y el rojo quedan reservados para avisos y errores).
+#
+# La GPU no tiene color de datos propio y lleva el **neutro** (`accent_soft`), el mismo de
+# su tarjeta y su medidor: se midió si la paleta admitía un quinto color y no lo admite —con
+# las cuatro series y los tres estados, el mejor candidato del tema claro se queda en ΔE00
+# 19,2 frente al 19,5 que exige la suite—, así que se distingue por ser el neutro y no por un
+# matiz que pareciera el de otra métrica.
 SERIES = (
     ("cpu", "CPU", "series_cpu"),
     ("ram", "Memoria", "series_ram"),
     ("disk", "Disco", "series_disk"),
+    ("gpu", "GPU", "accent_soft"),
 )
 
 # Radio del halo translúcido que acompaña a cada línea, en píxeles, y hasta dónde
@@ -67,7 +74,8 @@ class HistoryChart(QWidget):
             self,
             QAccessible.Role.Chart,
             f"Historial de las últimas {hours} horas",
-            "Series de CPU, memoria y disco en porcentaje.",
+            "Series de CPU, memoria, disco y tarjeta gráfica en porcentaje; la de la "
+            "tarjeta tiene huecos mientras no se consulta.",
         )
 
     # --- API -------------------------------------------------------------
@@ -212,62 +220,83 @@ class HistoryChart(QWidget):
                 QRectF(x - 26, rect.bottom() + 3, 52, 16), align, label
             )
 
+    def _series_runs(self, rect: QRectF, key: str) -> list[list[QPointF]]:
+        """Tramos de una serie, cortada donde la muestra no trae el dato.
+
+        Solo la GPU puede faltar (la lee su vigía, no el muestreo): un `None` ahí es «no se
+        miró», así que la línea se corta en vez de unir los extremos —una recta por el hueco
+        afirmaría un uso que nadie midió—.
+        """
+        tramos: list[list[QPointF]] = []
+        actual: list[QPointF] = []
+        for sample in self._samples:
+            valor = getattr(sample, key, None)
+            if valor is None:
+                if actual:
+                    tramos.append(actual)
+                    actual = []
+                continue
+            actual.append(
+                QPointF(self._x_for(sample.timestamp, rect), self._y_for(float(valor), rect))
+            )
+        if actual:
+            tramos.append(actual)
+        return tramos
+
     def _paint_series(self, painter: QPainter, rect: QRectF, key: str, color: str) -> None:
-        points = [
-            QPointF(self._x_for(sample.timestamp, rect), self._y_for(getattr(sample, key), rect))
-            for sample in self._samples
-        ]
-        if not points:
-            return
-
         base = QColor(color)
-        if len(points) == 1:
-            painter.setBrush(base)
+        for points in self._series_runs(rect, key):
+            if len(points) == 1:
+                painter.setBrush(base)
+                painter.setPen(Qt.NoPen)
+                painter.drawEllipse(points[0], 3.0, 3.0)
+                continue
+
+            # El halo y la línea van por tramos sueltos, y el relleno como un polígono
+            # corriente. Trazar la polilínea entera con una pluma ancha (que es lo que
+            # hacía antes) obliga a Qt a construir el contorno de la línea completa
+            # —miles de vértices, con el redondeo de cada unión— y a rellenarlo después:
+            # eso cuesta decenas de milisegundos por serie, y con él se van el cursor y
+            # los repintados. Un segmento suelto, un rectángulo o un polígono cuestan
+            # milisegundos.
+            halo: list[QRectF] = []
+            segments: list[QLineF] = []
+            for start, end in zip(points, points[1:]):
+                top = min(start.y(), end.y())
+                bottom = max(start.y(), end.y())
+                # El halo era un trazo de 6 px de ancho: en un tramo inclinado eso ocupa
+                # más altura vertical (3 px / cos θ), y por eso se ensancha en los picos.
+                # Aquí el tramo se rellena con esa misma altura, sin trazar nada ancho.
+                ancho, alto = end.x() - start.x(), end.y() - start.y()
+                coseno = abs(ancho) / max(1e-6, (ancho * ancho + alto * alto) ** 0.5)
+                mitad = min(HALO_MAX, HALO_HALF / max(coseno, 0.05))
+                halo.append(QRectF(start.x(), top - mitad, max(0.0, ancho), bottom - top + mitad * 2))
+                segments.append(QLineF(start, end))
+
+            # El área de cada tramo baja hasta el fondo por sus propios extremos: así el
+            # relleno tampoco cruza el hueco.
+            area = QPolygonF(
+                points + [QPointF(points[-1].x(), rect.bottom()), QPointF(points[0].x(), rect.bottom())]
+            )
+            gradient = QLinearGradient(0, rect.top(), 0, rect.bottom())
+            # `theme.with_alpha` escribe el alfa delante (#AARRGGBB), que es como lo
+            # lee Qt; pegarlo al final del hexadecimal daría un color casi opaco.
+            gradient.setColorAt(0.0, QColor(theme.with_alpha(color, 60)))
+            gradient.setColorAt(1.0, QColor(theme.with_alpha(color, 0)))
             painter.setPen(Qt.NoPen)
-            painter.drawEllipse(points[0], 3.0, 3.0)
-            return
+            painter.setBrush(QBrush(gradient))
+            painter.drawPolygon(area)
 
-        # El halo y la línea van por tramos sueltos, y el relleno como un polígono
-        # corriente. Trazar la polilínea entera con una pluma ancha (que es lo que
-        # hacía antes) obliga a Qt a construir el contorno de la línea completa
-        # —miles de vértices, con el redondeo de cada unión— y a rellenarlo después:
-        # eso cuesta decenas de milisegundos por serie, y con él se van el cursor y
-        # los repintados. Un segmento suelto, un rectángulo o un polígono cuestan
-        # milisegundos.
-        halo: list[QRectF] = []
-        segments: list[QLineF] = []
-        for start, end in zip(points, points[1:]):
-            top = min(start.y(), end.y())
-            bottom = max(start.y(), end.y())
-            # El halo era un trazo de 6 px de ancho: en un tramo inclinado eso ocupa
-            # más altura vertical (3 px / cos θ), y por eso se ensancha en los picos.
-            # Aquí el tramo se rellena con esa misma altura, sin trazar nada ancho.
-            ancho, alto = end.x() - start.x(), end.y() - start.y()
-            coseno = abs(ancho) / max(1e-6, (ancho * ancho + alto * alto) ** 0.5)
-            mitad = min(HALO_MAX, HALO_HALF / max(coseno, 0.05))
-            halo.append(QRectF(start.x(), top - mitad, max(0.0, ancho), bottom - top + mitad * 2))
-            segments.append(QLineF(start, end))
+            painter.setBrush(QColor(theme.with_alpha(color, 55)))
+            painter.drawRects(halo)
 
-        area = QPolygonF(points + [QPointF(points[-1].x(), rect.bottom()), QPointF(points[0].x(), rect.bottom())])
-        gradient = QLinearGradient(0, rect.top(), 0, rect.bottom())
-        # `theme.with_alpha` escribe el alfa delante (#AARRGGBB), que es como lo
-        # lee Qt; pegarlo al final del hexadecimal daría un color casi opaco.
-        gradient.setColorAt(0.0, QColor(theme.with_alpha(color, 60)))
-        gradient.setColorAt(1.0, QColor(theme.with_alpha(color, 0)))
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(gradient))
-        painter.drawPolygon(area)
-
-        painter.setBrush(QColor(theme.with_alpha(color, 55)))
-        painter.drawRects(halo)
-
-        pen = QPen(base.lighter(115))
-        pen.setWidthF(2.0)
-        pen.setCapStyle(Qt.RoundCap)
-        pen.setJoinStyle(Qt.RoundJoin)
-        painter.setPen(pen)
-        painter.setBrush(Qt.NoBrush)
-        painter.drawLines(segments)
+            pen = QPen(base.lighter(115))
+            pen.setWidthF(2.0)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawLines(segments)
 
     def _paint_empty(self, painter: QPainter, rect: QRectF) -> None:
         font = QFont(self.font())
@@ -288,13 +317,16 @@ class HistoryChart(QWidget):
 
         lines = [datetime.fromtimestamp(sample.timestamp).strftime("%d/%m %H:%M")]
         for key, label, color_key in SERIES:
-            if not self._visible.get(key, True):
+            valor = getattr(sample, key, None)
+            # La serie con hueco no se nombra en el cursor: de esa muestra no hay lectura, y
+            # un «GPU 0 %» diría que la tarjeta estuvo parada.
+            if not self._visible.get(key, True) or valor is None:
                 continue
-            y = self._y_for(getattr(sample, key), rect)
+            y = self._y_for(float(valor), rect)
             painter.setBrush(QColor(COLORS[color_key]))
             painter.setPen(QPen(QColor(COLORS["bg"]), 1.5))
             painter.drawEllipse(QPointF(x, y), 3.2, 3.2)
-            lines.append(f"{label}  {getattr(sample, key):.0f}%")
+            lines.append(f"{label}  {float(valor):.0f}%")
 
         font = QFont(self.font())
         font.setPointSizeF(8.4)

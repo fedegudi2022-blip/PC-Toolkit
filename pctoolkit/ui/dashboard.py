@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from ..core.alerts import METRIC_CPU, METRIC_DISK, METRIC_RAM, AlertConfig
 from ..core.config import COLORS, format_bytes, format_integer
 from ..core.history import HistoryStore
+from ..core import gpu
 from . import icons, theme
 from .chart import SERIES, HistoryChart
 from .widgets import (
@@ -65,6 +66,7 @@ class DashboardPage(QWidget):
         self._streaks: dict[str, int] = {METRIC_CPU: 0, METRIC_RAM: 0, METRIC_DISK: 0}
         self._net_peak = 0.0
         self.chips: dict[str, QLabel] = {}
+        self.gpu_rows: dict[str, QLabel] = {}
         self._build()
         self.reload_history()
         self._sync_threshold_marks()
@@ -139,6 +141,11 @@ class DashboardPage(QWidget):
         grid.addWidget(self.ram_card, 0, 1)
         grid.addWidget(self.disk_card, 1, 0)
         grid.addWidget(self.net_card, 1, 1)
+        # La tarjeta gráfica ocupa la fila entera: necesita más sitio que un medidor
+        # (lleva el nombre, el controlador y el motor que más trabaja) y así no queda
+        # un hueco al lado de los cuatro medidores.
+        self.gpu_card = self._gpu_card()
+        grid.addWidget(self.gpu_card, 2, 0, 1, 2)
         top.addLayout(grid, 1)
         layout.addLayout(top)
 
@@ -233,6 +240,83 @@ class DashboardPage(QWidget):
         layout.addLayout(footer)
         return card, gauge
 
+    def _gpu_card(self) -> Card:
+        """Tarjeta gráfica: la ficha que `psutil` no puede dar y Windows sí.
+
+        El medidor va con el **acento neutro** y no con un color de serie, y no es un
+        descuido: la paleta D2 no tiene un quinto color de datos. Se buscó midiendo como
+        mide la suite (Machado y CIEDE2000 contra las cuatro series y los tres estados) y
+        en la paleta clara no hay ningún tono que cumpla, mientras que en la oscura solo
+        quedaban azules que se confunden con la CPU. Un color propio saldría de pedir
+        prestado el de otra serie, y eso engañaría sobre lo que significa cada color. La
+        tarjeta gráfica tampoco tiene serie propia en el historial de 24 h.
+        """
+        card = Card(name="Gráfica")
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(18)
+
+        self.gpu_gauge = ArcGauge("Gráfica", "%", "Leyendo la tarjeta gráfica…")
+        self.gpu_gauge.setFixedWidth(210)
+        layout.addWidget(self.gpu_gauge)
+
+        details = QVBoxLayout()
+        details.setSpacing(6)
+
+        head = QHBoxLayout()
+        head.setSpacing(10)
+        head.addWidget(IconBadge("chip", 32, 17, COLORS["text_muted"]))
+        texts = QVBoxLayout()
+        texts.setSpacing(0)
+        title = QLabel("Tarjeta gráfica")
+        title.setObjectName("CardTitle")
+        self.gpu_state = QLabel("Leyendo la tarjeta gráfica…")
+        self.gpu_state.setObjectName("CardSubtitle")
+        self.gpu_state.setWordWrap(True)
+        texts.addWidget(title)
+        texts.addWidget(self.gpu_state)
+        head.addLayout(texts)
+        head.addStretch(1)
+        details.addLayout(head)
+
+        for key, label in (("controlador", "Controlador"), ("motor", "Motor más cargado")):
+            row, value = kv_row(label, "—")
+            self.gpu_rows[key] = value
+            details.addWidget(row)
+        # El cómo importa: la GPU se lee aparte del muestreo normal, así que sin esto un
+        # «15 %» que no se mueve cada segundo parecería un dato viejo o roto. La cadencia y
+        # el alcance **no** se escriben aquí a mano: los dice el vigía (`set_gpu_cadence`),
+        # porque en eco —el ajuste de fábrica— es un minuto, y un aviso fijo de «cada 15 s»
+        # sería mentira justo en el caso normal.
+        self.gpu_cadence = Muted("")
+        details.addWidget(self.gpu_cadence)
+        self.set_gpu_cadence(gpu.USAGE_INTERVAL_MS, continua=False)
+        details.addStretch(1)
+        layout.addLayout(details, 1)
+        return card
+
+    def set_gpu_cadence(self, interval_ms: int, continua: bool = False) -> None:
+        """Escribe cada cuánto se consulta la tarjeta, con la cadencia de verdad.
+
+        `continua` dice que la lectura no depende de estar mirando la tarjeta (sale de los
+        contadores de Windows, sin abrir ningún proceso): entonces también se consulta con
+        la ventana oculta y el aviso lo tiene que decir, porque es justo lo que llena la
+        serie de la GPU del historial.
+        """
+        segundos = max(1, int(round(int(interval_ms) / 1000)))
+        if segundos < 60:
+            cada = f"cada {segundos} s"
+        elif segundos < 120:
+            cada = "cada minuto"
+        else:
+            cada = f"cada {round(segundos / 60)} min"
+        alcance = (
+            "también con esta ventana oculta."
+            if continua
+            else "solo con esta ventana a la vista."
+        )
+        self.gpu_cadence.setText(f"Se consulta {cada}, {alcance}")
+
     def _history_card(self) -> Card:
         card = Card(name="Historial de las últimas 24 horas")
         layout = QVBoxLayout(card)
@@ -322,7 +406,12 @@ class DashboardPage(QWidget):
         )
         self.history_range.setText(span)
         for key, label, _color_key in SERIES:
-            values = [getattr(sample, key) for sample in self._samples]
+            values = [valor for valor in (getattr(sample, key, None) for sample in self._samples) if valor is not None]
+            if not values:
+                # La GPU solo trae dato mientras se consulta la tarjeta: sin ninguna lectura,
+                # «sin datos» es la verdad (un 0 % diría que no trabajó).
+                self.history_stats[key].setText(f"{label}: sin datos")
+                continue
             self.history_stats[key].setText(
                 f"{label}: media {sum(values) / len(values):.0f}% · máx {max(values):.0f}%"
             )
@@ -390,7 +479,9 @@ class DashboardPage(QWidget):
         if title == "Almacenamiento":
             self.navigate.emit("disk")
             return
-        target = {"CPU": "resmon", "Memoria": "taskmgr", "Red": "ncpa"}.get(title, "taskmgr")
+        target = {"CPU": "resmon", "Memoria": "taskmgr", "Gráfica": "taskmgr", "Red": "ncpa"}.get(
+            title, "taskmgr"
+        )
         self.launch_tool(target)
 
     def _refresh(self) -> None:
@@ -439,6 +530,26 @@ class DashboardPage(QWidget):
             f"↓ {_speed(snap.net_down_rate)}   ↑ {_speed(snap.net_up_rate)} · enlace {_speed(escala)}",
         )
         self.net_gauge.set_display(_speed(throughput))
+
+        # --- Tarjeta gráfica -------------------------------------------------
+        # El dato no viene del muestreo sino del vigía de la GPU, así que la tarjeta dice
+        # de dónde sale y, si no hay lectura, por qué no la hay.
+        if snap.gpu_percent is None:
+            espera = "La última lectura no trajo datos" if self.metrics.gpu_failed else "Leyendo la tarjeta gráfica…"
+            self.gpu_gauge.set_value(0.0, COLORS["accent_soft"])
+            self.gpu_gauge.set_display("—", espera)
+            self.gpu_state.setText(espera)
+            self.gpu_rows["controlador"].setText("—")
+            self.gpu_rows["motor"].setText("—")
+        else:
+            motor = f" · motor {snap.gpu_engine}" if snap.gpu_engine else ""
+            self.gpu_gauge.set_value(snap.gpu_percent, COLORS["accent_soft"])
+            self.gpu_gauge.set_display(
+                f"{snap.gpu_percent:.0f} %", f"{snap.gpu_name or 'Tarjeta gráfica'}{motor}"
+            )
+            self.gpu_state.setText(snap.gpu_name or "Tarjeta gráfica")
+            self.gpu_rows["controlador"].setText(snap.gpu_driver or "—")
+            self.gpu_rows["motor"].setText(snap.gpu_engine or "—")
 
         score = snap.health_score
         self.health_meter.set_score(score, snap.health_label)

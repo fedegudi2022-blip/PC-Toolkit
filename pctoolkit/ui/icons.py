@@ -6,12 +6,56 @@ oscuro conserve el mismo trazo fino que el resto de la interfaz.
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPainterPath, QPen, QPixmap
 
 from ..core.config import COLORS
 
 _CACHE: dict[tuple[str, int, str, float], QIcon] = {}
+
+# --- Logotipo -------------------------------------------------------------
+# El original (`assets\pc_toolkit_logo.png`, 1024×1024) es la marca de la aplicación y se
+# usa tal cual para el icono de la ventana: no se tiñe con la paleta porque no es un icono
+# de la interfaz, es el logotipo. Si el archivo no está (una copia sin `assets\`), quien lo
+# pida recibe `None` y enseña el glifo dibujado: la ventana nunca se queda sin icono por un
+# archivo que falta.
+LOGO_NAME = "pc_toolkit_logo.png"
+_LOGO_CACHE: dict[int, QPixmap] = {}
+
+
+def logo_path() -> Path | None:
+    """Ruta del logotipo: en el proyecto o dentro del ejecutable empaquetado."""
+    candidatas: list[Path] = []
+    bundle = getattr(sys, "_MEIPASS", None)
+    if bundle:
+        candidatas.append(Path(bundle) / "assets" / LOGO_NAME)
+    candidatas.append(Path(__file__).resolve().parents[2] / "assets" / LOGO_NAME)
+    for ruta in candidatas:
+        if ruta.is_file():
+            return ruta
+    return None
+
+
+def logo_pixmap(size: int = 64) -> QPixmap | None:
+    """Logotipo escalado al tamaño pedido (o `None` si el archivo no está)."""
+    if size in _LOGO_CACHE:
+        return _LOGO_CACHE[size]
+    ruta = logo_path()
+    if ruta is None:
+        return None
+    imagen = QImage(str(ruta))
+    if imagen.isNull():
+        return None
+    escala = 3  # igual que el resto de iconos: nítido en pantallas con escalado
+    pixmap = QPixmap.fromImage(
+        imagen.scaled(size * escala, size * escala, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    )
+    pixmap.setDevicePixelRatio(escala)
+    _LOGO_CACHE[size] = pixmap
+    return pixmap
 
 
 def icon(name: str, size: int = 20, color: str | None = None, width: float = 1.6) -> QIcon:

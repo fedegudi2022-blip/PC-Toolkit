@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..core.config import COLORS, SURFACES, health_color
+from ..core.config import APP_NAME, COLORS, SURFACES, health_color
 from . import accessibility, icons
 
 
@@ -80,6 +80,26 @@ class IconBadge(QLabel):
         super().__init__(parent)
         self.setFixedSize(size, size)
         self.setPixmap(icons.pixmap_for(name, icon_size, color or COLORS["text_muted"]))
+
+
+class BrandLogo(QLabel):
+    """Logotipo de la aplicación, con nombre accesible.
+
+    Una imagen no se puede leer: el nombre accesible es lo único que le llega al lector de
+    pantalla, así que va aquí y no en cada sitio que enseña la marca. Si falta el archivo
+    del logotipo (una copia sin `assets\\`), se dibuja el glifo de siempre: la marca no
+    desaparece, pero tampoco se disfraza de logotipo algo que no lo es.
+    """
+
+    def __init__(self, size: int = 36, name: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        logotipo = icons.logo_pixmap(size)
+        if logotipo is None:
+            self.setPixmap(icons.pixmap_for("cpu", max(16, size // 2), COLORS["accent"]))
+        else:
+            self.setPixmap(logotipo)
+        accessibility.mark(self, QAccessible.Role.Graphic, name or APP_NAME)
 
 
 class SectionTitle(QLabel):

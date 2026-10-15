@@ -79,7 +79,11 @@ print(
     f"CPU={{media_cpu:5.2f}} % de un nucleo  RSS={{sum(rss)/len(rss)/1048576:5.1f}} MB  "
     f"muestras={{muestras['n']}}  procesos={{len(window.metrics.snapshot.top_processes)}}"
 )
-window.close()
+# Se sale por la vía normal (la misma que «Salir»): cerrar la ventana la dejaría en la
+# bandeja y el guion terminaría con trabajo en segundo plano aún en marcha, que es como se
+# cuelga un proceso al destruir un hilo vivo. Además, así la medición espera a lo que
+# quedara a medias, igual que el usuario al salir.
+window.quit_application()
 '''
     result = subprocess.run(
         [sys.executable, "-c", script], capture_output=True, text=True, timeout=segundos + 90

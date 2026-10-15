@@ -27,8 +27,8 @@ Windows 10 u 11 (x64). No hace falta instalar Python ni nada más.
 
 | Archivo | Qué es |
 | --- | --- |
-| [`PC-Toolkit-1.3.0-Setup.exe`](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/download/v1.3.0/PC-Toolkit-1.3.0-Setup.exe) | **Recomendado** (79,3 MB). Asistente con la aplicación dentro: accesos directos, arranque automático opcional y desinstalador. Por usuario, sin avisos de Windows. |
-| [`PC-Toolkit-1.3.0-portable.exe`](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/download/v1.3.0/PC-Toolkit-1.3.0-portable.exe) | Versión portátil (47,3 MB). Doble clic y funciona, sin instalar ni dejar rastro. |
+| [`PC-Toolkit-1.3.1-Setup.exe`](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/download/v1.3.1/PC-Toolkit-1.3.1-Setup.exe) | **Recomendado** (79,3 MB). Asistente con la aplicación dentro: accesos directos, arranque automático opcional y desinstalador. Por usuario, sin avisos de Windows. |
+| [`PC-Toolkit-1.3.1-portable.exe`](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/download/v1.3.1/PC-Toolkit-1.3.1-portable.exe) | Versión portátil (47,3 MB). Doble clic y funciona, sin instalar ni dejar rastro. |
 
 Datos y preferencias se guardan en `%APPDATA%\PCToolkit` (véase [Dónde se guardan los datos](#dónde-se-guardan-los-datos)).
 
@@ -64,7 +64,7 @@ también tarjetas y filas). Los textos de las dos paletas cumplen el contraste 4
 que ocurre se anuncia a los lectores de pantalla.
 
 Medido en un Windows 11 x64: liberar RAM bajó del **78,9 % al 63,6 %** (+1.212 MB en 0,84 s), y con
-la ventana en la bandeja el consumo baja a **0,52 % de un núcleo** frente al 2,79 % con la ventana a
+la ventana en la bandeja el consumo baja a **0,45 % de un núcleo** frente al 2,25 % con la ventana a
 la vista (`.venv\Scripts\python.exe tools\medir_consumo.py`).
 
 ## Capturas
@@ -181,13 +181,13 @@ Para quien mantiene el proyecto, publicar una versión son tres pasos:
 
 ```bat
 git push origin main
-git push origin v1.3.0
+git push origin v1.3.1
 ```
 
 Antes del día del estreno se puede **ensayar la publicación** con una etiqueta de prueba: en
 «Actions → Publicar la versión (Windows) → Run workflow» se lanza el mismo trabajo a mano, que
 recorre el camino completo (compilar, suite, instalación real, hashes y publicación) y lo deja todo
-en una publicación **en borrador y preliminar**, con etiqueta `v1.3.0-ensayo`. No sale en
+en una publicación **en borrador y preliminar**, con etiqueta `v1.3.1-ensayo`. No sale en
 `/releases/latest` —lo que mira el actualizador— y no gasta ningún número de versión.
 
 La etiqueta dispara [.github/workflows/publicar.yml](.github/workflows/publicar.yml), que compila en
@@ -215,8 +215,9 @@ Desinstalar conserva estos datos salvo que se pidan borrar desde el asistente.
 .venv\Scripts\python.exe tests\smoke_test.py
 ```
 
-**681 comprobaciones** sin marco externo: métricas y disco reales, persistencia, alertas,
-historial, informes en los tres formatos, las ocho páginas construidas y navegadas, programas de
+**767 comprobaciones** sin marco externo: métricas y disco reales, persistencia, alertas,
+historial (con la serie de la GPU, sus huecos y su color neutro), informes en los tres formatos, las
+páginas construidas y navegadas, programas de
 inicio y cambios reversibles sobre claves propias de la prueba, el ciclo del instalador en carpetas
 temporales (incluido **instalar encima de una versión anterior**), que las dependencias que la
 compilación importa estén declaradas en `requirements.txt`, la firma (argumentos de `signtool` y
@@ -249,16 +250,18 @@ app.py                       Punto de entrada y opciones de línea de comandos
 build_exe.py / .bat          Empaquetado con PyInstaller (icono, versión y comprobación)
 build_installer.py / .bat    Instalador de Windows y comprobación del ciclo completo
 firmar.py / .bat             Firma con signtool (SHA-256, sello RFC 3161 y verificación)
+assets/                      Logotipo original, icono del ejecutable y propiedades de versión
 installer/                   Asistente, desinstalador y lógica de instalación por usuario
 tools/                       Icono, medición de consumo, capturas (y su regeneración) y verificación
 capturas/                    Imágenes de esta documentación
 pctoolkit/
-  core/                      Lógica sin interfaz: config, métricas, memoria, disco, tareas,
-                             informes, historial, alertas, arranque, mantenimiento, programador
+  core/                      Lógica sin interfaz: config, métricas, tarjeta gráfica, memoria, disco,
+                             tareas, informes, historial, alertas, arranque, mantenimiento,
+                             programador
   ui/                        Interfaz PySide6: tema, accesibilidad, iconos, widgets, gráfica,
-                             bandeja, diálogos y una página por sección
-tests/smoke_test.py          681 comprobaciones (núcleo, interfaz, instalador, firma, dependencias
-                             y actualizaciones)
+                             vigía de la GPU, bandeja, diálogos y una página por sección
+tests/smoke_test.py          767 comprobaciones (núcleo, interfaz, instalador, firma, dependencias,
+                             logotipo y actualizaciones)
 tests/documentacion.py       Guardas de capturas, informe y recuentos (van aparte)
 dist/                        Todo lo compilado; se regenera con los scripts
 ```
@@ -267,10 +270,20 @@ Qué hace cada módulo, con detalle: [DOCUMENTACION.md](DOCUMENTACION.md).
 
 ## Limitaciones
 
-- **GPU y temperatura:** psutil no da datos de GPU y en Windows no expone sensores térmicos, así que
-  no hay tarjeta de temperatura (en su lugar se muestra el tráfico de red).
-- **Programas de inicio:** no aparecen las aplicaciones de la Microsoft Store (Windows las arranca
-  por otra vía) ni los servicios, que se administran en «Herramientas». El coste de cada entrada es
+- **Temperatura:** `psutil` no expone sensores térmicos en Windows, y ni el WMI del sistema ni las
+  librerías que sí los leen funcionan sin permisos de administrador y un controlador con firma (y en
+  muchos equipos la clase de temperatura ni existe), así que no hay tarjeta de temperatura. La
+  **tarjeta gráfica sí** se muestra (y entra como una serie más en el historial de 24 h): su uso por
+  motor viene de los contadores de rendimiento de Windows y su nombre y su controlador, del registro
+  (en segundo plano, cada 15 s —un minuto en modo eco—; con contadores se sigue leyendo aunque la
+  ventana esté oculta, y donde no los haya, solo con la portada o los informes a la vista). La
+  lectura **no arranca ningún proceso**: 3 ms de CPU y nada de memoria por vuelta (medidos), con la
+  ventana de un segundo que usa el propio Administrador de tareas. Donde Windows no publique ese
+  contador, la aplicación se apaña con un solo proceso de PowerShell que reutiliza mientras la
+  tarjeta se mira, y sin él, con uno por lectura.
+- **Programas de inicio:** los servicios se administran en «Herramientas»; las aplicaciones de la
+  Microsoft Store **sí** aparecen, con su tarea de inicio y el nombre que enseña Windows, y se
+  activan y desactivan igual que las demás (regla reversible y deshacer). El coste de cada entrada es
   una estimación propia.
 - **Permisos:** las herramientas marcadas con escudo piden UAC; si se cancela, la aplicación lo dice
   sin cerrarse.

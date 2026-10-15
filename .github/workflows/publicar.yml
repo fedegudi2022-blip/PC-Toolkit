@@ -3,7 +3,7 @@ name: Publicar la versión (Windows)
 # Convierte «subir la versión y empujar la etiqueta» en una publicación repartible, sin
 # nada más que hacer a mano:
 #
-#     git push origin main && git push origin v1.3.0
+#     git push origin main && git push origin v1.3.1
 #
 # y este flujo compila el programa y el instalador en un servidor de Windows, pasa las
 # comprobaciones, calcula los SHA-256, firma la procedencia y crea la publicación con sus
@@ -13,7 +13,7 @@ name: Publicar la versión (Windows)
 # versión (Windows)» → Run workflow) para recorrer todo el camino antes del día del
 # estreno: compila, pasa la suite, instala y desinstala el paquete, calcula los hashes y
 # crea la publicación con sus archivos adjuntos. La única diferencia es dónde acaba: con
-# una etiqueta de prueba (`v1.3.0-ensayo`) y la publicación en **borrador y preliminar**,
+# una etiqueta de prueba (`v1.3.1-ensayo`) y la publicación en **borrador y preliminar**,
 # que no sale en `/releases/latest` —lo que consulta el actualizador— ni ocupa ningún
 # número de versión. Es la forma de comprobar que el camino entero funciona (incluidos los
 # permisos del token) sin gastar un número ni publicar nada a medias.
@@ -60,7 +60,7 @@ jobs:
       - name: Descargar el código
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      # El primer paso, y a propósito: publicar una etiqueta `v1.3.0` con el código en la
+      # El primer paso, y a propósito: publicar una etiqueta `v1.3.1` con el código en la
       # 1.2.1 dejaría archivos y notas que se contradicen, y quien los descargue no tiene
       # forma de saber cuál de los dos números es el bueno.
       #
@@ -84,7 +84,7 @@ jobs:
           if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
             $etiqueta = if ($env:ETIQUETA_PEDIDA) { $env:ETIQUETA_PEDIDA } else { "v$version-ensayo" }
             # La etiqueta del ensayo lleva la versión del código más un sufijo, así que
-            # nunca puede coincidir con la etiqueta de verdad (`v1.3.0`).
+            # nunca puede coincidir con la etiqueta de verdad (`v1.3.1`).
             if ($etiqueta -notmatch "^v$([regex]::Escape($version))-.+") {
               throw "La etiqueta de ensayo tiene que ser 'v$version-algo' (por ejemplo 'v$version-ensayo'): se ensaya la versión que dice el código ($version), no otra."
             }
@@ -240,8 +240,30 @@ jobs:
             '',
             '## Qué cambia',
             '',
-            'Escribe aquí las novedades de esta versión antes de publicarla (o edita las notas de la publicación desde GitHub: la aplicación las lee de aquí).',
+            # Las novedades de esta versión van aquí, y son lo que enseña el diálogo «Hay
+            # una versión nueva» de quien actualiza (la aplicación lee estas notas y deja
+            # fuera el apartado de los hashes). Se reemplazan en cada publicación.
+            '### Identidad nueva',
             '',
+            '- **Logotipo rehecho** y, con él, el icono del ejecutable, el de la barra de tareas, el de la bandeja y el del instalador: los cuatro salen ahora del mismo dibujo.',
+            '',
+            '### La tarjeta gráfica, en la portada',
+            '',
+            '- **Uso por motor, nombre y controlador de la GPU**, con el motor más cargado y el porcentaje sumado como lo hace el Administrador de tareas (los procesos del **mismo** motor, no todos juntos).',
+            '- **La lectura no arranca ningún proceso**: Windows publica el uso en sus contadores de rendimiento y la tarjeta y su controlador están en el registro. Medido en un equipo real: **1,00 s de reloj** (la ventana de medida, que es espera y no CPU), **3 ms de CPU** y nada de memoria por vuelta.',
+            '- Donde Windows no publique ese contador, la reserva es un proceso de PowerShell que se reutiliza mientras la tarjeta se mira, y sin él, uno por lectura. Si no hay forma de leerla, la tarjeta lo dice en vez de enseñar un 0.',
+            '',
+            '### El uso de la GPU entra en el historial de 24 horas',
+            '',
+            '- **Una serie más en la gráfica de Inicio**, con su media y su máximo junto a las de CPU, memoria y disco.',
+            '- La tarjeta se guarda **solo mientras se está consultando**, así que donde no hay lectura la línea se **corta** en vez de unir los extremos: una recta por el hueco afirmaría un uso que nadie midió.',
+            '- Con los contadores de Windows la tarjeta se sigue consultando **también con la ventana oculta** (es lo que hace que la serie no tenga agujeros); donde no los haya, solo con la portada o los informes a la vista, como antes.',
+            '- La serie de la GPU lleva el **neutro** del acento, el mismo de su medidor: se midió si la paleta admitía un quinto color de datos y no lo admite con la separación que se exige, así que se distingue por leyenda y no por un matiz que pareciera el de otra métrica.',
+            '',
+            '### Documentación que no se queda atrás',
+            '',
+            '- Se rehacen las capturas con la versión 1.3.1 (el asistente de instalación y las ocho páginas).',
+            '- El total de la suite pasa de 751 a **767 comprobaciones**, con las nuevas del historial de la GPU (huecos, color, resumen y política del vigía) y la que vigila que cerrar no vuelva a poner en marcha la tarjeta.',
             '## Comprobar la descarga',
             '',
             'Los SHA-256 de los archivos adjuntos:',

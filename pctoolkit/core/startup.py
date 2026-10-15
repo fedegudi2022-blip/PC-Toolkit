@@ -1,4 +1,4 @@
-"""Programas y tareas que arrancan con el equipo.
+r"""Programas y tareas que arrancan con el equipo.
 
 Lee las mismas fuentes que usa Windows:
 
@@ -7,7 +7,9 @@ Lee las mismas fuentes que usa Windows:
   los programas antiguos),
 * las carpetas de inicio del usuario y del sistema,
 * las tareas programadas con disparador «al iniciar sesión» (fuera de las de
-  Microsoft, que son parte del propio Windows).
+  Microsoft, que son parte del propio Windows),
+* las tareas de inicio de las aplicaciones de la Microsoft Store, que Windows guarda en
+  el registro del usuario y que ninguna clave `Run` menciona.
 
 **Desactivar no borra nada.** Se escribe la misma marca que escribe el
 Administrador de tareas en `...\\Explorer\\StartupApproved\\...`: la entrada sigue
@@ -15,9 +17,13 @@ donde estaba, Windows deja de ejecutarla y se puede volver a activar. Las
 entradas `RunOnce` se muestran sin botón porque Windows no las aprueba ni las
 desaprueba: se ejecutan una vez y desaparecen solas.
 
-Lo que este módulo **no** puede ver: las aplicaciones de la Microsoft Store, que
-Windows arranca por otra vía sin una clave pública estable, y los servicios
-(eso está en la página de herramientas, en «Servicios»).
+Las aplicaciones de la Store también se pueden activar y desactivar desde aquí: se
+escribe el estado que usa Windows (`Windows.ApplicationModel.StartupTaskState`) en
+`...\AppModel\SystemAppData\<paquete>\<tarea>`, que es exactamente lo que cambia el
+Administrador de tareas al desactivarlas, y se relee para comprobar que quedó escrito.
+
+Lo que este módulo **no** puede ver: los servicios, que se administran en la página de
+herramientas, en «Servicios».
 """
 
 from __future__ import annotations
@@ -46,10 +52,12 @@ SOURCE_SISTEMA = "Todos los usuarios"
 SOURCE_CARPETA_USUARIO = "Carpeta de inicio tuya"
 SOURCE_CARPETA_COMUN = "Carpeta de inicio común"
 SOURCE_TAREA = "Tarea al iniciar sesión"
+SOURCE_STORE = "Aplicación de la Store"
 
 KIND_REGISTRO = "registro"
 KIND_CARPETA = "carpeta"
 KIND_TAREA = "tarea"
+KIND_STORE = "store"
 
 # --- Estimación del coste al arrancar ------------------------------------
 # Windows no publica la cifra que muestra el Administrador de tareas y la
@@ -75,6 +83,24 @@ APPROVED_FOLDER = APPROVED_ROOT + r"\StartupFolder"
 # editar. Sin esta lista, un apunte retocado a mano haría que PC Toolkit escribiera en
 # otra rama del registro (por ejemplo en `Run`, donde arrancaría otra cosa).
 APPROVED_PATHS = (APPROVED_RUN, APPROVED_RUN32, APPROVED_FOLDER)
+
+# Las aplicaciones de la Store no dicen que arrancan en ninguna clave `Run`: declaran una
+# «tarea de inicio» en su manifiesto y Windows guarda su estado aquí, en el registro del
+# usuario. La clave lleva el paquete (`Nombre_Publicador`) y, dentro, la tarea.
+STORE_PATH = (
+    r"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion"
+    r"\AppModel\SystemAppData"
+)
+STORE_STATE_VALUE = "State"
+
+# Estados de `Windows.ApplicationModel.StartupTaskState`, publicados por Microsoft:
+#   0 desactivada · 1 desactivada por el usuario · 2 activada ·
+#   3 desactivada por directiva · 4 activada por directiva
+# Un valor fuera de esa lista devuelve `None`: no se adivina el estado de algo que además
+# se puede escribir.
+STORE_STATES = {0: False, 1: False, 2: True, 3: False, 4: True}
+STORE_ENABLED = 2
+STORE_DISABLED_BY_USER = 1
 
 STARTUP_FOLDER = r"%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
 COMMON_STARTUP_FOLDER = r"%ProgramData%\Microsoft\Windows\Start Menu\Programs\Startup"
@@ -434,8 +460,12 @@ class StartupEntry:
         """
         if self.target_exists is False:
             return COST_NULO, "El archivo al que apunta ya no está en el equipo: no arranca nada."
-        if self.kind == KIND_TAREA:
-            return COST_MEDIO, "Es una tarea programada: Windows la lanza aparte al entrar."
+        if self.kind in (KIND_TAREA, KIND_STORE):
+            return COST_MEDIO, (
+                "Es una tarea programada: Windows la lanza aparte al entrar."
+                if self.kind == KIND_TAREA
+                else "Es una aplicación de la Store: Windows la abre al entrar en la sesión."
+            )
         return COST_LIGERO, "Es una entrada del registro o un acceso directo: se abre al entrar."
 
     @property
@@ -664,6 +694,34 @@ TASKS_SCRIPT = (
 )
 
 
+STORE_SCRIPT = (
+    # La salida se lee como UTF-8: sin esto, PowerShell escribe en la página del sistema
+    # y los nombres con acentos llegan corruptos.
+    "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+    "$ErrorActionPreference='SilentlyContinue';"
+    "$base='HKCU:\\" + STORE_PATH + "';"
+    # El nombre del paquete da la identidad y el del menú Inicio, el nombre que reconoce
+    # el usuario: en la lista tiene que poner «PC Manager», no «Microsoft.MicrosoftPCManager».
+    "$paquetes=@{};"
+    "foreach($p in (Get-AppxPackage)){ $paquetes[$p.PackageFamilyName]=[string]$p.Name };"
+    "$inicio=@(Get-StartApps);"
+    "$lista=@();"
+    "foreach($clave in (Get-ChildItem -LiteralPath $base)){"
+    "foreach($tarea in (Get-ChildItem -LiteralPath $clave.PSPath | Where-Object { $_.PSChildName -ne 'Schemas' })){"
+    "$props=Get-ItemProperty -LiteralPath $tarea.PSPath;"
+    "if($props.PSObject.Properties.Name -contains 'State'){"
+    "$paquete=$clave.PSChildName;"
+    "$identidad=[string]$paquetes[$paquete];"
+    "if(-not $identidad){ $identidad=($paquete -split '_')[0] };"
+    "$nombre='';"
+    "foreach($app in $inicio){ if([string]$app.AppID -like ($paquete + '!*')){ $nombre=[string]$app.Name; break } };"
+    "$lista += [pscustomobject]@{paquete=$paquete;tarea=[string]$tarea.PSChildName;"
+    "estado=[int]$props.State;nombre=$nombre;identidad=$identidad}"
+    "}}}" + ";"
+    "ConvertTo-Json -InputObject @($lista) -Compress -Depth 3"
+)
+
+
 def task_entries_from_output(output: str) -> list[StartupEntry]:
     """Convierte la salida del Programador de tareas en entradas (función pura)."""
     payload = (output or "").strip()
@@ -726,12 +784,113 @@ def read_task_entries(timeout: int = 60) -> list[StartupEntry]:
     return entradas
 
 
+def store_state_enabled(value: Any) -> bool | None:
+    """¿La tarea de inicio está activa? `None` si Windows informa de un estado desconocido.
+
+    Los cinco estados que publica Microsoft están en `STORE_STATES`. Cualquier otro valor
+    devuelve `None` a propósito: no se adivina el estado de algo que además se escribe.
+    """
+    try:
+        estado = int(value)
+    except (TypeError, ValueError):
+        return None
+    return STORE_STATES.get(estado)
+
+
+def store_entries_from_output(output: str) -> list[StartupEntry]:
+    """Convierte la salida del guion de la Store en entradas (función pura).
+
+    Las tareas cuyo estado Windows no documenta se dejan fuera: son las únicas que no se
+    pueden enseñar ni cambiar sin adivinar.
+    """
+    payload = (output or "").strip()
+    if not payload.startswith("[") and not payload.startswith("{"):
+        return []
+    try:
+        data = json.loads(payload)
+    except (ValueError, TypeError):
+        return []
+    rows = data if isinstance(data, list) else [data]
+    entries: list[StartupEntry] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        # El paquete y la tarea van al registro al cambiar el estado, así que se validan
+        # aquí, al leerlos: un nombre con separadores escribiría en otra rama.
+        paquete = _safe_value_name(row.get("paquete") or "")
+        tarea = _safe_value_name(row.get("tarea") or "")
+        if not paquete or not tarea:
+            continue
+        activa = store_state_enabled(row.get("estado"))
+        if activa is None:
+            continue
+        identidad = str(row.get("identidad") or "").strip() or paquete.split("_")[0]
+        entries.append(
+            StartupEntry(
+                id=f"store|{paquete}|{tarea}",
+                name=str(row.get("nombre") or "").strip() or identidad,
+                # Sin comando: una aplicación de la Store no es un archivo que se pueda
+                # enseñar ni buscar en el disco, y devolver una ruta inventada haría
+                # creer que la entrada apunta a algo que no está.
+                command="",
+                source=SOURCE_STORE,
+                location=f"Aplicación de la Store · {identidad}",
+                kind=KIND_STORE,
+                enabled=activa,
+                needs_admin=False,
+                can_toggle=True,
+                note=(
+                    "La arranca Windows como aplicación de la Store; aquí se cambia su "
+                    "tarea de inicio, igual que en el Administrador de tareas."
+                ),
+                data={"clave": "store", "paquete": paquete, "tarea": tarea},
+            )
+        )
+    return entries
+
+
+def read_store_entries(timeout: int = 90) -> list[StartupEntry]:
+    """Tareas de inicio de las aplicaciones de la Store (tarda unos segundos).
+
+    Son tres consultas a Windows —el estado en el registro, los paquetes y los nombres del
+    menú Inicio— dentro del **mismo** proceso de PowerShell: separarlas costaría el
+    arranque de PowerShell (~2 s en un equipo real) cada una.
+    """
+    if not IS_WINDOWS:
+        return []
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", STORE_SCRIPT],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            env=powershell_environment(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return store_entries_from_output(result.stdout or "")
+
+
+def read_slow_entries() -> list[StartupEntry]:
+    """Las dos lecturas lentas de la página, en una sola llamada de fondo.
+
+    Las tareas de inicio de sesión y las aplicaciones de la Store se consultan juntas
+    porque las dos tardan segundos y las dos alimentan la misma lista: así la página lanza
+    un solo trabajo en segundo plano en vez de esperar a dos.
+    """
+    return read_task_entries() + read_store_entries()
+
+
 SOURCES_ORDER = (
     SOURCE_USUARIO,
     SOURCE_SISTEMA,
     SOURCE_CARPETA_USUARIO,
     SOURCE_CARPETA_COMUN,
     SOURCE_TAREA,
+    SOURCE_STORE,
 )
 
 
@@ -837,6 +996,8 @@ def set_enabled(entry: StartupEntry, enabled: bool) -> tuple[bool, str]:
         return False, "El registro solo existe en Windows."
     if entry.kind == KIND_TAREA:
         return _set_task_enabled(entry, enabled)
+    if entry.kind == KIND_STORE:
+        return _set_store_enabled(entry, enabled)
     if not entry.can_toggle:
         return False, f"«{entry.name}» no se puede cambiar desde aquí. {entry.note}".strip()
     hive, approved, value_name, problema = _validated_registry_target(entry)
@@ -886,6 +1047,45 @@ def _set_task_enabled(entry: StartupEntry, enabled: bool) -> tuple[bool, str]:
         + (f" ({detail})" if detail else ".")
         + " Puede requerir permisos de administrador."
     )
+
+
+def _set_store_enabled(entry: StartupEntry, enabled: bool) -> tuple[bool, str]:
+    """Activa o desactiva la tarea de inicio de una aplicación de la Store.
+
+    Se escribe el estado en la clave del paquete —2 activada y 1 desactivada por el
+    usuario, los mismos valores que deja el Administrador de tareas— y se **relee**: un
+    cambio que Windows no guarde no se puede contar como hecho.
+    """
+    if winreg is None:
+        return False, "El registro solo existe en Windows."
+    paquete = _safe_value_name(entry.data.get("paquete") or "")
+    tarea = _safe_value_name(entry.data.get("tarea") or "")
+    if not paquete or not tarea:
+        return False, (
+            f"«{entry.name}» no dice de qué paquete de la Store es: mejor cambiarlo desde "
+            "el Administrador de tareas, que sí lo sabe."
+        )
+    ruta = f"{STORE_PATH}\\{paquete}\\{tarea}"
+    valor = STORE_ENABLED if enabled else STORE_DISABLED_BY_USER
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, ruta, 0, winreg.KEY_SET_VALUE | winreg.KEY_READ
+        ) as clave:
+            winreg.SetValueEx(clave, STORE_STATE_VALUE, 0, winreg.REG_DWORD, valor)
+            guardado, _tipo = winreg.QueryValueEx(clave, STORE_STATE_VALUE)
+    except FileNotFoundError:
+        return False, (
+            f"Windows ya no tiene la tarea de inicio de «{entry.name}» "
+            "(¿se desinstaló la aplicación?)."
+        )
+    except PermissionError:
+        return False, "Windows denegó el cambio: hace falta ejecutar como administrador."
+    except OSError as exc:
+        return False, f"No se pudo cambiar «{entry.name}»: {exc}"
+    if store_state_enabled(guardado) != enabled:
+        return False, "Windows no guardó el cambio."
+    accion = "activada" if enabled else "desactivada"
+    return True, f"«{entry.name}» {accion}. Windows lo tendrá en cuenta en el próximo arranque."
 
 
 def move(
