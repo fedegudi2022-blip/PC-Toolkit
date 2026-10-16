@@ -771,7 +771,14 @@ def scan(
             item.present = True
             item.size, item.files = info
             item.available = info[1] > 0 and not target.blocker()
-            item.blocked = _blocked(target, ()) if info[1] > 0 else ""
+            # Una papelera sin elementos no es «sin datos»: se mide perfectamente y lo que pasa es
+            # que ya está vacía. Se dice con la misma frase que usa el borrado, para que la fila
+            # no parezca una medición fallida y se sepa por qué no hay casilla que marcar.
+            item.blocked = (
+                _blocked(target, ())
+                if info[1] > 0
+                else "La papelera ya está vacía (o Windows no la cuenta)."
+            )
             plan.items.append(item)
             continue
         folders = _folders_for(target, temp_folder)

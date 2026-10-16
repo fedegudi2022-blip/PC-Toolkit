@@ -4897,14 +4897,20 @@ def test_interface() -> None:
         f"{len(dialog._rows)} filas",  # noqa: SLF001
     )
     filas = {fila.item.key: fila for fila in dialog._rows}  # noqa: SLF001
+    # Toda fila que no se pueda limpiar ahora tiene que decir por qué: o se puede, o trae el
+    # motivo, o no hay nada de ese tipo en el equipo. La papelera vacía entra por el motivo (no
+    # es «sin datos», es que ya está vacía). El detalle nombra las que se quedaran sin decir nada,
+    # que es lo único que hay que saber para arreglarlo.
+    sin_motivo = [
+        fila.item.name
+        for fila in dialog._rows  # noqa: SLF001
+        if not (fila.item.available or bool(fila.item.blocked) or not fila.item.present)
+    ]
     check(
         "Lo que no se puede hacer ahora se enseña con el motivo y sin casilla",
-        all(
-            fila.item.available or bool(fila.item.blocked) or not fila.item.present
-            for fila in dialog._rows  # noqa: SLF001
-        )
+        not sin_motivo
         and (filas["temp"].item.available or bool(filas["temp"].item.blocked)),
-        filas["recycle"].item.blocked[:60],
+        " · ".join(sin_motivo),
     )
     check(
         "La papelera no viene marcada (vaciar no se puede deshacer)",
@@ -5398,6 +5404,7 @@ def test_interface() -> None:
         original_leer = startup_mod.read_entries
         original_mover = startup_mod.move
         original_entradas = window.startup_page._entries  # noqa: SLF001
+        original_tareas = window.startup_page._task_entries  # noqa: SLF001
         movidas: list[tuple[str, bool, str]] = []
         startup_mod.read_entries = lambda *a, **k: []  # type: ignore[assignment]
         startup_mod.move = lambda entrada, enabled, store=None, origin="manual": (  # type: ignore[assignment]
@@ -5406,6 +5413,11 @@ def test_interface() -> None:
         )[1]
         try:
             window.startup_page._entries = [pesada]  # noqa: SLF001
+            # La página guarda aparte las tareas de inicio de sesión que leyó en segundo plano, y
+            # el aviso mira las dos listas: si no se vacía también, entre lo que anuncia entrarían
+            # las entradas pesadas del equipo donde corra la suite (en el servidor, la tarea del
+            # actualizador de Google) y la comprobación dependería de la máquina.
+            window.startup_page._task_entries = []  # noqa: SLF001
             preguntas.clear()
             etiquetas.clear()
             respuesta[0] = QMessageBox.No
@@ -5447,6 +5459,7 @@ def test_interface() -> None:
             startup_mod.read_entries = original_leer  # type: ignore[assignment]
             startup_mod.move = original_mover  # type: ignore[assignment]
             window.startup_page._entries = original_entradas  # noqa: SLF001
+            window.startup_page._task_entries = original_tareas  # noqa: SLF001
     finally:
         window.release_memory_now = original_liberar
         QMessageBox.exec = original_exec  # type: ignore[method-assign]
