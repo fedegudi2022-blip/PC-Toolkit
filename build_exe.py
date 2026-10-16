@@ -29,6 +29,11 @@ from pctoolkit.core.config import APP_NAME, APP_VERSION, format_bytes  # noqa: E
 
 ASSETS = ROOT / "assets"
 ICON = ASSETS / "pc_toolkit.ico"
+# El módulo nativo (C++): si está compilado se empaqueta dentro, y el ejecutable lo encuentra
+# por `sys._MEIPASS\nativo`. Si no está, la aplicación funciona igual con sus caminos de
+# Python (ver `nativo\construir.py`).
+NATIVO = ROOT / "nativo" / "pctk_nativo.dll"
+
 # El logotipo original: es la fuente del .ico (al empaquetar) y el icono de la ventana
 # (en tiempo de ejecución), así que viaja dentro del ejecutable.
 LOGO = ASSETS / "pc_toolkit_logo.png"
@@ -247,6 +252,13 @@ def build_command(onefile: bool, debug: bool) -> list[str]:
         "--add-data",
         f"{LOGO}{os.pathsep}assets",
     ]
+    if NATIVO.exists():
+        command += ["--add-data", f"{NATIVO}{os.pathsep}nativo"]
+    else:
+        print(
+            "Aviso: no está compilado el módulo nativo (nativo\\construir.py); "
+            "el paquete saldrá con los caminos de Python."
+        )
     for module in EXCLUDES:
         command += ["--exclude-module", module]
     command.append(str(ROOT / "app.py"))

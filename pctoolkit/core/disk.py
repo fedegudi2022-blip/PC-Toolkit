@@ -3,6 +3,12 @@
 Recorre un directorio o unidad completa, agrega el tamaño de cada elemento y
 devuelve el desglose por carpeta, por categoría de archivo y los archivos más
 grandes. El escaneo corre en un hilo aparte para no bloquear la interfaz.
+
+El recorrido lo puede hacer el **módulo nativo** (`nativo\\escaner_disco.cpp`, ver
+`native.py`): es el mismo criterio —los nombres que se saltan, el catálogo de categorías y el
+tamaño mínimo de «archivo grande» salen de aquí— pero sin interpretar carpeta por carpeta. Si
+la DLL no está compilada, se usa el recorrido de Python de siempre, que es también el que
+sirve de referencia para comprobar que los dos dan lo mismo.
 """
 
 from __future__ import annotations
@@ -18,7 +24,7 @@ from typing import Callable, Iterable
 import psutil
 from PySide6.QtCore import QThread, Signal
 
-from . import logs
+from . import logs, native
 
 CATEGORIES: dict[str, tuple[str, ...]] = {
     "Vídeo": (".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".mpg", ".mpeg", ".ts"),
@@ -218,7 +224,102 @@ def scan_directory(
     top_children: int = 60,
     top_files: int = 20,
 ) -> ScanResult:
-    """Calcula el tamaño de cada elemento dentro de `root`."""
+    """Calcula el tamaño de cada elemento dentro de `root`.
+
+    Un directorio normal se recorre en Python (más abajo); para una carpeta grande se le pide
+    al módulo nativo, que devuelve los mismos números en menos tiempo. Si el módulo no está,
+    el resultado sale igual, solo que más despacio.
+    """
+    if _usar_nativo(root):
+        empezado = time.time()
+        nativo = native.escanear(
+            root,
+            min_large_file=min_large_file,
+            top_children=top_children,
+            top_files=top_files,
+            saltar=sorted(SKIP_NAMES),
+            categorias=CATEGORIES,
+            categoria_otros=OTHER_CATEGORY,
+            progress=progress,
+            should_cancel=should_cancel,
+        )
+        if nativo is not None:
+            resultado = _resultado_del_nativo(root, nativo, should_cancel)
+            resultado.duration = time.time() - empezado
+            return resultado
+    return scan_directory_en_python(
+        root,
+        progress=progress,
+        should_cancel=should_cancel,
+        min_large_file=min_large_file,
+        top_children=top_children,
+        top_files=top_files,
+    )
+
+
+def _usar_nativo(root: str) -> bool:
+    """¿Se le puede pedir el recorrido al módulo nativo?
+
+    Hace falta que esté compilado **y** que se haya pedido: por defecto el recorrido lo hace
+    Python, porque en las medidas el nativo sale igual o un poco peor (ver `native.py`). No se
+    decide por el tamaño de la carpeta: montar la llamada cuesta microsegundos y el recorrido
+    es el mismo trabajo, así que no hay un umbral que separar (y contarlo antes para decidir
+    sería recorrer la carpeta dos veces).
+    """
+    if not root or not os.path.isdir(root):
+        return False
+    if not native.disco_por_defecto():
+        return False
+    disponible, _motivo = native.disponible()
+    return disponible
+
+
+def _resultado_del_nativo(
+    root: str,
+    datos: dict,
+    should_cancel: Callable[[], bool] | None,
+) -> ScanResult:
+    """Convierte la respuesta del módulo nativo en el mismo `ScanResult` de siempre."""
+    resultado = ScanResult(root=root)
+    for hijo in datos.get("children") or ():
+        resultado.children.append(
+            Node(
+                path=str(hijo.get("path", "")),
+                name=str(hijo.get("name", "")),
+                size=int(hijo.get("size") or 0),
+                is_dir=bool(hijo.get("is_dir")),
+                file_count=int(hijo.get("file_count") or 0),
+            )
+        )
+    resultado.total_size = sum(nodo.size for nodo in resultado.children)
+    resultado.total_files = int(datos.get("total_files") or 0)
+    resultado.dirs_scanned = int(datos.get("dirs_scanned") or 0)
+    resultado.errors = int(datos.get("errors") or 0)
+    resultado.categories = [
+        (str(nombre), int(tamano)) for nombre, tamano in (datos.get("categories") or ())
+    ]
+    resultado.largest_files = [
+        Node(
+            path=str(grande.get("path", "")),
+            name=str(grande.get("name", "")),
+            size=int(grande.get("size") or 0),
+            is_dir=False,
+        )
+        for grande in (datos.get("largest_files") or ())
+    ]
+    resultado.cancelled = bool(should_cancel and should_cancel())
+    return resultado
+
+
+def scan_directory_en_python(
+    root: str,
+    progress: Callable[[str, int], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+    min_large_file: int = 100 * 1024 * 1024,
+    top_children: int = 60,
+    top_files: int = 20,
+) -> ScanResult:
+    """Recorrido de siempre, en Python: el que sirve de referencia al módulo nativo."""
     result = ScanResult(root=root)
     started = time.time()
     counter = {"files": 0, "dirs": 0, "errors": 0}

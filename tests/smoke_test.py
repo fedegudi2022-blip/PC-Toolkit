@@ -2679,6 +2679,7 @@ def test_ajustes_windows() -> None:
     etiquetas = {
         ajustes.STATUS_PENDING: "Recomendado",
         ajustes.STATUS_OPTIMIZED: "Ya optimizado",
+        ajustes.STATUS_CUSTOM: "Personalizado",
         ajustes.STATUS_UNAVAILABLE: "No disponible",
         ajustes.STATUS_UNKNOWN: "Sin analizar",
     }
@@ -2690,9 +2691,71 @@ def test_ajustes_windows() -> None:
             for clave, valor in ajustes.summary(
                 [ajustes.SettingState(s, ajustes.STATUS_PENDING) for s in ajustes.CATALOG]
             ).items()
-            if clave in ("recomendados", "optimizados", "no_disponibles")
+            if clave in ("recomendados", "personalizados", "optimizados", "no_disponibles")
         )
         == len(ajustes.CATALOG),
+    )
+
+    # --- El valor de fábrica de cada clave ---------------------------------
+    campos = [spec for setting in ajustes.CATALOG for spec in setting.values]
+    check(
+        "Cada valor dice qué trae Windows de fábrica o dice que no se sabe",
+        all(
+            spec.sabe_default == (spec.default is not ajustes.SIN_DATO)
+            and (spec.default is ajustes.SIN_DATO or spec.default is ajustes.AUSENTE or isinstance(spec.default, (int, str)))
+            for spec in campos
+        )
+        and any(spec.default is ajustes.AUSENTE for spec in campos)
+        and any(spec.default is ajustes.SIN_DATO for spec in campos),
+        f"{sum(1 for spec in campos if spec.sabe_default)} de {len(campos)} valores con valor de fábrica",
+    )
+    check(
+        "Un ajuste solo se puede devolver a fábrica si se saben todos sus valores de fábrica",
+        all(
+            setting.sabe_predeterminado == all(spec.sabe_default for spec in setting.values)
+            for setting in ajustes.CATALOG
+        )
+        # El de la barra de tareas no lo declara a propósito (Windows no lo documenta): es el
+        # caso que se quiere cubrir, el de no afirmar lo que no se sabe.
+        and not ajustes.BY_ID["noticias_barra"].sabe_predeterminado
+        and all(
+            "De fábrica" in setting.help_text() for setting in ajustes.CATALOG if setting.values
+        ),
+        "los 17 ajustes dicen su valor de fábrica (o que no se sabe) en la ayuda",
+    )
+    check(
+        "Los distintivos se enseñan en castellano y solo hay los dos que se conocen",
+        ajustes.ORIGIN_LABELS
+        == {ajustes.ORIGIN_DEFAULT: "Predeterminado", ajustes.ORIGIN_CUSTOM: "Personalizado"}
+        and ajustes.SettingState(ajustes.CATALOG[0], ajustes.STATUS_PENDING, origin=ajustes.ORIGIN_CUSTOM).origin_label
+        == "Personalizado",
+        f"{ajustes.ORIGIN_LABELS}",
+    )
+    def _de_fabrica_esperado(spec, existe: bool, valor) -> bool | None:
+        """Lo que tiene que contestar `es_de_fabrica`: ninguna respuesta se da por supuesta."""
+        if not spec.sabe_default:
+            return None
+        if not existe:
+            return True
+        return False if spec.default is ajustes.AUSENTE else spec.default == valor
+
+    casos = [
+        (spec, existe, valor)
+        for spec in campos
+        for existe, valor in ((False, None), (True, spec.default))
+    ]
+    check(
+        "Un valor ausente cuenta como el de fábrica (sin valor, Windows hace lo de serie)",
+        all(
+            spec.es_de_fabrica(existe, valor) is _de_fabrica_esperado(spec, existe, valor)
+            for spec, existe, valor in casos
+        )
+        and any(
+            spec.es_de_fabrica(True, spec.default) is False
+            for spec in campos
+            if spec.default is ajustes.AUSENTE
+        ),
+        f"{len(casos)} casos (con el valor puesto y sin él) sobre {len(campos)} valores",
     )
 
     # --- Análisis y aplicación sobre claves propias ------------------------
@@ -2769,12 +2832,152 @@ def test_ajustes_windows() -> None:
                 and not winreg_key_exists(f"{raiz}\\{vacia}"),
             )
 
+        # --- El distintivo y devolver un solo ajuste a fábrica --------------
+        # Sobre claves propias, como todo lo de arriba: aquí se comprueba la lógica (qué se
+        # enseña y qué se escribe), no los ajustes del equipo.
+        with tempfile.TemporaryDirectory() as tmp:
+            tienda = undo.UndoStore(Path(tmp) / "fabrica.jsonl")
+            valor_fabrica = ajustes.ValueSpec(
+                path=r"Software\PCToolkit\PruebaFabrica", name="Valor", recommended=0, default=1
+            )
+            ajuste_fabrica = ajustes.Setting(
+                id="prueba_fabrica",
+                name="Ajuste con valor de fábrica",
+                category=ajustes.CATEGORY_ADS,
+                description="Ajuste de la suite: no toca nada real de Windows.",
+                values=(valor_fabrica,),
+            )
+            sin_tocar = ajustes.analyse_one(ajuste_fabrica)
+            check(
+                "Un ajuste sin tocar sale recomendado y con el distintivo de fábrica",
+                sin_tocar.status == ajustes.STATUS_PENDING
+                and sin_tocar.pending
+                and sin_tocar.origin_label == "Predeterminado"
+                and not sin_tocar.can_restore_default,
+                sin_tocar.detail,
+            )
+            ajustes.write_value(valor_fabrica, 3)
+            propio = ajustes.analyse_one(ajuste_fabrica)
+            check(
+                "Un valor que no es el de fábrica ni el recomendado sale como personalizado",
+                propio.status == ajustes.STATUS_CUSTOM
+                and propio.pending
+                and propio.origin_label == "Personalizado"
+                and propio.can_restore_default
+                and "no coincide con el valor de fábrica" in propio.detail,
+                propio.detail,
+            )
+            cifras_propio = ajustes.summary([propio])
+            check(
+                "El resumen cuenta los personalizados aparte de los recomendados",
+                cifras_propio["personalizados"] == 1 and cifras_propio["recomendados"] == 0,
+                f"{cifras_propio['personalizados']} personalizado(s), {cifras_propio['recomendados']} recomendado(s)",
+            )
+            devuelto, mensaje = ajustes.restore_default(ajuste_fabrica, store=tienda)
+            existe, leido = ajustes.read_value(valor_fabrica)
+            check(
+                "Devolver a fábrica escribe el valor de fábrica y lo anota para deshacer",
+                devuelto and existe and int(leido) == 1 and tienda.count() == 1,
+                mensaje,
+            )
+            despues = ajustes.analyse_one(ajuste_fabrica)
+            check(
+                "Ya en el valor de fábrica, el distintivo cambia y no queda nada que devolver",
+                despues.origin_label == "Predeterminado" and not despues.can_restore_default,
+                despues.detail,
+            )
+            accion_fabrica = tienda.recent(1)[0]
+            respaldo_fabrica = Path(str(accion_fabrica.data.get("respaldo") or ""))
+            vuelto = undo.revert_action(tienda, accion_fabrica)
+            existe, leido = ajustes.read_value(valor_fabrica)
+            check(
+                "Un ajuste devuelto a fábrica se puede deshacer y vuelve el valor que había",
+                vuelto[0] and existe and int(leido) == 3 and respaldo_fabrica.exists(),
+                vuelto[1],
+            )
+
+            # De fábrica ese valor no existe: devolverlo es borrarlo, no escribir un cero.
+            ausente = ajustes.ValueSpec(
+                path=r"Software\PCToolkit\PruebaAusente",
+                name="Otro",
+                recommended=0,
+                default=ajustes.AUSENTE,
+            )
+            ajuste_ausente = ajustes.Setting(
+                id="prueba_ausente",
+                name="Ajuste que de fábrica no existía",
+                category=ajustes.CATEGORY_ADS,
+                description="Ajuste de la suite: no toca nada real de Windows.",
+                values=(ausente,),
+            )
+            sin_tocar_ausente = ajustes.analyse_one(ajuste_ausente)
+            ajustes.write_value(ausente, 5)
+            hecho_a_mano = ajustes.analyse_one(ajuste_ausente)
+            ajustes.restore_default(ajuste_ausente)
+            check(
+                "De fábrica sin ese valor: sin tocar sale de fábrica y devolverlo lo borra",
+                sin_tocar_ausente.origin_label == "Predeterminado"
+                and hecho_a_mano.status == ajustes.STATUS_CUSTOM
+                and ajustes.read_value(ausente) == (False, None),
+                f"de fábrica ausente; con 5 a mano: {hecho_a_mano.status_label}",
+            )
+
+            # La clave que el ajuste crea también se quita: el menú contextual clásico sigue
+            # puesto por la mera existencia de su clave, aunque el valor se haya borrado.
+            creada = ajustes.ValueSpec(
+                path=r"Software\PCToolkit\PruebaCreacion\Inproc",
+                name="",
+                recommended="",
+                kind=ajustes.KIND_STRING,
+                default=ajustes.AUSENTE,
+            )
+            ajuste_creacion = ajustes.Setting(
+                id="prueba_creacion",
+                name="Ajuste que crea una clave",
+                category=ajustes.CATEGORY_INTERFACE,
+                description="Ajuste de la suite: no toca nada real de Windows.",
+                values=(creada,),
+                created_keys=(
+                    ajustes.KeyRef(r"Software\PCToolkit\PruebaCreacion\Inproc"),
+                    ajustes.KeyRef(r"Software\PCToolkit\PruebaCreacion"),
+                ),
+            )
+            ajustes.apply_setting(ajuste_creacion)
+            estaba = ajustes.key_exists(creada)
+            ajustes.restore_default(ajuste_creacion)
+            check(
+                "Devolver a fábrica quita también las claves que el ajuste había creado",
+                estaba and not ajustes.key_exists(creada),
+                "la clave se creó al aplicar y se quitó al devolver a fábrica",
+            )
+
+            sin_dato = ajustes.ValueSpec(
+                path=r"Software\PCToolkit\PruebaSinDato", name="Tercero", recommended=0
+            )
+            ajuste_sin_dato = ajustes.Setting(
+                id="prueba_sin_dato",
+                name="Ajuste sin valor de fábrica conocido",
+                category=ajustes.CATEGORY_ADS,
+                description="Ajuste de la suite: no toca nada real de Windows.",
+                values=(sin_dato,),
+            )
+            estado_sin_dato = ajustes.analyse_one(ajuste_sin_dato)
+            permitido, motivo_sin_dato = ajustes.can_restore_default(ajuste_sin_dato)
+            check(
+                "Sin saber el valor de fábrica no hay distintivo ni se ofrece devolverlo",
+                estado_sin_dato.origin_label == ""
+                and not estado_sin_dato.can_restore_default
+                and not permitido
+                and "no se sabe" in motivo_sin_dato.lower(),
+                motivo_sin_dato,
+            )
+
         # --- El registro de cambios y el resumen ---------------------------
         tipos = [entrada.get("tipo") for entrada in ajustes.recent_changes(20)]
         resumen = ajustes.summary_text()
         check(
             "Cada análisis y cada cambio quedan anotados en un registro legible",
-            "aplicado" in tipos and "revertido" in tipos,
+            "aplicado" in tipos and "revertido" in tipos and "predeterminado" in tipos,
             ", ".join(tipos[-6:]) or "sin entradas",
         )
         check(
@@ -2870,7 +3073,80 @@ def test_ajustes_windows() -> None:
         pagina.search.clear()
         _settle(app, 100)
 
+        # --- El distintivo y devolver un solo ajuste desde la fila --------
+        # Un valor puesto a mano que no es ni el de fábrica ni el recomendado: es lo que tiene
+        # que salir como «Personalizado» (y no como «Recomendado», que sería no decir nada).
+        por_id = {fila.setting.id: fila for fila in pagina._rows}  # noqa: SLF001
+        fila_custom = por_id["transparencia"]
+        ajustes.write_value(fila_custom.setting.values[0], 3)
+        pagina.analyse()
+        _settle(app, 150)
+        check(
+            "La fila de un ajuste puesto a mano lleva el distintivo «Personalizado»",
+            fila_custom.state.status == ajustes.STATUS_CUSTOM
+            and fila_custom.origin_label.text() == "Personalizado"
+            and fila_custom.origin_label.isVisibleTo(fila_custom)
+            and fila_custom.restore_button.isVisibleTo(fila_custom),
+            fila_custom.state.detail,
+        )
+        fila_fabrica = por_id["tracker_inicio"]
+        check(
+            "La fila de un ajuste sin tocar lleva «Predeterminado» y no ofrece devolverlo",
+            fila_fabrica.origin_label.text() == "Predeterminado"
+            and fila_fabrica.origin_label.isVisibleTo(fila_fabrica)
+            and not fila_fabrica.restore_button.isVisibleTo(fila_fabrica),
+            fila_fabrica.state.detail,
+        )
+        check(
+            "El resumen de la página cuenta los ajustes personalizados",
+            "1 personalizado(s)" in pagina.summary_label.text(),
+            pagina.summary_label.text(),
+        )
+        pagina.only_pending.setChecked(True)
+        _settle(app, 100)
+        check(
+            "El filtro «solo lo que queda por hacer» no esconde un ajuste personalizado",
+            fila_custom.isVisibleTo(pagina),
+            f"visible con el filtro puesto: {fila_custom.isVisibleTo(pagina)}",
+        )
+        pagina.only_pending.setChecked(False)
+        _settle(app, 100)
+        pagina.mark_recommended(True)
+        check(
+            "Marcar lo que queda por hacer incluye los ajustes personalizados",
+            fila_custom.marked,
+            pagina.apply_button.text(),
+        )
+        pagina.mark_recommended(False)
+        # Y desde la fila se puede devolver **solo** ese ajuste a como vino Windows.
+        original_exec = QMessageBox.exec
+        QMessageBox.exec = lambda self: QMessageBox.Yes  # type: ignore[method-assign]
+        try:
+            fila_custom.restore_button.click()
+            _settle(app, 200)
+        finally:
+            QMessageBox.exec = original_exec  # type: ignore[method-assign]
+        existe_clave, leido = ajustes.read_value(fila_custom.setting.values[0])
+        check(
+            "«Dejar como vino Windows» devuelve ese ajuste y solo ese, con su apunte para deshacer",
+            existe_clave
+            and int(leido) == 1
+            and fila_custom.state.origin_label == "Predeterminado"
+            and store_pagina.count() == 1,
+            f"valor {leido!r}, {fila_custom.state.status_label}, {store_pagina.count()} apunte(s)",
+        )
+        check(
+            "La página trae los botones de los perfiles",
+            pagina.save_profile_button.isEnabled() and pagina.open_profile_button.isEnabled(),
+            f"«{pagina.save_profile_button.text()}» y «{pagina.open_profile_button.text()}»",
+        )
+        # Se vuelve a marcar lo que queda por hacer: la comprobación que sigue (aplicar desde
+        # la página) cuenta con la lista marcada tal y como estaba antes de este bloque.
+        pagina.mark_recommended(True)
         # La confirmación se contesta sola: aquí se comprueba que la marca llegue a aplicarse.
+        # Se cuentan los apuntes **nuevos** (el bloque de arriba dejó anotado el ajuste que se
+        # devolvió a fábrica, y eso no es un cambio de esta aplicación).
+        antes_de_aplicar = store_pagina.count()
         original_exec = QMessageBox.exec
         QMessageBox.exec = lambda self: QMessageBox.Yes  # type: ignore[method-assign]
         try:
@@ -2878,7 +3154,7 @@ def test_ajustes_windows() -> None:
             _settle(app, 200)
         finally:
             QMessageBox.exec = original_exec  # type: ignore[method-assign]
-        aplicados = store_pagina.count()
+        aplicados = store_pagina.count() - antes_de_aplicar
         check(
             "Aplicar desde la página anota cada cambio para poder deshacerlo",
             aplicados == marcados and not pagina.selected_settings(),
@@ -2904,6 +3180,315 @@ def test_ajustes_windows() -> None:
         _borrar_arbol_de_registro(raiz)
     check(
         "La raíz de pruebas no se queda puesta (no se tocaría nunca el registro real)",
+        ajustes.test_root() == "",
+        ajustes.test_root() or "vacía",
+    )
+
+
+def test_perfiles() -> None:
+    """Perfiles: guardar, leer, revisar y marcar (sin aplicar nada por su cuenta).
+
+    Un perfil es un archivo de texto que puede venir de cualquier sitio, así que lo que más se
+    comprueba aquí es la frontera: qué se rechaza, qué se cuenta aparte, qué se marca y que
+    abrirlo **no** toque el registro. La parte que se aplica se prueba donde se aplica
+    (`test_ajustes_windows`): aquí solo se marca.
+    """
+    import winreg  # noqa: F401  (solo para saber que estamos en Windows)
+
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QApplication, QDialog, QFileDialog
+
+    from pctoolkit.core import profiles, undo, windows_settings as ajustes
+    from pctoolkit.core.scheduler import CleanupSchedule, MaintenanceSchedule
+    from pctoolkit.core.settings import AppSettings
+    from pctoolkit.ui import windows_settings_page as pagina_ui
+    from pctoolkit.ui.profiles_ui import OpenProfileDialog, SaveProfileDialog
+
+    sin_raiz = os.environ.get(ajustes.TEST_ROOT_ENV)
+    raiz = r"Software\PCToolkit\PruebasPerfiles"
+    os.environ[ajustes.TEST_ROOT_ENV] = raiz
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            carpeta = Path(tmp)
+            perfil = profiles.construir(
+                ajustes=("transparencia", "inicio_recomendaciones", "no_existe_esto"),
+                limpieza=("temp", "recycle", "categoria_inventada"),
+                mantenimiento=MaintenanceSchedule(clean_temp=True, release_memory=True),
+                limpieza_programada=CleanupSchedule(targets=("temp", "dumps")),
+                nota="Equipo de la oficina",
+            )
+            check(
+                "El perfil se arma en el orden del catálogo y sin repetir",
+                perfil.ajustes == ("inicio_recomendaciones", "transparencia", "no_existe_esto")
+                and perfil.version == APP_VERSION
+                and bool(perfil.equipo)
+                and perfil.sistema.startswith("Windows"),
+                f"{perfil.ajustes} · {perfil.sistema} · {perfil.equipo}",
+            )
+            check(
+                "Se sabe qué valores del perfil no caben y se dice cuáles son",
+                profiles.ajustes_desconocidos(perfil) == ("no_existe_esto",)
+                and profiles.limpieza_valida(perfil) == ("temp", "recycle")
+                and profiles.limpieza_desconocida(perfil) == ("categoria_inventada",),
+                f"desconocidos: {profiles.ajustes_desconocidos(perfil)}",
+            )
+
+            # --- Guardar y volver a leer ---------------------------------
+            destino = profiles.guardar(perfil, carpeta / "oficina.json")
+            guardado = json.loads(destino.read_text(encoding="utf-8"))
+            leido, motivo = profiles.leer(destino)
+            check(
+                "El perfil se guarda con la extensión propia y se vuelve a leer entero",
+                destino.suffix == profiles.EXTENSION
+                and guardado["formato"] == profiles.FORMATO
+                and leido is not None
+                and not motivo
+                and leido.ajustes == perfil.ajustes
+                and leido.limpieza == perfil.limpieza
+                and leido.nota == "Equipo de la oficina",
+                f"{destino.name}: {motivo or 'leído'}",
+            )
+            plan = profiles.mantenimiento_del_perfil(leido)
+            programada = profiles.limpieza_programada_del_perfil(leido)
+            check(
+                "El mantenimiento y la limpieza programada vuelven saneados",
+                plan is not None
+                and plan.clean_temp
+                and plan.release_memory
+                and plan.clean_targets == ("temp",)
+                and programada is not None
+                and programada.targets == ("temp", "dumps")
+                and programada.min_age_hours >= 1.0,
+                f"mantenimiento: {plan.clean_targets if plan else 'ninguno'} · limpieza: "
+                f"{programada.time if programada else 'ninguna'}",
+            )
+
+            # --- Lo que no es un perfil se rechaza con su motivo ----------
+            ajeno = carpeta / "ajeno.pctkperfil"
+            ajeno.write_text(json.dumps({"hola": 1}), encoding="utf-8")
+            roto = carpeta / "roto.pctkperfil"
+            roto.write_text("{no es json", encoding="utf-8")
+            futuro = carpeta / "futuro.pctkperfil"
+            futuro.write_text(
+                json.dumps(
+                    {
+                        "formato": profiles.FORMATO,
+                        "version_formato": profiles.VERSION_FORMATO + 1,
+                        "ajustes": ["transparencia"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            vacio = carpeta / "vacio.pctkperfil"
+            vacio.write_text(json.dumps({"formato": profiles.FORMATO}), encoding="utf-8")
+            rechazos = [profiles.leer(ruta) for ruta in (ajeno, roto, futuro, vacio)]
+            check(
+                "Un archivo que no es un perfil se rechaza diciendo por qué",
+                all(perfil_leido is None and motivo for perfil_leido, motivo in rechazos)
+                and "no es un perfil" in rechazos[0][1]
+                and "no es un perfil" in rechazos[1][1]
+                and "más nueva" in rechazos[2][1]
+                and "no trae" in rechazos[3][1],
+                " · ".join(motivo[:48] for _p, motivo in rechazos),
+            )
+            inexistente, motivo_inexistente = profiles.leer(carpeta / "no-esta.pctkperfil")
+            check(
+                "Un perfil que no está se cuenta como fallo de lectura, sin excepción",
+                inexistente is None and "No se pudo abrir" in motivo_inexistente,
+                motivo_inexistente,
+            )
+            campos = carpeta / "campos.pctkperfil"
+            campos.write_text(
+                json.dumps(
+                    {
+                        "formato": profiles.FORMATO,
+                        "ajustes": "transparencia, inicio_recomendaciones",
+                        "limpieza": 5,
+                        "mantenimiento": "no",
+                        "nota": ["raro"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            raro, _motivo_raro = profiles.leer(campos)
+            check(
+                "Los campos raros se sanean (ajustes en texto suelto, listas donde no toca)",
+                raro is not None
+                and raro.ajustes == ("transparencia", "inicio_recomendaciones")
+                and raro.limpieza == ()
+                and raro.mantenimiento == {}
+                and raro.nota == "['raro']",
+                f"{raro.ajustes if raro else 'sin perfil'} · {raro.nota if raro else ''}",
+            )
+
+            # --- Contra este equipo: qué se marcaría ---------------------
+            revision = profiles.revisar(leido, ajustes.analyse())
+            lineas = profiles.resumen(leido, revision)
+            check(
+                "Al abrir un perfil se separa lo que se marca, lo que ya está y lo que no se puede",
+                [setting.id for setting in revision["marcar"]]
+                == [clave for clave in perfil.ajustes if clave in ajustes.BY_ID]
+                and not revision["ya"]
+                and revision["desconocidos"] == ("no_existe_esto",)
+                and revision["limpieza"] == ("temp", "recycle"),
+                f"{len(revision['marcar'])} por marcar, {len(revision['bloqueados'])} bloqueados",
+            )
+            check(
+                "El resumen del perfil cuenta de dónde viene, qué trae y qué no encaja",
+                any("PC Toolkit" in linea for linea in lineas)
+                and any("Nota: Equipo de la oficina" in linea for linea in lineas)
+                and any("Limpieza:" in linea for linea in lineas)
+                and any("Mantenimiento:" in linea for linea in lineas)
+                and any("desconocidos" in linea for linea in lineas),
+                " | ".join(lineas[:2]),
+            )
+
+            # --- La ventana: guardar y abrir ------------------------------
+            app = QApplication.instance() or QApplication(sys.argv[:1])
+            ajustes_ui = AppSettings(QSettings(str(carpeta / "ajustes_perfiles.ini"), QSettings.IniFormat))
+            tienda = undo.UndoStore(carpeta / "deshacer_perfiles.jsonl")
+            pagina = pagina_ui.WindowsSettingsPage(tienda, settings=ajustes_ui)
+            pagina.show()
+            _settle(app, 150)
+            pagina.analyse()
+            _settle(app, 150)
+
+            dialogo = SaveProfileDialog(
+                ajustes=list(ajustes.BY_ID[clave] for clave in ("transparencia",)),
+                limpieza=("temp",),
+                mantenimiento=ajustes_ui.schedule_config,
+            )
+            detalle = dialogo._detalle()  # noqa: SLF001
+            dialogo.path_edit.setText(str(carpeta / "desde_la_ventana.pctkperfil"))
+            dialogo.nota_edit.setText("nota de la suite")
+            dialogo._guardar()  # noqa: SLF001
+            guardado_ui, nota_ui = dialogo.resultado()
+            check(
+                "La ventana de guardar enseña qué se guarda y deja elegir archivo y nota",
+                any("Ajustes de Windows: 1 marcados" in linea for linea in detalle)
+                and any("Limpieza:" in linea for linea in detalle)
+                and guardado_ui.name == "desde_la_ventana.pctkperfil"
+                and nota_ui == "nota de la suite",
+                " · ".join(detalle),
+            )
+
+            destino_ui = carpeta / "marcados.pctkperfil"
+            original_guardar = pagina_ui.SaveProfileDialog
+
+            class GuardarDirecto:
+                """El diálogo, contestado: interesa lo que la página hace con su respuesta."""
+
+                def __init__(self, **kwargs) -> None:
+                    self.ajustes_marcados = list(kwargs.get("ajustes") or [])
+
+                def exec(self) -> int:
+                    return QDialog.Accepted
+
+                def resultado(self):
+                    return destino_ui, "nota de la suite"
+
+            pagina_ui.SaveProfileDialog = GuardarDirecto
+            # Lo que se guarda sale de las preferencias: se ponen antes para que el perfil
+            # lleve limpieza y mantenimiento de verdad y se pueda comprobar que vuelven.
+            ajustes_ui.cleanup_schedule = CleanupSchedule(targets=("temp", "dumps"))
+            ajustes_ui.schedule_config = MaintenanceSchedule(release_memory=True)
+            try:
+                pagina.mark_recommended(True)
+                marcados = len(pagina.selected_settings())
+                pagina.save_profile()
+                _settle(app, 120)
+            finally:
+                pagina_ui.SaveProfileDialog = original_guardar
+            escrito, _motivo_escrito = profiles.leer(destino_ui)
+            check(
+                "«Guardar perfil» escribe un perfil con los ajustes marcados",
+                escrito is not None
+                and len(escrito.ajustes) == marcados
+                and escrito.nota == "nota de la suite"
+                and escrito.ajustes[0] == "inicio_recomendaciones"
+                and escrito.limpieza == ("temp", "dumps")
+                and escrito.mantenimiento.get("memoria") is True,
+                f"{len(escrito.ajustes) if escrito else 0} ajuste(s) de {marcados} marcados, "
+                f"limpieza {escrito.limpieza if escrito else ()}",
+            )
+
+            # Abrir: se contesta el diálogo de archivos y el de revisión, y se mira qué pasa.
+            # El mantenimiento se cambia a mano antes de abrir, para que el valor que quede
+            # después demuestre que el perfil lo volvió a poner (y no que nunca cambió).
+            ajustes_ui.schedule_config = MaintenanceSchedule(release_memory=False)
+            antes = tienda.count()
+            original_abrir = pagina_ui.OpenProfileDialog
+            original_limpieza = pagina_ui.CleanDialog
+            original_ficheros = QFileDialog.getOpenFileName
+
+            class AbrirAceptado(original_abrir):
+                def exec(self) -> int:
+                    return QDialog.Accepted
+
+            recibido: dict[str, tuple[str, ...]] = {}
+
+            class LimpiezaEspia:
+                """La ventana de limpieza, sin analizar el disco: aquí solo interesa con qué se abre."""
+
+                def __init__(self, *args, **kwargs) -> None:
+                    recibido["prechecked"] = tuple(kwargs.get("prechecked") or ())
+
+                def connect(self, *_args, **_kwargs) -> None:
+                    return None
+
+                done_changes = property(lambda self: self)
+
+                def exec(self) -> int:
+                    return QDialog.Rejected
+
+            pagina_ui.OpenProfileDialog = AbrirAceptado
+            pagina_ui.CleanDialog = LimpiezaEspia
+            QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (str(destino_ui), ""))
+            pagina.mark_recommended(False)
+            try:
+                pagina.open_profile()
+                _settle(app, 200)
+            finally:
+                pagina_ui.OpenProfileDialog = original_abrir
+                pagina_ui.CleanDialog = original_limpieza
+                QFileDialog.getOpenFileName = original_ficheros
+            marcadas_ahora = [fila.setting.id for fila in pagina._rows if fila.marked]  # noqa: SLF001
+            check(
+                "Abrir un perfil marca sus ajustes y no aplica nada",
+                marcadas_ahora == list(escrito.ajustes)
+                and tienda.count() == antes
+                and not ajustes.read_value(ajustes.BY_ID["transparencia"].values[0])[0],
+                f"{len(marcadas_ahora)} marcados, {tienda.count() - antes} cambios aplicados",
+            )
+            check(
+                "La limpieza del perfil llega a su ventana con las categorías marcadas",
+                recibido.get("prechecked") == escrito.limpieza and bool(recibido),
+                f"{recibido.get('prechecked')}",
+            )
+            check(
+                "Las opciones de mantenimiento del perfil se guardan donde se programan",
+                ajustes_ui.schedule_config.clean_temp and ajustes_ui.schedule_config.release_memory,
+                f"limpiar: {ajustes_ui.schedule_config.clean_targets} · memoria: "
+                f"{ajustes_ui.schedule_config.release_memory}",
+            )
+
+            vacio_ui = OpenProfileDialog(leido, profiles.revisar(leido, ajustes.analyse()))
+            check(
+                "La revisión enseña los distintivos de la ventana (marcar, limpieza y mantenimiento)",
+                "Marcar" in vacio_ui.marcar_button.text()
+                and vacio_ui.limpieza_check.isEnabled()
+                and vacio_ui.mantenimiento_check.isEnabled(),
+                vacio_ui.marcar_button.text(),
+            )
+            pagina.close()
+    finally:
+        if sin_raiz is None:
+            os.environ.pop(ajustes.TEST_ROOT_ENV, None)
+        else:
+            os.environ[ajustes.TEST_ROOT_ENV] = sin_raiz
+        _borrar_arbol_de_registro(raiz)
+    check(
+        "La raíz de pruebas de los perfiles no se queda puesta",
         ajustes.test_root() == "",
         ajustes.test_root() or "vacía",
     )
@@ -3241,6 +3826,142 @@ def test_aplicaciones() -> None:
         workers.run_in_background = original_bg  # type: ignore[assignment]
         apps.list_apps = original_list  # type: ignore[assignment]
         apps._run_script = original_run  # type: ignore[assignment]  # noqa: SLF001
+
+
+def test_nativo() -> None:
+    """Módulo nativo (C++): listado de aplicaciones sin PowerShell y recorrido del disco.
+
+    El módulo es **opcional** (se compila con `nativo\\construir.py`), así que hay
+    comprobaciones que solo se hacen cuando está compilado y lo dicen en su detalle. Lo que sí
+    se comprueba siempre es la vuelta atrás: sin módulo se pregunta a PowerShell, como antes.
+    """
+    from pctoolkit.core import apps as apps_core
+    from pctoolkit.core import native as native_core
+
+    disponible, motivo = native_core.disponible()
+
+    # --- El listado de aplicaciones, sin arrancar PowerShell ---------------
+    if disponible:
+        original_run = apps_core._run_script  # noqa: SLF001
+
+        def _prohibido(*args, **kwargs):
+            raise AssertionError("el listado nativo no debería llamar a PowerShell")
+
+        apps_core._run_script = _prohibido  # type: ignore[assignment]  # noqa: SLF001
+        try:
+            empezado = time.perf_counter()
+            listado = apps_core.list_apps(with_size=False)
+            tardado = time.perf_counter() - empezado
+        finally:
+            apps_core._run_script = original_run  # type: ignore[assignment]  # noqa: SLF001
+        bien_formadas = bool(listado) and all(
+            entrada.full_name and entrada.name and entrada.version for entrada in listado
+        )
+        check(
+            "El listado de aplicaciones sale del registro, sin PowerShell",
+            bien_formadas and tardado < 2.0 and listado == sorted(listado, key=apps_core.sort_key),
+            f"{len(listado)} aplicaciones en {tardado:.3f} s",
+        )
+        codigo, salida, _error = original_run(apps_core.LIST_SCRIPT, timeout=120)  # noqa: SLF001
+        antiguas = apps_core.parse_packages(salida)
+        faltan = sorted(
+            {entrada.full_name for entrada in antiguas} - {entrada.full_name for entrada in listado}
+        )
+        check(
+            "El listado nativo trae todo lo que traía PowerShell",
+            bool(antiguas) and not faltan,
+            f"{len(antiguas)} por PowerShell, {len(listado)} por el módulo; sin traer: {faltan[:3] or 'ninguna'}",
+        )
+    else:
+        check(
+            "El listado de aplicaciones sale del registro, sin PowerShell",
+            apps_core.list_apps_from_registry() is None,
+            f"sin módulo nativo ({motivo}): se pregunta a PowerShell, como antes",
+        )
+
+    # --- La vuelta atrás: sin módulo se pregunta a PowerShell --------------  # noqa: E501
+    original_nativo = native_core.listar_paquetes
+    original_run = apps_core._run_script  # noqa: SLF001
+    ejemplo = json.dumps(
+        [
+            {
+                "nombre": "Microsoft.BingNews",
+                "familia": "Microsoft.BingNews_8wekyb3d8bbwe",
+                "completo": "Microsoft.BingNews_4.55.0.0_x64__8wekyb3d8bbwe",
+                "editor": "Microsoft Corporation",
+                "version": "4.55.0.0",
+                "carpeta": "C:\\\\Program Files\\\\WindowsApps\\\\Microsoft.BingNews",
+                "visible": "Noticias",
+                "marco": False,
+                "sistema": False,
+                "firma": "Store",
+            }
+        ]
+    )
+    native_core.listar_paquetes = lambda: None  # type: ignore[assignment]
+    apps_core._run_script = lambda *a, **k: (0, ejemplo, "")  # type: ignore[assignment]  # noqa: SLF001
+    try:
+        sin_modulo = apps_core.list_apps(with_size=False)
+    finally:
+        native_core.listar_paquetes = original_nativo  # type: ignore[assignment]
+        apps_core._run_script = original_run  # type: ignore[assignment]  # noqa: SLF001
+    check(
+        "Sin módulo nativo, el listado se pide a PowerShell como siempre",
+        len(sin_modulo) == 1
+        and sin_modulo[0].full_name == "Microsoft.BingNews_4.55.0.0_x64__8wekyb3d8bbwe",
+        f"{len(sin_modulo)} aplicación(es) leídas por el camino de siempre",
+    )
+
+    # --- El recorrido del disco: los dos caminos dan lo mismo --------------  # noqa: E501
+    from pctoolkit.core.disk import scan_directory, scan_directory_en_python
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp) / "arbol"
+        (base / "videos").mkdir(parents=True)
+        (base / "videos" / "uno.mp4").write_bytes(b"x" * 5000)
+        (base / "docs").mkdir()
+        (base / "docs" / "dos.pdf").write_bytes(b"x" * 900)
+        (base / "suelto.txt").write_bytes(b"x" * 13)
+        # Una unión a la misma carpeta: si el recorrido la siguiera, contaría dos veces.
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(base / "enlace"), str(base / "docs")],
+            capture_output=True,
+            text=True,
+        )
+        en_python = scan_directory_en_python(str(base), min_large_file=1000)
+        os.environ[native_core.VARIABLE_DISCO] = "1"
+        try:
+            por_modulo = scan_directory(str(base), min_large_file=1000) if disponible else None
+        finally:
+            os.environ.pop(native_core.VARIABLE_DISCO, None)
+        apagado = scan_directory(str(base), min_large_file=1000)
+
+    def _resumen(resultado) -> tuple:
+        return (
+            resultado.total_size,
+            resultado.total_files,
+            resultado.dirs_scanned,
+            [(nodo.name, nodo.size, nodo.is_dir, nodo.file_count) for nodo in resultado.children],
+            resultado.categories,
+            [(nodo.name, nodo.size) for nodo in resultado.largest_files],
+        )
+
+    check(
+        "El recorrido del disco del módulo da lo mismo que el de Python",
+        (por_modulo is None or _resumen(por_modulo) == _resumen(en_python))
+        and _resumen(apagado) == _resumen(en_python),
+        (
+            f"{en_python.total_files} archivos, {en_python.dirs_scanned} carpetas, "
+            f"{len(en_python.children)} hijos (la unión no se sigue: {en_python.children[0].name} primero)"
+            if por_modulo is not None
+            else f"sin módulo nativo ({motivo})"
+        ),
+    )
+    check(
+        "El recorrido nativo del disco solo se usa si se pide",
+        not native_core.disco_por_defecto() or not disponible,
+        f"apagado por defecto; se enciende con {native_core.VARIABLE_DISCO}=1",
+    )
 
 
 def test_plugins() -> None:
@@ -6923,17 +7644,142 @@ def test_interface() -> None:
     window.navigate("home")
     _settle(app, 300)
 
+    # --- Seguir a Windows, en el momento -----------------------------------
+    # «Seguir a Windows» es seguirle de verdad: con la aplicación abierta, cambiar de claro a
+    # oscuro en Windows se ve aquí al momento, sin cerrarla y volver a abrirla. Lo que avisa no
+    # es un reloj propio: Windows manda `WM_SETTINGCHANGE` (con «ImmersiveColorSet») a las
+    # ventanas y el vigía lo recibe por el filtro de mensajes nativos de la aplicación. Aquí se
+    # manda **ese mensaje de verdad** a la ventana, sin tocar el tema del equipo: es el mismo
+    # camino que recorre cuando alguien cambia el tema en Windows.
+    from pctoolkit.core import appearance as apariencia
+
+    def _avisa_windows(ventana) -> str:
+        """Manda el aviso nativo de cambio de tema a la ventana; dice por dónde se mandó."""
+        if sys.platform != "win32":
+            # Fuera de Windows no hay mensajes que mandar: queda el camino de la red de
+            # seguridad, que también acaba en `poll`.
+            ventana.theme_watcher.poll()
+            return "lectura directa (sin API de Windows)"
+        from ctypes import c_void_p, c_wchar_p, cast, windll
+
+        texto = c_wchar_p("ImmersiveColorSet")
+        windll.user32.SendMessageW(
+            int(ventana.winId()), apariencia.WM_SETTINGCHANGE, 0, cast(texto, c_void_p).value
+        )
+        return 'WM_SETTINGCHANGE con "ImmersiveColorSet"'
+
+    system_mode_de_verdad = apariencia.system_mode
+    try:
+        apariencia.system_mode = lambda: "dark"
+        app_settings.theme_mode = "auto"
+        window._sync_theme_watcher()  # noqa: SLF001
+        apply_theme(app, "auto")
+        theme_ui.repaint()
+        _settle(app, 250)
+        check(
+            "El vigía del tema de Windows escucha solo con «seguir a Windows»",
+            window.theme_watcher.is_running()
+            and window.theme_watcher.is_listening()
+            # Ya no hay sondeo cada dos segundos: el aviso manda y lo que queda es una red de
+            # seguridad lenta, solo para el caso de un aviso perdido.
+            and window.theme_watcher.safety_ms >= 20000
+            and active_palette() == "dark",
+            f"escucha puesta, red de seguridad cada {window.theme_watcher.safety_ms} ms, "
+            f"paleta {active_palette()}",
+        )
+
+        # Se cambia el tema del sistema y se manda el aviso: el cambio tiene que llegar por el
+        # filtro nativo, sin que nadie llame a `poll` a mano y sin esperar a ningún reloj.
+        apariencia.system_mode = lambda: "light"
+        por_donde = _avisa_windows(window)
+        _settle(app, 250)
+        check(
+            "El aviso de Windows se aplica sin reiniciar",
+            active_palette() == "light"
+            and window is ventana_clara
+            and COLORS["bg"] == LIGHT_COLORS["bg"]
+            and not hasattr(window, "reload_theme"),
+            f"paleta {active_palette()} por {por_donde}, en la misma ventana",
+        )
+        check(
+            "La barra de estado cuenta el cambio de Windows",
+            "claro" in window.status_message.text() and "Windows" in window.status_message.text(),
+            window.status_message.text(),
+        )
+
+        # La red de seguridad cubre el aviso que se pierda: aunque nadie avise, una vuelta
+        # lenta vuelve a leer el registro y aplica lo que haya. Se prueba con el sistema en
+        # oscuro y la paleta en claro, que es lo que no puede quedarse así.
+        apariencia.system_mode = lambda: "dark"
+        por_la_red = window.theme_watcher.poll()
+        _settle(app, 250)
+        check(
+            "La red de seguridad aplica un aviso que se perdiera",
+            por_la_red == "dark" and active_palette() == "dark" and COLORS["bg"] == DARK_COLORS["bg"],
+            f"paleta {active_palette()} tras la vuelta lenta del vigía",
+        )
+
+        # Con un modo elegido a mano se quita la escucha y un aviso no toca la paleta: si el
+        # sistema se pone claro mientras aquí se eligió oscuro, aquí se sigue en oscuro.
+        app_settings.theme_mode = "dark"
+        window._sync_theme_watcher()  # noqa: SLF001
+        apply_theme(app, "dark")
+        theme_ui.repaint()
+        _settle(app, 250)
+        apariencia.system_mode = lambda: "light"
+        suelto = window.theme_watcher.poll()
+        _avisa_windows(window)
+        _settle(app, 300)
+        check(
+            "Con un modo elegido a mano, Windows no manda",
+            not window.theme_watcher.is_running()
+            and not window.theme_watcher.is_listening()
+            and suelto == "light"
+            and active_palette() == "dark"
+            and COLORS["bg"] == DARK_COLORS["bg"],
+            f"el vigía lo vio ({suelto}), se mandó el aviso y la paleta sigue en {active_palette()}",
+        )
+    finally:
+        apariencia.system_mode = system_mode_de_verdad
+        app_settings.theme_mode = "dark"
+        window._sync_theme_watcher()  # noqa: SLF001
+        apply_theme(app, "dark")
+        theme_ui.repaint()
+        _settle(app, 250)
+
     # --- La ventana recuerda dónde estaba ---------------------------------
     # Tamaño, sitio y maximizada viajan dentro de lo que devuelve `saveGeometry()`, que lleva
     # también la pantalla: una ventana que se dejó en el segundo monitor vuelve ahí. Se apunta
     # al cerrar y se recupera al abrir, que es lo que se comprueba aquí.
-    from PySide6.QtCore import QSize as Tamano
+    #
+    # El objetivo se calcula con el escritorio que hay delante y no a ojo, porque el tamaño
+    # mínimo de la ventana (1180x740) no cabe en cualquier pantalla: en un servidor de
+    # integración Qt recorta lo apuntado para que la ventana quede a la vista —que es lo
+    # correcto— y apuntando a 1240x780 fijos la comprobación medía la pantalla del servidor y
+    # no la vuelta de la ventana (así salió allí: «1180x740 en (1, -6)», el mínimo, porque el
+    # escritorio de windows-latest es 1024x768).
+    from PySide6.QtCore import QPoint, QSize as Tamano
 
     from pctoolkit.ui.shell import DEFAULT_WINDOW_SIZE, MIN_WINDOW_SIZE
 
     window.showNormal()
-    window.resize(1240, 780)
-    window.move(140, 110)
+    _settle(app, 250)
+    escritorio = (window.screen() or app.primaryScreen()).availableGeometry()
+    objetivo = Tamano(
+        min(1240, max(MIN_WINDOW_SIZE.width(), escritorio.width() - 120)),
+        min(780, max(MIN_WINDOW_SIZE.height(), escritorio.height() - 120)),
+    )
+    esquina = QPoint(escritorio.x() + 40, escritorio.y() + 40)
+    # En un escritorio que da para la ventana con su marco, la vuelta tiene que ser exacta; en
+    # uno que no llega ni al tamaño mínimo, lo único que se le puede pedir es que vuelva tan
+    # grande como se pueda y pegada a una esquina, a la vista (en el servidor se ejecuta esa
+    # rama; la vuelta exacta la miden los equipos con escritorio de verdad y la comprobación de
+    # «vuelve maximizada», que no depende del tamaño).
+    cabe = (
+        objetivo.width() + 120 <= escritorio.width() and objetivo.height() + 160 <= escritorio.height()
+    )
+    window.resize(objetivo)
+    window.move(esquina)
     _settle(app, 250)
     window.save_window_geometry()
     guardada = app_settings.window_geometry
@@ -6946,14 +7792,30 @@ def test_interface() -> None:
     otra = MainWindow(app_settings, history_store)
     otra.show()
     _settle(app, 600)
-    check(
-        "La ventana vuelve al tamaño y al sitio que se dejaron",
-        abs(otra.width() - 1240) <= 8
-        and abs(otra.height() - 780) <= 8
-        and abs(otra.x() - 140) <= 25
-        and abs(otra.y() - 110) <= 25,
-        f"{otra.width()}x{otra.height()} en ({otra.x()}, {otra.y()}), apuntado 1240x780 en (140, 110)",
-    )
+    if cabe:
+        vuelve = (
+            abs(otra.width() - objetivo.width()) <= 8
+            and abs(otra.height() - objetivo.height()) <= 8
+            and abs(otra.x() - esquina.x()) <= 25
+            and abs(otra.y() - esquina.y()) <= 25
+        )
+        detalle = (
+            f"{otra.width()}x{otra.height()} en ({otra.x()}, {otra.y()}), "
+            f"apuntado {objetivo.width()}x{objetivo.height()} en ({esquina.x()}, {esquina.y()})"
+        )
+    else:
+        vuelve = (
+            otra.width() >= MIN_WINDOW_SIZE.width() - 8
+            and otra.height() >= MIN_WINDOW_SIZE.height() - 8
+            and abs(otra.x() - escritorio.x()) <= 40
+            and abs(otra.y() - escritorio.y()) <= 40
+        )
+        detalle = (
+            f"escritorio {escritorio.width()}x{escritorio.height()} (más chico que el mínimo "
+            f"{MIN_WINDOW_SIZE.width()}x{MIN_WINDOW_SIZE.height()}): {otra.width()}x{otra.height()} "
+            f"en ({otra.x()}, {otra.y()})"
+        )
+    check("La ventana vuelve al tamaño y al sitio que se dejaron", vuelve, detalle)
 
     window.showMaximized()
     _settle(app, 400)
@@ -8544,6 +9406,8 @@ def main(argv: list[str] | None = None) -> int:
         test_startup,
         test_ajustes_windows,
         test_aplicaciones,
+        test_nativo,
+        test_perfiles,
         test_plugins,
         test_maintenance,
         test_installer,

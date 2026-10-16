@@ -23,6 +23,7 @@ from ..core import memory as memory_core
 from ..core import startup as startup_core
 from ..core import tools as tool_core
 from ..core.alerts import AlertConfig, AlertEngine
+from ..core.appearance import MODE_AUTO, SystemThemeWatcher
 from ..core.config import (
     APP_NAME,
     APP_TAGLINE,
@@ -142,6 +143,12 @@ class MainWindow(QMainWindow):
         # instalar.
         self.updates = UpdateController(self.settings, parent=self)
         self.updates.attach_window(self)
+        # Windows puede cambiar de tema con la aplicación abierta. El vigía escucha el aviso
+        # que Windows manda a las ventanas mientras el modo sea «seguir a Windows» y el cambio
+        # se aplica en el momento (ver `_on_system_theme_changed`); con un modo elegido a mano
+        # ni siquiera escucha, porque el sistema ya no manda.
+        self.theme_watcher = SystemThemeWatcher(self)
+        self.theme_watcher.changed.connect(self._on_system_theme_changed)
         self._alert_history: list = []
         self._force_quit = False
         self._system_info: dict = {}
@@ -158,6 +165,7 @@ class MainWindow(QMainWindow):
         self._build()
         self._wire()
         self._restore_window_geometry()
+        self._sync_theme_watcher()
         if self.settings.history_enabled:
             self.recorder.attach()
         self.metrics.start()
@@ -195,7 +203,7 @@ class MainWindow(QMainWindow):
         # Los ajustes recomendados de Windows: catálogo propio, con análisis previo y
         # vuelta atrás anotada en el historial de deshacer (el mismo que usa el resto
         # de la aplicación).
-        self.windows_page = WindowsSettingsPage(self.undo_store)
+        self.windows_page = WindowsSettingsPage(self.undo_store, settings=self.settings)
 
         for key, page in (
             ("home", self.dashboard),
@@ -422,6 +430,9 @@ class MainWindow(QMainWindow):
             self.insights.set_enabled(self.settings.insights_enabled)
             self.recorder.interval_seconds = max(5, self.settings.history_interval_seconds)
             self._apply_power_profile(refresh=True)
+            # El modo puede haber pasado de `auto` a uno fijo (o al revés): el vigía del tema
+            # de Windows se enciende o se para con lo que se acaba de guardar.
+            self._sync_theme_watcher()
             resumen = _describe_alert_config(config)
             paleta_nueva = apply_theme(QApplication.instance(), self.settings.theme_mode)
             if paleta_nueva != paleta_antes:
@@ -477,6 +488,38 @@ class MainWindow(QMainWindow):
         self.resize(
             min(DEFAULT_WINDOW_SIZE.width(), max(MIN_WINDOW_SIZE.width(), disponible.width() - 80)),
             min(DEFAULT_WINDOW_SIZE.height(), max(MIN_WINDOW_SIZE.height(), disponible.height() - 120)),
+        )
+
+    def _sync_theme_watcher(self) -> None:
+        """Ajusta el vigía del tema de Windows al modo que hay guardado.
+
+        Se llama al arrancar y cada vez que se guardan los ajustes de apariencia: con
+        «seguir a Windows» el vigía escucha los avisos de Windows; con claro u oscuro elegidos
+        a mano se deja de escuchar —y el filtro de mensajes se quita—, porque el sistema ya no
+        manda.
+        """
+        if self.settings.theme_mode == MODE_AUTO:
+            self.theme_watcher.start()
+        else:
+            self.theme_watcher.stop()
+
+    def _on_system_theme_changed(self, modo: str) -> None:
+        """Windows acaba de cambiar de tema: se aplica en la ventana que ya está abierta.
+
+        Se pasa por el mismo camino que al cambiar de tema desde los ajustes —`apply_theme`
+        rehace la paleta y la hoja QSS y `theme.repaint` vuelve a pintar lo abierto— y no se
+        rehace ninguna ventana: ni parpadeo, ni foco perdido, ni un segundo icono de bandeja.
+        Si el modo guardado es `auto` es el único caso en el que el sistema manda; con un
+        modo elegido a mano un aviso suelto se deja pasar (y el vigía ya está sin escuchar).
+        """
+        if self.settings.theme_mode != MODE_AUTO:
+            return
+        apply_theme(QApplication.instance(), self.settings.theme_mode)
+        theme.repaint()
+        self.set_status(
+            "Windows ha cambiado a modo "
+            + ("claro" if modo == THEME_LIGHT else "oscuro")
+            + ": tema aplicado sin reiniciar."
         )
 
     def _on_history_sample(self, sample) -> None:
@@ -891,6 +934,9 @@ class MainWindow(QMainWindow):
         self.metrics.stop()
         self.gpu_monitor.stop()
         self.insights.stop()
+        # El filtro de mensajes nativos se quita al cerrar: si quedara puesto, Windows
+        # seguiría avisando a una ventana que ya no está.
+        self.theme_watcher.stop()
         # Se deja terminar la limpieza de memoria, la consulta de tareas o lo que
         # haya en marcha. `shutdown_background` las encuentra todas (no depende de
         # una lista de páginas) y espera cediendo el bucle de eventos, así que

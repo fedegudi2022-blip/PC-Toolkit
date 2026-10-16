@@ -1,4 +1,4 @@
-# PC Toolkit 1.4.1 — qué es, qué hace y cómo funciona
+# PC Toolkit 1.5.0 — qué es, qué hace y cómo funciona
 
 Aplicación de escritorio para **Windows 10 y 11** que reúne el mantenimiento del equipo en un solo
 sitio: libera memoria RAM cuando hace falta, programa el mantenimiento en el propio Windows, vigila
@@ -274,6 +274,11 @@ Escaneo en un hilo aparte (la ventana sigue respondiendo) con barras proporciona
 clasificación por categorías según la extensión (vídeo, imágenes, audio, programas, documentos,
 comprimidos…), lista de archivos grandes y navegación con doble clic; se puede cancelar y se puede
 abrir la carpeta en el Explorador.
+
+El recorrido del disco se puede pedir también al **módulo nativo en C++** (apartado 3.14), pero
+**no se usa por defecto**: medido en el mismo equipo sale lo mismo que el de Python (0,83 s frente a
+0,83 s en `C:\Program Files`; 5,44 frente a 5,18 en `C:\Windows\WinSxS`), porque el recorrido es de
+disco y `os.scandir` ya está en C. Se enciende con `PCTOOLKIT_NATIVO_DISCO=1` para poder medirlo.
 
 ### 3.5 Herramientas y limpieza de temporales
 
@@ -628,11 +633,12 @@ aplicación seguiría pintando con la paleta vieja.
 | --- | --- |
 | **Oscuro** (por defecto) | Paleta «grafito»: fondo casi negro, superficies en grises fríos y texto casi blanco |
 | **Claro** | Paleta «papel»: blancos y grises fríos, texto casi negro y el mismo acento tinta, para que se lea como texto y como relleno con texto blanco encima |
-| **Seguir a Windows** | Lee `HKCU\...\Themes\Personalize\AppsUseLightTheme`, la misma marca que usa Windows para el modo claro |
+| **Seguir a Windows** | Lee `HKCU\...\Themes\Personalize\AppsUseLightTheme`, la misma marca que usa Windows para el modo claro, y **escucha el aviso** con el que Windows cuenta el cambio mientras la aplicación está abierta |
 
 El cambio se hace en **Ajustes y alertas → Apariencia**, y la propia ventana explica en una línea
 qué supone la opción elegida *según cómo esté Windows ahora mismo* («Se usa el mismo modo que
-Windows, que ahora mismo está en oscuro»). Al guardar, la paleta se aplica **sobre la ventana que ya
+Windows, que ahora mismo está en oscuro. Si lo cambias ahí, la aplicación cambia con él al
+momento»). Al guardar, la paleta se aplica **sobre la ventana que ya
 está abierta**, sin montarla de nuevo: `apply_theme` rehace la paleta de Qt y la hoja QSS entera, y
 `theme.repaint()` vuelve a pintar lo que se había quedado con un color ya resuelto —separadores,
 barra lateral, insignias de icono, chips de estado, el icono de la ventana— mientras que los iconos
@@ -641,6 +647,23 @@ motor que pinta con la paleta activa cada vez que alguien lo pide, así que el m
 un botón cambia de color solo). Antes la ventana se volvía a montar entera —los colores se leen al
 construir cada widget, así que era lo más simple— y se notaba: parpadeo, foco perdido y un segundo
 icono en la bandeja mientras la vieja se cerraba.
+
+**Seguir a Windows es seguirle en el momento.** Con ese modo elegido, `SystemThemeWatcher`
+(`pctoolkit\core\appearance.py`) recibe el aviso que Windows manda a las ventanas al cambiar el
+aspecto —`WM_SETTINGCHANGE` con `lParam` apuntando a «ImmersiveColorSet», más `WM_THEMECHANGED` y
+`WM_SYSCOLORCHANGE`— por el **filtro de mensajes nativos** de la aplicación
+(`QAbstractNativeEventFilter`), y al recibirlo relee la marca del registro y aplica la paleta nueva
+por el mismo camino que al guardar los ajustes: `apply_theme` y `theme.repaint()`, sobre la ventana
+que ya está abierta. Antes el modo se resolvía solo al arrancar, así que cambiar de claro a oscuro en
+Windows obligaba a cerrar y volver a abrir; después se miraba el registro cada dos segundos, y ese
+sondeo ya no está: **no se paga nada mientras no cambie nada**. Los avisos de Windows no están
+garantizados —si el tema cambia mientras la aplicación arranca, todavía no hay ventana que lo
+reciba—, así que queda una red de seguridad lenta (`SAFETY_INTERVAL_MS`, 30 s) que vuelve a leer el
+registro: una lectura son 9 µs, o sea 0,00003 % de un núcleo. La escucha **solo está puesta en
+`auto`**: con un modo elegido a mano se quita el filtro (`_sync_theme_watcher`), porque el sistema
+ya no manda, y un aviso que llegara se deja pasar; el filtro también se quita al cerrar la ventana,
+para no dejar a Windows avisando a una ventana que ya no está. `--tema` también para el vigía,
+porque ese ajuste vale solo para esa ejecución.
 
 Ese repintado no deja nada colgando: `theme` guarda por widget una **receta de datos** (tipo y
 valores: nada que se quede el widget) junto a una referencia débil, y `repaint()` va olvidando los
@@ -705,6 +728,37 @@ aporta el usuario). **Pantallas:** `pctoolkit\ui\windows_settings_page.py`,
    la confirmación avisa y, con permisos de administrador, ofrece crear antes un **punto de
    restauración** de Windows.
 
+#### Distintivos: de dónde viene lo que hay puesto
+
+Cada ajuste dice **dos cosas distintas** y las dice por separado:
+
+* el **estado**, que es lo que queda por hacer: **Recomendado**, **Personalizado**, **Ya
+  optimizado**, **No disponible** o **Sin analizar**;
+* el **distintivo**, que es de dónde viene el valor que hay puesto ahora: **Predeterminado** (el de
+  fábrica de Windows) o **Personalizado** (ni el de fábrica ni el recomendado: lo cambió otro
+  programa, o se puso a mano).
+
+Para poder decirlo, cada `ValueSpec` declara su **valor de fábrica** (`default`), o `AUSENTE` cuando
+Windows no trae ese valor, o `SIN_DATO` cuando no se sabe. Sin ese dato el ajuste no lleva distintivo
+y no se ofrece devolverlo a fábrica: es mejor no decir nada que afirmar un valor sin comprobarlo (el
+ajuste de «Noticias e intereses» de la barra de tareas es justo ese caso, porque Windows no documenta
+qué significa cada número de su valor y cambia entre ediciones). Un valor **ausente** cuenta como el
+de fábrica: en este catálogo todos son preferencias que sustituyen al comportamiento de serie, así
+que sin el valor Windows hace lo que hace recién instalado (y, si de fábrica el valor existía,
+devolverlo lo vuelve a escribir).
+
+De ahí sale una acción que antes no existía: **«Dejar como vino Windows»**, en la fila del ajuste
+(aparece solo cuando se conocen todos sus valores de fábrica y algo está fuera de ellos). Escribe el
+valor de fábrica de **ese** ajuste —o lo borra, si Windows no lo trae—, quita las claves que el ajuste
+hubiera creado (el menú contextual clásico sigue puesto por la mera existencia de su clave), guarda
+su respaldo `.reg` y se anota en «Deshacer» igual que al aplicar: se puede volver atrás de un ajuste
+suelto sin renunciar a los demás. La ayuda de cada ajuste (`F1`) enumera sus valores de fábrica.
+
+#### Perfiles: guardar lo elegido y abrirlo en otro equipo
+
+Lo que se ha marcado se puede guardar en un archivo y abrir en otro equipo. Está en su apartado
+(3.15) porque toca también la limpieza y el mantenimiento.
+
 Cada ajuste aplicado queda anotado **tres veces**:
 
 * en el historial de cambios reversibles, con los valores que había antes, así que aparece en el panel
@@ -737,9 +791,18 @@ tocar una sola clave del sistema.
 
 #### Aplicaciones preinstaladas (debloat seguro)
 
-`pctoolkit\core\apps.py` lista los paquetes de la tienda del usuario con **PowerShell**
-(`Get-AppxPackage`, más `Get-StartApps` para el nombre visible), mide lo que ocupa cada uno con un
-tope de tiempo —una aplicación con miles de archivos no puede bloquear la lista— y los clasifica:
+`pctoolkit\core\apps.py` lista los paquetes instalados del usuario leyendo el **registro**
+(`HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages`)
+en vez de preguntarle a PowerShell: medido en un equipo con 97 paquetes son 0,05 s frente a los
+5,73 s de `Get-AppxPackage`. El nombre visible sale de ahí y, cuando Windows lo guarda como **cadena
+indirecta** (`@{…?ms-resource://…}`), lo resuelve `SHLoadIndirectString`; lo que no se pueda resolver
+se deja **vacío a propósito**, para que la lista enseñe el nombre del paquete en vez de un
+`ms-resource:` sin traducir. Quien lo hace es el módulo nativo en C++ (apartado 3.14) y, si no está
+compilado, se sigue preguntando a PowerShell **como antes**: el módulo es opcional y esta es su única
+parte que se usa por defecto.
+
+Mide lo que ocupa cada uno con un tope de tiempo —una aplicación con miles de archivos no puede
+bloquear la lista— y los clasifica:
 
 * **lista blanca** (`PROTECTED_EXACT` y `PROTECTED_PREFIXES`): tienda, instalador de paquetes,
 marcos (`VCLibs`, `.NET.Native`, `UI.Xaml`, `WindowsAppRuntime`), componentes del shell, extensión de
@@ -851,6 +914,88 @@ En la tarjeta caben cuatro avisos; el resto se cuenta («y N avisos más») en v
 
 ---
 
+### 3.14 El módulo nativo en C++ (opcional)
+
+**Archivos:** `nativo\escaner_disco.cpp`, `nativo\paquetes_appx.cpp`, `nativo\construir.py` y
+`pctoolkit\core\native.py`. **Compilar:** `.venv\Scripts\python.exe nativo\construir.py`.
+
+El módulo es **una DLL que se carga con `ctypes`** (`nativo\pctk_nativo.dll`). Se compila con `g++` de
+MinGW-w64 (`winget install BrechtSanders.WinLibs.POSIX.UCRT`) o con `cl` de MSVC, y no toca nada del
+resto del proyecto: no añade dependencias a `requirements.txt` ni cambia el empaquetado (PyInstaller
+recoge el archivo y el ejecutable lo lleva dentro). Enlaza su runtime **dentro** de la DLL (`-static`)
+para que el archivo valga solo y no haya que repartir más piezas con la aplicación.
+
+Lleva dos trabajos, cada uno en su archivo, y cada uno se llevó a C++ por un motivo medido:
+
+| Trabajo | Archivo | Por qué |
+| --- | --- | --- |
+| Listado de aplicaciones instaladas | `paquetes_appx.cpp` | 5,73 s de `Get-AppxPackage` (PowerShell) → **0,05 s** leyéndolo del registro |
+| Recorrido del disco | `escaner_disco.cpp` | Medido **igual** que el de Python (0,83 s frente a 0,83 s): es disco, no CPU |
+
+El segundo no se usa por defecto, precisamente por eso: llevar a C++ algo que ya iba en C no mejora
+nada y añade una pieza más que mantener. Se puede encender con `PCTOOLKIT_NATIVO_DISCO=1` para
+medirlo, y la suite comprueba que los dos caminos dan **exactamente lo mismo** sobre un árbol de
+prueba con enlaces, uniones y acentos.
+
+Lo que el recorrido respeta para dar lo mismo que el de Python: las uniones y los enlaces simbólicos
+**se saltan** (puntos de reanálisis), las carpetas que se omiten llegan desde Python, `dirs_scanned`
+cuenta las carpetas **abiertas** y `errors` las que no se pudieron abrir o medir, y el orden de los
+hijos, el total por categoría y la lista de archivos grandes se calculan con el mismo criterio
+(incluido el nodo «Otros N elementos» cuando hay más hijos que el tope). El JSON que cruza la frontera
+va y vuelve en **UTF-8** (`MultiByteToWideChar` / `WideCharToMultiByte`), y eso importa: ensanchar los
+bytes uno a uno corrompía los acentos (el «Vídeo» de las categorías o los nombres con tilde), y ahora
+lo vigila una comprobación de la suite.
+
+Si la DLL no está —no se compiló, es de otra versión o el sistema no es Windows— cada sitio tira por
+su camino de siempre y no cambia nada más. El script de compilación sale con código 0 (compilado), 1
+(la compilación falló) o 2 (no hay compilador, que en un equipo sin C++ **no es un error**: la
+aplicación funciona igual). En los flujos de integración y publicación se llama con `--exigir` antes
+de empaquetar, para que el ejecutable que se publica lo lleve dentro y no se publiquen dos versiones
+distintas sin enterarse.
+
+### 3.15 Perfiles guardables
+
+**Módulos:** `pctoolkit\core\profiles.py`. **Pantallas:** `pctoolkit\ui\profiles_ui.py` y los botones
+«Guardar perfil…» y «Abrir perfil…» de la página de ajustes de Windows.
+
+Un perfil es un archivo de texto (JSON, extensión `.pctkperfil`) con las decisiones que alguien ha
+tomado para un equipo, para poder prepararlas en uno y aplicarlas en otro sin tenerlo delante:
+
+```json
+{
+  "formato": "pctoolkit-perfil",
+  "version_formato": 1,
+  "aplicacion": "PC Toolkit",
+  "version": "1.5.0",
+  "creado": "2026-10-16 12:00",
+  "equipo": "PC-OFICINA",
+  "sistema": "Windows 11 23H2",
+  "nota": "Equipo de la oficina",
+  "ajustes": ["inicio_recomendaciones", "transparencia"],
+  "limpieza": ["temp", "browsers"],
+  "mantenimiento": { "limpiar": true, "memoria": false, "informe": true, "categorias": ["temp"] },
+  "limpieza_programada": { "activo": true, "frecuencia": "diario", "hora": "21:00", "categorias": ["temp"] }
+}
+```
+
+Lo importante es lo que **no** hace al abrirse: **no aplica nada**. Enseña de dónde salió, qué trae,
+cuántos de sus ajustes ya están puestos en este equipo, cuáles no se pueden aplicar aquí (con su
+motivo) y cuáles no conoce esta versión, y **marca las casillas** para que se revisen y se apliquen
+con el mismo botón, la misma confirmación y el mismo respaldo que si se hubieran marcado a mano. La
+limpieza del perfil se abre en su ventana con esas categorías **ya marcadas** (y sin borrar nada: allí
+se mide y se confirma aparte), y las opciones de mantenimiento y de limpieza programada se guardan en
+su página, que es donde se programan de verdad las tareas de Windows.
+
+Un archivo de fuera puede llevar cualquier cosa, así que se comprueba al leerlo: tiene que llevar el
+nombre del formato y una versión de formato que esta versión entienda (una más nueva se rechaza
+**entera**, para no aplicar la mitad de algo que no se conoce), cada campo se recorta a su tope o se
+descarta, el mantenimiento y la limpieza programada se leen con el **mismo saneado** que sus módulos de
+siempre, y los identificadores de ajustes o de categorías que no estén en el catálogo se cuentan
+aparte y se enseñan en la revisión, en vez de perderse en silencio. La suite lo prueba con archivos
+rotos, ajenos, vacíos, de un formato más nuevo y con campos del tipo que no toca.
+
+---
+
 ## 4. Línea de comandos
 
 ```bat
@@ -872,8 +1017,12 @@ PC Toolkit.exe --version
 ## 5. Estructura del proyecto
 
 ```
-app.py                          Punto de entrada y opciones de línea de comandos
-parches/                        Cambios preparados que esperan una comprobación en Windows
+app.py                          Punto de entrada y opciones de línea de comandos  parches/                        Cambios preparados que esperan una comprobación en Windows
+nativo/                         Módulo opcional en C++ (sin dependencias del proyecto):
+  escaner_disco.cpp             Recorrido del disco (no se usa por defecto, véase 3.14)
+  paquetes_appx.cpp             Paquetes instalados leídos del registro (el uso por defecto)
+  construir.py                  Lo compila con g++ (MinGW-w64) o cl (MSVC) y avisa si no hay
+  pctk_nativo.dll               La DLL ya compilada (no va al repositorio)
 build_exe.py / build_exe.bat    Empaquetado de la aplicación con PyInstaller
 build_installer.py / .bat       Empaquetado del instalador y del desinstalador
 firmar.py / firmar.bat          Firma digital con signtool (SHA-256, sello RFC 3161 y verificación)
@@ -895,7 +1044,8 @@ installer/
   setup_app.py                  Asistente de instalación (y modo silencioso)
   uninstall_app.py              Desinstalador mínimo, sin dependencias gráficas
 pctoolkit/
-  core/                         Lógica sin interfaz: métricas, tarjeta gráfica (`gpu.py`),
+  core/                         Lógica sin interfaz: módulo nativo opcional (`native.py`),
+                                perfiles guardables (`profiles.py`), métricas, tarjeta gráfica (`gpu.py`),
                                 contadores de rendimiento de Windows (`pdh.py`), memoria,
                                 arranque de Windows, mantenimiento, disco, herramientas, tareas,
                                 informes, historial, alertas, avisos propios (`insights.py`), catálogo
@@ -909,10 +1059,10 @@ pctoolkit/
                                 GPU (`gpu_monitor.py`), controlador de los avisos (`insights.py`),
                                 ventana de limpieza (`clean.py`), bandeja, ventana principal y una
                                 página por módulo
-tests/smoke_test.py             999 comprobaciones automáticas (núcleo, interfaz, instalador,
+tests/smoke_test.py             1045 comprobaciones automáticas (núcleo, interfaz, instalador,
                                 firma, dependencias, logotipo, actualizaciones, ajustes de Windows,
-                                aplicaciones preinstaladas, plugins, limpieza, limpieza programada y
-                                avisos)
+                                perfiles, módulo nativo, aplicaciones preinstaladas, plugins,
+                                limpieza, limpieza programada y avisos)
   _checks.py                    Recuento de comprobaciones, compartido con las guardas
   documentacion.py              Guardas de documentación: capturas, informe de muestra y recuentos
                                 de las guías (se pueden dejar fuera, véase el apartado 7)
@@ -965,13 +1115,22 @@ Todo esto **se conserva al desinstalar** salvo que lo borres desde el asistente 
 
 - Windows 10 u 11 (x64). Para ejecutar desde el código: Python 3.10+ con `PySide6` y `psutil`.
 - Para el ejecutable y el instalador: `PyInstaller` (está en `requirements.txt`).
+- **Opcional**, para el módulo nativo en C++ (apartado 3.14): `g++` de MinGW-w64
+  (`winget install BrechtSanders.WinLibs.POSIX.UCRT`) o `cl` de MSVC. Sin ninguno de los dos, la
+aplicación se compila y funciona igual (lo único que se pierde es el listado rápido de aplicaciones).
 
 ```bat
+python nativo\construir.py     Compila el módulo nativo (nativo\pctk_nativo.dll)
 build_exe.bat                  Genera dist\PC Toolkit\ y comprueba que arranca y funciona
 python build_exe.py --onefile  Genera dist\PC Toolkit.exe (un solo archivo, para compartir)
 build_installer.bat            Genera dist\PC Toolkit Setup.exe y comprueba el ciclo completo
 firmar.bat                     Firma los cuatro ejecutables de dist\ (véase la sección 8)
 ```
+
+El módulo nativo se compila **antes** de empaquetar, para que el ejecutable lo lleve dentro
+(`build_exe.py` lo recoge): los flujos de integración y publicación lo hacen con `--exigir`, que sale
+con error si no hay compilador, y así no se publican dos ejecutables distintos sin enterarse. La DLL
+no va al repositorio (`.gitignore`).
 
 Si tienes certificado, se puede compilar y firmar en el mismo paso (se le pasa a `--firmar`
 cualquier opción de `firmar.py`; véase la sección 8):
@@ -1003,7 +1162,7 @@ de instalar, ejecutar y desinstalar.
 Pruebas:
 
 ```bat
-.venv\Scripts\python.exe tests\smoke_test.py            999 comprobaciones
+.venv\Scripts\python.exe tests\smoke_test.py            1045 comprobaciones
 .venv\Scripts\python.exe tools\verificar_instalacion.py  Instala de verdad y desinstala al terminar
 .venv\Scripts\python.exe tests\documentacion.py         Solo las guardas de documentación
 .venv\Scripts\python.exe tests\smoke_test.py --sin-documentacion   Sin las guardas de documentación
@@ -1017,7 +1176,8 @@ pruebas de código: así una captura todavía por rehacer no bloquea la comproba
 comprueba únicamente cuando se ejecutan como última parte de la suite.
 
 El total depende del equipo: unas pocas comprobaciones solo se hacen si el sistema tiene bandeja,
-si hay `signtool` disponible o si `dist\` ya está compilado. Con la plataforma real de Qt salen 999;
+si hay `signtool` disponible, si `dist\` ya está compilado o si el módulo nativo está compilado (y
+comprobado con la DLL en su sitio). Con la plataforma real de Qt salen 1045;
 en modo sin pantalla son unas cuantas menos, porque las que necesitan una bandeja de verdad no se
 ejecutan (la comprobación de que la bandeja solo se usa si el sistema la tiene sí se hace siempre).
 
@@ -1051,9 +1211,10 @@ leen el ejecutable (`build_exe.py` escribe con ella las propiedades del `.exe`),
 nombres de los archivos de cada publicación (`PC-Toolkit-<versión>-Setup.exe`) y la comprobación de
 actualizaciones. No hay ningún otro número que subir.
 
-Al subir de versión, hay dos cosas que se quedan atrás si no se rehacen: las **capturas** (llevan la
-versión dentro) y los **recuentos de las guías** si se añaden o quitan comprobaciones. La última
-comprobación de la suite avisa de las dos por su nombre, así que no hay que acordarse:
+Al subir de versión hay cosas que se quedan atrás si no se rehacen: las **capturas** (llevan la
+versión dentro), los **recuentos de las guías** (si se han añadido o quitado comprobaciones) y, si se
+toca el C++, el **módulo nativo**. La última comprobación de la suite avisa de las dos primeras por su
+nombre, así que no hay que acordarse:
 
 ```bat
 .venv\Scripts\python.exe tools\capturar_documentacion.py   Rehace las capturas de la versión nueva
@@ -1064,7 +1225,7 @@ Publicar es empujar la rama y la etiqueta con el mismo número:
 
 ```bat
 git push origin main
-git push origin v1.4.1
+git push origin v1.5.0
 ```
 
 El flujo pasa la suite con `tools\pasada_de_la_suite.ps1`, el mismo lanzador que usa el flujo de
@@ -1078,13 +1239,13 @@ que dejó a medias la pasada interrumpida, y esa limpieza solo se hace en el ser
 (`GITHUB_ACTIONS`): en un equipo de verdad no se toca nada de nadie.
 
 Antes del día del estreno conviene **ensayarlo**: en «Actions → Publicar la versión (Windows) → Run
-workflow» se lanza el mismo flujo a mano, con una etiqueta de prueba (`v1.4.1-ensayo` si no se dice
+workflow» se lanza el mismo flujo a mano, con una etiqueta de prueba (`v1.5.0-ensayo` si no se dice
 otra). Compila, pasa la suite —incluida la instalación y desinstalación reales—, calcula los SHA-256
 y crea la publicación con sus archivos adjuntos, pero la deja **en borrador y preliminar**: no sale
 en `/releases/latest` (que es lo que consulta el actualizador), no la ve nadie que no pueda ver el
 repositorio y **no gasta ningún número de versión**. Si la etiqueta del ensayo no empieza por
 `v<versión>-`, el trabajo se para antes de compilar, porque se ensaya la versión que dice el código
-y no otra. Una publicación de ensayo se borra con `gh release delete v1.4.1-ensayo --cleanup-tag`.
+y no otra. Una publicación de ensayo se borra con `gh release delete v1.5.0-ensayo --cleanup-tag`.
 
 La etiqueta dispara [`.github/workflows/publicar.yml`](.github/workflows/publicar.yml), que hace
 todo lo demás: comprueba que la etiqueta y `APP_VERSION` coinciden (si no, se para antes de compilar:

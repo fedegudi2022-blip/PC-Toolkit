@@ -49,6 +49,16 @@ jobs:
       # instalación y la desinstalación) se hacen en cada envío y no solo al publicar. La
       # firma no se toca: sin `--firmar` no hay signtool ni Azure, y la suite omite lo que
       # necesita firmas.
+      # El módulo nativo (C++) es opcional para la aplicación, pero aquí se compila **antes**
+      # de empaquetar: así el ejecutable lo lleva dentro y la suite puede comprobar el camino
+      # rápido de verdad (el listado de aplicaciones sin PowerShell). Con `--exigir`, quedarse
+      # sin compilador o un fallo de compilación se ven en el envío.
+      - name: Compilar el módulo nativo (C++)
+        shell: pwsh
+        run: |
+          python nativo/construir.py --exigir
+          if ($LASTEXITCODE -ne 0) { throw "No se pudo compilar el módulo nativo (código $LASTEXITCODE)" }
+
       - name: Compilar el ejecutable y el instalador
         shell: pwsh
         run: |

@@ -3,7 +3,7 @@ name: Publicar la versión (Windows)
 # Convierte «subir la versión y empujar la etiqueta» en una publicación repartible, sin
 # nada más que hacer a mano:
 #
-#     git push origin main && git push origin v1.4.0
+#     git push origin main && git push origin v1.5.0
 #
 # y este flujo compila el programa y el instalador en un servidor de Windows, pasa las
 # comprobaciones, calcula los SHA-256, firma la procedencia y crea la publicación con sus
@@ -13,7 +13,7 @@ name: Publicar la versión (Windows)
 # versión (Windows)» → Run workflow) para recorrer todo el camino antes del día del
 # estreno: compila, pasa la suite, instala y desinstala el paquete, calcula los hashes y
 # crea la publicación con sus archivos adjuntos. La única diferencia es dónde acaba: con
-# una etiqueta de prueba (`v1.4.0-ensayo`) y la publicación en **borrador y preliminar**,
+# una etiqueta de prueba (`v1.5.0-ensayo`) y la publicación en **borrador y preliminar**,
 # que no sale en `/releases/latest` —lo que consulta el actualizador— ni ocupa ningún
 # número de versión. Es la forma de comprobar que el camino entero funciona (incluidos los
 # permisos del token) sin gastar un número ni publicar nada a medias.
@@ -60,7 +60,7 @@ jobs:
       - name: Descargar el código
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      # El primer paso, y a propósito: publicar una etiqueta `v1.4.0` con el código en la
+      # El primer paso, y a propósito: publicar una etiqueta `v1.5.0` con el código en la
       # 1.3.1 dejaría archivos y notas que se contradicen, y quien los descargue no tiene
       # forma de saber cuál de los dos números es el bueno.
       #
@@ -84,7 +84,7 @@ jobs:
           if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
             $etiqueta = if ($env:ETIQUETA_PEDIDA) { $env:ETIQUETA_PEDIDA } else { "v$version-ensayo" }
             # La etiqueta del ensayo lleva la versión del código más un sufijo, así que
-            # nunca puede coincidir con la etiqueta de verdad (`v1.4.0`).
+            # nunca puede coincidir con la etiqueta de verdad (`v1.5.0`).
             if ($etiqueta -notmatch "^v$([regex]::Escape($version))-.+") {
               throw "La etiqueta de ensayo tiene que ser 'v$version-algo' (por ejemplo 'v$version-ensayo'): se ensaya la versión que dice el código ($version), no otra."
             }
@@ -115,6 +115,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
+
+      # El módulo nativo (C++) se compila antes de empaquetar: el ejecutable que se publica lo
+      # lleva dentro (lo recoge `build_exe.py`) y la suite lo comprueba con él en su sitio.
+      - name: Compilar el módulo nativo (C++)
+        shell: pwsh
+        run: |
+          python nativo/construir.py --exigir
+          if ($LASTEXITCODE -ne 0) { throw "No se pudo compilar el módulo nativo (código $LASTEXITCODE)" }
 
       # Sin `QT_QPA_PLATFORM=offscreen`: los servidores de Windows tienen sesión de
       # escritorio y la plataforma «offscreen» de Qt mide el texto de otra manera (daba
@@ -256,33 +264,29 @@ jobs:
             # Las novedades de esta versión van aquí, y son lo que enseña el diálogo «Hay
             # una versión nueva» de quien actualiza (la aplicación lee estas notas y deja
             # fuera el apartado de los hashes). Se reemplazan en cada publicación.
-            '### Avisos en la portada (nuevo)',
+            '### Un módulo nativo en C++ para lo que tardaba (nuevo)',
             '',
-            '- La pantalla de inicio ahora **dice qué pasa y qué hacer**: CPU sostenida alta, memoria al límite, poco espacio libre, disco lleno, demasiados programas de inicio pesados, entradas de inicio muertas y salud baja, cada uno con sus cifras y con el motivo por el que sale.',
-            '- **Cada aviso se descarta y no vuelve a molestar**: se apunta su huella y solo reaparece si la situación **empeora** (por tramos, no por decimales). En la tarjeta hay un botón para volver a mostrar los descartados, y el interruptor está en «Ajustes y alertas → Avisos».',
+            '- Las **aplicaciones preinstaladas** se listan sin arrancar PowerShell: leen el registro del sistema desde un **módulo nativo en C++** (una DLL que la aplicación carga sola). Medido en un equipo con 97 paquetes: **5,73 s antes, 0,05 s ahora**.',
+            '- Los nombres que Windows guarda en varios idiomas se resuelven con el propio sistema, y lo que no se pueda resolver se deja **vacío a propósito**: nunca un `ms-resource:` sin traducir en la lista.',
+            '- El mismo módulo sabe recorrer el disco, pero **no se usa por defecto**: medido da lo mismo que el de Python (0,83 s frente a 0,83 s), porque recorrer un disco es disco y no CPU. Se enciende con `PCTOOLKIT_NATIVO_DISCO=1` para poder medirlo, y la suite comprueba que los dos caminos dan **exactamente lo mismo**.',
+            '- El módulo es **opcional**: si no está compilado (no hay C++ en el equipo), todo sigue funcionando por los caminos de siempre. En el ejecutable que descargas va dentro.',
             '',
-            '### Los avisos se resuelven desde el propio aviso',
+            '### Cada ajuste dice de dónde viene (nuevo)',
             '',
-            '- **Memoria al límite**: «Liberar memoria ahora» libera en el momento, preguntando antes y recordando que **no se cierra ninguna aplicación**.',
-            '- **Programas de inicio pesados**: «Desactivar las más pesadas» **enumera en la pregunta** qué entradas va a desactivar, no borra nada y lo apunta como **«desde un aviso»**, para poder deshacerlo desde su página o con «Deshacer».',
-            '- Los cuadros llevan el botón con el verbo de lo que va a pasar —**Liberar**, **Desactivar**— y «Cancelar» al lado.',
-            '- Los avisos de espacio abren la limpieza con las categorías que señalan **ya marcadas** (el de disco lleno ofrece además el analizador), y abrir no borra nada: el borrado se confirma siempre.',
+            '- Los ajustes de Windows llevan ahora un **distintivo** con lo que hay puesto: **Predeterminado** (el valor de fábrica) o **Personalizado** (ni el de fábrica ni el recomendado: lo cambió otro programa o se puso a mano). Cuando Windows no documenta el valor de fábrica, el ajuste se queda **sin distintivo**, en vez de afirmar algo sin comprobarlo.',
+            '- Nuevo **«Dejar como vino Windows»** en la fila de cada ajuste: devuelve **solo ese** a su valor de fábrica —o borra el valor, si Windows no lo trae— con su respaldo `.reg` y su apunte en «Deshacer». Así se puede deshacer un cambio suelto sin rehacer los demás.',
+            '- La ayuda de cada ajuste (`F1`, el botón «?» o el clic derecho) enumera sus valores de fábrica y cómo se revierte.',
             '',
-            '### Liberador de espacio propio (nuevo)',
+            '### Perfiles: llevar lo elegido a otro equipo (nuevo)',
             '',
-            '- La página de Herramientas trae su propio **liberador de espacio**: mide cada categoría —temporales del usuario y de Windows, cachés de los navegadores, miniaturas, volcados de error y la papelera— **antes de borrar nada** y enseña lo que se liberaría.',
-            '- El borrado **pregunta siempre**, con la lista y el total delante; lo que esté en uso se omite y se dice. Ninguna categoría pide permisos de administrador, las carpetas peligrosas se rechazan con su motivo y ningún enlace lleva la limpieza fuera de donde debe.',
-            '',
-            '### Programar la limpieza de lo marcado (nuevo)',
-            '',
-            '- Desde la propia ventana de limpieza se puede **programar la limpieza de las categorías marcadas**, con su frecuencia y su hora, en **su propia tarea de Windows**: limpia solo eso, sin liberar memoria ni generar informes, así que convive con el mantenimiento programado y quitar una no toca la otra.',
-            '- La tarjeta enseña el **estado real** que lee el Programador de tareas —cuándo es la próxima y cómo fue la última—, tiene un botón **«Probar ahora»** para lanzarla sin esperar a su hora y avisa en voz alta si entre lo marcado hay algo que no se puede deshacer (la papelera).',
-            '- El histórico distingue las dos cosas: la limpieza se anota como **«Limpieza: …», con las categorías que limpió**, y el mantenimiento completo como «Mantenimiento: …».',
+            '- **Guardar perfil…** escribe un archivo `.pctkperfil` (JSON legible, se puede editar a mano) con los ajustes marcados, la limpieza elegida y el mantenimiento programado, con una nota y con el equipo del que salió.',
+            '- **Abrir perfil… no aplica nada**: enseña qué trae, cuántos ajustes ya están puestos en este equipo, cuáles no se pueden aplicar aquí (con su motivo) y cuáles no conoce esta versión, y **marca las casillas** para revisarlas y aplicarlas con el mismo botón, la misma confirmación y el mismo respaldo que si se hubieran marcado a mano. La limpieza se abre con esas categorías ya marcadas y el mantenimiento vuelve a su página.',
+            '- Un archivo que no sea un perfil, o de un formato más nuevo, se rechaza **entero** con el motivo: nunca se aplica la mitad.',
             '',
             '### Documentación que no se queda atrás',
             '',
-            '- Se rehacen las capturas con la versión 1.4.1 (el asistente de instalación y las **nueve** páginas).',
-            '- El total de la suite pasa de 851 a **981 comprobaciones**, con las de los avisos, el liberador de espacio y la limpieza programada (tarea real, argumentos e histórico).',
+            '- Se rehacen las capturas con la versión 1.5.0 (el asistente de instalación y las **nueve** páginas).',
+            '- El total de la suite pasa de 1004 a **1045 comprobaciones**, con las de los distintivos, devolver un ajuste a su valor de fábrica, los perfiles (incluidos los archivos rotos, ajenos o de un formato más nuevo) y el módulo nativo comparado con Python.',
             '## Comprobar la descarga',
             '',
             'Los SHA-256 de los archivos adjuntos:',

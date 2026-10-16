@@ -5,8 +5,8 @@
 **Mantenimiento y diagnóstico para Windows, sin ruido.**
 
 Libera RAM, controla lo que arranca con Windows, programa el mantenimiento, mide el equipo en vivo
-y exporta informes. Python + PySide6, un solo `.exe`, instalación por usuario y **sin permisos de
-administrador**.
+y exporta informes. Python + PySide6 con un **módulo nativo en C++**, un solo `.exe`, instalación por
+usuario y **sin permisos de administrador**.
 
 [![Última versión](https://img.shields.io/github/v/release/fedegudi2022-blip/PC-Toolkit?label=versi%C3%B3n&color=22c55e)](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/latest)
 [![Descargas](https://img.shields.io/github/downloads/fedegudi2022-blip/PC-Toolkit/total?color=22c55e)](https://github.com/fedegudi2022-blip/PC-Toolkit/releases)
@@ -27,8 +27,8 @@ Windows 10 u 11 (x64). No hace falta instalar Python ni nada más.
 
 | Archivo | Qué es |
 | --- | --- |
-| [`PC-Toolkit-1.4.1-Setup.exe`](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/download/v1.4.1/PC-Toolkit-1.4.1-Setup.exe) | **Recomendado** (85,3 MB). Asistente con la aplicación dentro: accesos directos, arranque automático opcional y desinstalador. Por usuario, sin avisos de Windows. |
-| [`PC-Toolkit-1.4.1-portable.exe`](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/download/v1.4.1/PC-Toolkit-1.4.1-portable.exe) | Versión portátil (47,6 MB). Doble clic y funciona, sin instalar ni dejar rastro. |
+| [`PC-Toolkit-1.5.0-Setup.exe`](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/download/v1.5.0/PC-Toolkit-1.5.0-Setup.exe) | **Recomendado** (85,8 MB). Asistente con la aplicación dentro: accesos directos, arranque automático opcional y desinstalador. Por usuario, sin avisos de Windows. |
+| [`PC-Toolkit-1.5.0-portable.exe`](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/download/v1.5.0/PC-Toolkit-1.5.0-portable.exe) | Versión portátil (48,0 MB). Doble clic y funciona, sin instalar ni dejar rastro. |
 
 Datos y preferencias se guardan en `%APPDATA%\PCToolkit` (véase [Dónde se guardan los datos](#dónde-se-guardan-los-datos)).
 
@@ -44,7 +44,7 @@ Datos y preferencias se guardan en `%APPDATA%\PCToolkit` (véase [Dónde se guar
 | **Inicio** | Medidores de CPU, memoria, disco y red, salud del equipo, gráfica de las últimas 24 h, procesos que más consumen y **avisos propios** («la CPU lleva 12 minutos al 88 %», «quedan 4 GB libres», «tienes 12 programas de inicio pesados») que se pueden descartar y **resolver desde el propio aviso**: el de espacio abre la limpieza con lo que señala ya marcado (sin borrar nada hasta confirmarlo), el de memoria la libera al momento, el de programas de inicio pesados los desactiva —los dos **preguntando antes** y con vuelta atrás en «Deshacer»— y el de disco ofrece además el analizador. |
 | **Optimizar memoria** | Libera RAM recortando conjuntos de trabajo y cachés, a mano o al pasar un umbral; mide lo liberado de verdad. |
 | **Programas de inicio** | Lo que abre Windows al encender: desactiva sin borrar, avisa de entradas muertas y todo se puede deshacer. |
-| **Ajustes de Windows** | Catálogo de ajustes de anuncios, privacidad, telemetría, interfaz y rendimiento: **analiza** sin tocar nada, enseña qué está recomendado y con qué riesgo, y aplica solo lo que se marca y se confirma. Con ayuda por ajuste (`F1`), respaldo `.reg`, gestor de **aplicaciones preinstaladas** y **plugins** en JSON. |
+| **Ajustes de Windows** | Catálogo de ajustes de anuncios, privacidad, telemetría, interfaz y rendimiento: **analiza** sin tocar nada, enseña qué está recomendado y con qué riesgo —y **de dónde viene** cada valor (**Predeterminado** o **Personalizado**)—, y aplica solo lo que se marca y se confirma. Cada ajuste se puede devolver **solo él** a como vino Windows, y lo marcado se guarda en un **perfil** (`.pctkperfil`) para llevarlo a otro equipo. Con ayuda por ajuste (`F1`), respaldo `.reg`, gestor de **aplicaciones preinstaladas** y **plugins** en JSON. |
 | **Mantenimiento** | Tarea propia en el Programador de Windows (limpieza, memoria e informes) con estado real leído del sistema. |
 | **Alertas y bandeja** | Icono en la bandeja, umbrales de CPU, memoria y disco —con lo que marca el equipo **al lado de cada uno**—, aviso por notificación y «Ajustes y alertas» con buscador, valores recomendados y aviso de cambios sin guardar. La ventana **recuerda su tamaño, su sitio y si estaba maximizada**. |
 | **Analizar disco** | Escaneo por carpetas con barras proporcionales, uso por categoría y archivos grandes. |
@@ -57,7 +57,9 @@ Dos temas completos —oscuro «grafito» (fondo casi negro y grises fríos, cad
 separado del siguiente) y claro «papel»— que se cambian **sin rehacer la ventana**: la que está
 abierta se vuelve a pintar con la paleta nueva (iconos, arcos, insignias y estilos en línea), así que
 no hay parpadeo ni foco perdido. Por defecto abre en oscuro y en **Ajustes y alertas → Apariencia** se
-puede seguir a Windows o pasar al claro. El acento es neutro
+puede seguir a Windows —**y seguirle de verdad**: el programa escucha el aviso con el que Windows
+cuenta el cambio de tema, así que si lo cambias con la aplicación abierta el nuevo se aplica al
+momento, sin reiniciarla— o pasar al claro. El acento es neutro
 —casi blanco en el tema oscuro y tinta en el claro— y manda en los botones principales y el foco.
 El color tiene significado: **verde** para lo saludable, **ámbar** para los avisos y **rojo** para
 los errores. Los datos llevan cuatro tonos propios (CPU azul, memoria cian, disco naranja y red gris
@@ -83,7 +85,16 @@ nada se toca), luego se **revisa** qué está recomendado y qué ya está optimi
 su categoría, su riesgo (bajo, medio o alto) y un escudo si toca `HKEY_LOCAL_MACHINE`— y solo
 entonces se **aplica**, únicamente lo que se haya marcado y confirmado. Se puede preguntar por
 cualquier ajuste con `F1`, con el botón «?» o con el clic derecho: se explica qué cambia, por qué se
-recomienda, qué claves del registro toca y cómo se revierte.
+recomienda, qué claves del registro toca, **cuál es su valor de fábrica** y cómo se revierte.
+
+Cada ajuste dice dos cosas distintas: su **estado** (Recomendado, **Personalizado**, Ya optimizado,
+No disponible o Sin analizar) y un **distintivo** con **de dónde viene** el valor que hay puesto —
+**Predeterminado**, el de fábrica de Windows, o **Personalizado**, que no es ni el de fábrica ni el
+recomendado porque lo cambió otro programa o se puso a mano—. Sin ese dato (cuando Windows no
+documenta cuál es) el ajuste se queda sin distintivo en vez de afirmar algo que no se sabe. Y de ahí
+sale una acción que antes no existía: **«Dejar como vino Windows»** en la fila del ajuste, que
+devuelve **solo ese** a su valor de fábrica —o borra el valor, si Windows no lo trae— con su respaldo
+`.reg` y su apunte en «Deshacer», sin tocar los demás.
 
 Cada ajuste aplicado se guarda **tres veces**: en el historial de cambios reversibles (página de
 Inicio, junto al resto del programa), en un archivo `.reg` con lo que había antes —se puede restaurar
@@ -100,6 +111,12 @@ Dos cosas más viven dentro de esta sección:
   los demás). Una lista blanca —tienda, instalador de paquetes, marcos de trabajo, componentes del
   shell y extensiones de imagen y vídeo— no se puede tocar y explica por qué; cada aplicación dice
   qué se pierde si se quita, y quitarlas queda en el historial para reinstalarlas.
+- **Perfiles.** Lo que se ha marcado se guarda en un archivo (`.pctkperfil`, JSON legible) junto con
+  la limpieza y el mantenimiento elegidos, para llevarlo a otro equipo. **Abrir un perfil no aplica
+  nada**: enseña de dónde salió, qué trae, qué ya está puesto en este equipo, qué no se puede aplicar
+  aquí y qué no conoce esta versión, y **marca las casillas** para revisarlas y aplicarlas con el
+  mismo botón y el mismo respaldo que si se hubieran marcado a mano. Un archivo de un formato más
+  nuevo, o que no sea un perfil, se rechaza entero con el motivo.
 - **Plugins.** Ajustes propios en un archivo JSON dentro de `%APPDATA%\PCToolkit\plugins`, sin
   tocar el programa: hay un botón que escribe una plantilla lista para editar. Se validan de forma
   estricta (categoría, riesgo, tipo de valor, HKCU/HKLM…) y un archivo mal escrito se rechaza entero
@@ -266,13 +283,14 @@ Para quien mantiene el proyecto, publicar una versión son tres pasos:
 
 ```bat
 git push origin main
-git push origin v1.4.1
+git push origin v1.5.0
 ```
 
 Antes del día del estreno se puede **ensayar la publicación** con una etiqueta de prueba: en
 «Actions → Publicar la versión (Windows) → Run workflow» se lanza el mismo trabajo a mano, que
-recorre el camino completo (compilar, suite, instalación real, hashes y publicación) y lo deja todo
-en una publicación **en borrador y preliminar**, con etiqueta `v1.4.1-ensayo`. No sale en
+recorre el camino completo (compilar —incluido el módulo nativo—, suite, instalación real, hashes y
+publicación) y lo deja todo en una publicación **en borrador y preliminar**, con etiqueta
+`v1.5.0-ensayo`. No sale en
 `/releases/latest` —lo que mira el actualizador— y no gasta ningún número de versión.
 
 La etiqueta dispara [.github/workflows/publicar.yml](.github/workflows/publicar.yml), que compila en
@@ -306,7 +324,7 @@ Desinstalar conserva estos datos salvo que se pidan borrar desde el asistente.
 .venv\Scripts\python.exe tests\smoke_test.py
 ```
 
-**999 comprobaciones** sin marco externo: métricas y disco reales, persistencia, alertas,
+**1045 comprobaciones** sin marco externo: métricas y disco reales, persistencia, alertas,
 los **avisos propios** (umbrales, orden, descarte que caduca y vuelve si la cosa empeora, y qué
 categorías marca cada uno al abrir la limpieza desde él) y el
 **catálogo de limpieza** (vista previa que no borra, archivos en uso que no se prometen, carpetas
@@ -325,8 +343,17 @@ WCAG, la diferenciación de las series y los estados con daltonismo (CIEDE2000 s
 Machado) y la accesibilidad (roles, nombres, anuncios y foco visible).
 
 Los **ajustes de Windows** se prueban sobre claves de registro propias de la prueba (nunca de las de
-verdad): análisis, aplicación, respaldo `.reg` y vuelta atrás, lo que necesita administrador sin
-permisos, y el catálogo de la página navegado de verdad. Las **aplicaciones preinstaladas** y los
+deverdad): análisis, aplicación, respaldo `.reg` y vuelta atrás, los distintivos de fábrica y
+personalizado, devolver un solo ajuste a su valor de fábrica (incluidas las claves que el ajuste
+había creado y el caso del valor que de fábrica no existe), que sin saber el valor de fábrica no se
+oferta devolverlo, lo que necesita administrador sin permisos, y el catálogo de la página navegado de
+verdad. Los **perfiles** se prueban con archivos de todo tipo —rotos, ajenos, vacíos, de un formato
+más nuevo y con campos del tipo que no toca— y por la ventana: que abrir uno marque sus ajustes **sin
+aplicar nada**, que la limpieza llegue a su ventana ya marcada y que el mantenimiento vuelva a su
+página. El **módulo nativo** se prueba con la DLL compilada: que el listado de aplicaciones salga del
+registro sin arrancar PowerShell, que traiga lo que traía, que sin módulo se pregunte a PowerShell
+como antes y que el recorrido del disco dé **exactamente lo mismo** que el de Python (con un árbol de
+prueba con enlaces y uniones). Las **aplicaciones preinstaladas** y los
 **plugins** se prueban con un PowerShell interceptado y una carpeta de plugins temporal: la lista
 blanca, los riesgos, que una pieza del sistema no llegue a ejecutar nada, que el nombre del paquete
 vaya por variable de entorno y no dentro del comando, la validación campo por campo de los JSON (con
@@ -357,18 +384,21 @@ build_exe.py / .bat          Empaquetado con PyInstaller (icono, versión y comp
 build_installer.py / .bat    Instalador de Windows y comprobación del ciclo completo
 firmar.py / .bat             Firma con signtool (SHA-256, sello RFC 3161 y verificación)
 assets/                      Logotipo original, icono del ejecutable y propiedades de versión
+nativo/                      Módulo opcional en C++ (escáner de disco y listado de aplicaciones),
+                             con su script de compilación; si no está, todo tira por Python
 installer/                   Asistente, desinstalador y lógica de instalación por usuario
 tools/                       Icono, medición de consumo, capturas (y su regeneración) y verificación
 capturas/                    Imágenes de esta documentación
 pctoolkit/
   core/                      Lógica sin interfaz: config, métricas, tarjeta gráfica, memoria, disco,
                              tareas, informes, historial, alertas, avisos, limpieza, arranque,
-                             mantenimiento, programador, ajustes de Windows, aplicaciones y plugins
+                             mantenimiento, programador, ajustes de Windows, aplicaciones, plugins,
+                             el módulo nativo opcional de C++ (`native.py`) y los perfiles
   ui/                        Interfaz PySide6: tema, accesibilidad, iconos, widgets, gráfica,
                              vigía de la GPU, bandeja, diálogos y una página por sección
-tests/smoke_test.py          999 comprobaciones (núcleo, interfaz, instalador, firma, dependencias,
-                             logotipo, actualizaciones, ajustes de Windows, aplicaciones, plugins,
-                             limpieza, limpieza programada y avisos)
+tests/smoke_test.py          1045 comprobaciones (núcleo, interfaz, instalador, firma, dependencias,
+                             logotipo, actualizaciones, ajustes de Windows, perfiles, módulo nativo,
+                             aplicaciones, plugins, limpieza, limpieza programada y avisos)
 tests/documentacion.py       Guardas de capturas, informe y recuentos (van aparte)
 dist/                        Todo lo compilado; se regenera con los scripts
 ```

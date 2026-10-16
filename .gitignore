@@ -15,6 +15,11 @@ informes/
 tools/bin/
 *.log
 
+# Módulo nativo compilado: lo hace `nativo/construir.py` (o el servidor de integración), no
+# se guarda en el repositorio.
+nativo/*.dll
+nativo/*.o
+
 # Certificados y claves de firma: nunca al repositorio
 *.pfx
 *.p12

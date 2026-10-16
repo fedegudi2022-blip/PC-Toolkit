@@ -393,6 +393,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
     window = MainWindow(settings)
+    if args.tema:
+        # `--tema` manda solo para esta ejecución: si se pidió un modo a mano, no tiene sentido
+        # seguir a Windows aunque las preferencias digan `auto` (el vigía se enciende con el
+        # modo guardado, así que se para aquí).
+        window.theme_watcher.stop()
     if guarda is not None:
         # El identificador de la ventana se pasa para poder admitir el aviso aunque esta
         # copia corra como administrador y la nueva venga del acceso directo normal.

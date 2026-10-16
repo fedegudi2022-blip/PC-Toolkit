@@ -11,12 +11,16 @@ usuario lo haya marcado y confirmado.
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Sequence
+
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QAccessible, QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -30,12 +34,16 @@ from PySide6.QtWidgets import (
 )
 
 from ..core import plugins as plugins_core
+from ..core import profiles
 from ..core import windows_settings as tweaks
 from ..core.config import COLORS, format_integer
+from ..core.settings import AppSettings
 from ..core.undo import UndoStore
 from . import accessibility, theme
+from .clean import CleanDialog
 from .debloat import DebloatDialog
 from .plugins_ui import PluginsDialog
+from .profiles_ui import OpenProfileDialog, SaveProfileDialog
 from .widgets import Card, IconBadge, Muted, PageHeader, SectionTitle, hline
 
 
@@ -97,6 +105,7 @@ class SettingRow(Card):
 
     changed = Signal()
     help_requested = Signal(object)
+    restore_requested = Signal(object)
 
     def __init__(self, state: tweaks.SettingState, parent: QWidget | None = None) -> None:
         super().__init__(parent, soft=True, name=state.setting.name)
@@ -122,6 +131,13 @@ class SettingRow(Card):
         self.status_label.setObjectName("Muted")
         top.addWidget(self.status_label)
 
+        # El distintivo: «Predeterminado» (como vino Windows) o «Personalizado» (lo cambió
+        # alguien que no fuimos nosotros). Va aparte del estado porque dicen cosas distintas:
+        # el estado es lo que falta por hacer y el distintivo, de dónde viene lo que hay.
+        self.origin_label = QLabel()
+        self.origin_label.setVisible(False)
+        top.addWidget(self.origin_label)
+
         self.risk_label = QLabel()
         self.risk_label.setObjectName("Muted")
         top.addWidget(self.risk_label)
@@ -137,6 +153,22 @@ class SettingRow(Card):
         self.plugin_label.setVisible(self.setting.from_plugin)
         self.plugin_label.setToolTip("Este ajuste lo aporta un plugin, no PC Toolkit: revísalo antes de confiar en él")
         top.addWidget(self.plugin_label)
+
+        # «Dejar como vino Windows»: solo aparece en los ajustes cuyo valor de fábrica se
+        # conoce y que ahora mismo no están en él (si no, no habría nada que devolver).
+        self.restore_button = QPushButton("Dejar como vino Windows")
+        self.restore_button.setObjectName("Ghost")
+        self.restore_button.setFixedHeight(24)
+        self.restore_button.setVisible(False)
+        self.restore_button.setAccessibleName(
+            f"Devolver «{self.setting.name}» a como vino Windows"
+        )
+        self.restore_button.setToolTip(
+            "Escribe el valor de fábrica de este ajuste y no toca los demás. Guarda respaldo y "
+            "se puede deshacer."
+        )
+        self.restore_button.clicked.connect(lambda: self.restore_requested.emit(self.setting))
+        top.addWidget(self.restore_button)
 
         self.help_button = QPushButton("?")
         self.help_button.setObjectName("Ghost")
@@ -174,6 +206,9 @@ class SettingRow(Card):
         what = menu.addAction("¿Qué hace esto?")
         what.setShortcut(QKeySequence(Qt.Key_F1))
         what.triggered.connect(lambda: self.help_requested.emit(self.setting))
+        if self.state.can_restore_default:
+            restore = menu.addAction("Dejar como vino Windows")
+            restore.triggered.connect(lambda: self.restore_requested.emit(self.setting))
         copy_keys = menu.addAction("Copiar las claves del registro")
         copy_keys.triggered.connect(self._copy_keys)
         search = menu.addAction("Buscar en internet")
@@ -206,12 +241,29 @@ class SettingRow(Card):
         color = {
             tweaks.STATUS_PENDING: COLORS["warn"],
             tweaks.STATUS_OPTIMIZED: COLORS["good"],
+            tweaks.STATUS_CUSTOM: COLORS["series_cpu"],
             tweaks.STATUS_UNAVAILABLE: COLORS["text_dim"],
         }.get(estado, COLORS["text_muted"])
         self.status_label.setStyleSheet(f"color: {color}; font-weight: 600;")
+        self.origin_label.setText(self.state.origin_label)
+        self.origin_label.setVisible(bool(self.state.origin_label))
+        if self.state.origin_label:
+            es_personalizado = self.state.origin == tweaks.ORIGIN_CUSTOM
+            self.origin_label.setStyleSheet(
+                "font-size: 11px; font-weight: 600; color: "
+                + (COLORS["series_cpu"] if es_personalizado else COLORS["text_dim"])
+                + ";"
+            )
+            self.origin_label.setToolTip(
+                "Lo que hay puesto no es el valor de fábrica de Windows ni el recomendado: lo "
+                "cambió algo (otro programa o se puso a mano). Al aplicar se guarda respaldo."
+                if es_personalizado
+                else "Ahora mismo está con el valor de fábrica de Windows."
+            )
         self.risk_label.setText(self.setting.risk_label)
         self.admin_label.setVisible(self.setting.needs_admin)
-        aplicable = estado == tweaks.STATUS_PENDING
+        self.restore_button.setVisible(self.state.can_restore_default)
+        aplicable = self.state.pending
         self.check.setVisible(aplicable)
         if not aplicable:
             self.check.setChecked(False)
@@ -244,9 +296,18 @@ class WindowsSettingsPage(QWidget):
 
     status = Signal(str)
 
-    def __init__(self, store: UndoStore | None = None, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        store: UndoStore | None = None,
+        parent: QWidget | None = None,
+        settings: AppSettings | None = None,
+    ) -> None:
         super().__init__(parent)
         self.store = store
+        # Las preferencias de la aplicación hacen falta para los perfiles: dentro va la
+        # programación del mantenimiento, que vive ahí (se construye solo si se pide, para no
+        # tocar el registro de Windows al abrir la página).
+        self._settings = settings
         self._rows: list[SettingRow] = []
         self._states: list[tweaks.SettingState] = []
         # Los plugins se leen antes de construir las filas: sus ajustes son parte del
@@ -318,6 +379,27 @@ class WindowsSettingsPage(QWidget):
         row_two.addWidget(self.summary_button)
         row_two.addStretch(1)
         actions_layout.addLayout(row_two)
+
+        # --- Perfiles -----------------------------------------------------
+        row_three = QHBoxLayout()
+        row_three.setSpacing(8)
+        self.save_profile_button = QPushButton("Guardar perfil…")
+        self.save_profile_button.setObjectName("Ghost")
+        self.save_profile_button.setToolTip(
+            "Guarda los ajustes marcados, la limpieza y el mantenimiento en un archivo para "
+            "llevarlos a otro equipo"
+        )
+        self.save_profile_button.clicked.connect(self.save_profile)
+        row_three.addWidget(self.save_profile_button)
+        self.open_profile_button = QPushButton("Abrir perfil…")
+        self.open_profile_button.setObjectName("Ghost")
+        self.open_profile_button.setToolTip(
+            "Lee un perfil y marca lo que propone (no aplica nada sin que lo confirmes)"
+        )
+        self.open_profile_button.clicked.connect(self.open_profile)
+        row_three.addWidget(self.open_profile_button)
+        row_three.addStretch(1)
+        actions_layout.addLayout(row_three)
         layout.addWidget(actions)
 
         # --- Filtros -------------------------------------------------------
@@ -330,7 +412,11 @@ class WindowsSettingsPage(QWidget):
         self.search.setPlaceholderText("Buscar ajuste (por ejemplo: anuncios, telemetría, barra)…")
         self.search.textChanged.connect(self._apply_filter)
         filters_layout.addWidget(self.search, 1)
-        self.only_pending = QCheckBox("Solo los recomendados")
+        self.only_pending = QCheckBox("Solo lo que queda por hacer")
+        self.only_pending.setToolTip(
+            "Deja a la vista los ajustes recomendados y los que están en un valor personalizado; "
+            "oculta los que ya están como se recomienda y los que no se pueden aplicar."
+        )
         self.only_pending.toggled.connect(self._apply_filter)
         filters_layout.addWidget(self.only_pending)
         layout.addWidget(filters)
@@ -491,6 +577,7 @@ class WindowsSettingsPage(QWidget):
                 fila = SettingRow(estado)
                 fila.changed.connect(self._update_buttons)
                 fila.help_requested.connect(self.show_help)
+                fila.restore_requested.connect(self.restore_setting)
                 self._rows.append(fila)
                 card_layout.addWidget(fila)
             self.categories_layout.addWidget(card)
@@ -510,6 +597,7 @@ class WindowsSettingsPage(QWidget):
         cifras = tweaks.summary(estados)
         self.summary_label.setText(
             f"{format_integer(cifras['recomendados'])} recomendado(s) · "
+            f"{format_integer(cifras['personalizados'])} personalizado(s) · "
             f"{format_integer(cifras['optimizados'])} ya optimizado(s) · "
             f"{format_integer(cifras['no_disponibles'])} no disponible(s)"
         )
@@ -520,9 +608,14 @@ class WindowsSettingsPage(QWidget):
         )
 
     def mark_recommended(self, value: bool = True) -> None:
-        """Marca (o desmarca) todo lo que esté recomendado y se pueda aplicar."""
+        """Marca (o desmarca) todo lo que quede por hacer y se pueda aplicar.
+
+        Incluye los ajustes que están en un valor personalizado: siguen sin ser el recomendado
+        y son los que más falta hacen; lo que los distingue es su distintivo y que al aplicarlos
+        se avisa de que se pisa un valor que no es el de fábrica.
+        """
         for fila in self._rows:
-            if fila.state.status == tweaks.STATUS_PENDING:
+            if fila.state.pending:
                 fila.mark(value)
         self._update_buttons()
 
@@ -544,7 +637,7 @@ class WindowsSettingsPage(QWidget):
         for fila in self._rows:
             ajuste = fila.setting
             coincide = not texto or texto in ajuste.name.lower() or texto in ajuste.description.lower() or texto in ajuste.category_label.lower()
-            if solo_recomendados and fila.state.status != tweaks.STATUS_PENDING:
+            if solo_recomendados and not fila.state.pending:
                 coincide = False
             fila.setVisible(coincide)
             visibles += int(coincide)
@@ -573,10 +666,7 @@ class WindowsSettingsPage(QWidget):
         if fila is None:
             fila = next((candidata for candidata in self._rows if candidata.marked), None)
         if fila is None:
-            fila = next(
-                (candidata for candidata in self._rows if candidata.state.status == tweaks.STATUS_PENDING),
-                None,
-            )
+            fila = next((candidata for candidata in self._rows if candidata.state.pending), None)
         if fila is not None:
             self.show_help(fila.setting)
 
@@ -632,3 +722,160 @@ class WindowsSettingsPage(QWidget):
                 "Algunos ajustes no se pudieron aplicar",
                 "\n".join(f"• {nombre}: {motivo}" for nombre, motivo in resultado.failed),
             )
+
+    # ------------------------------------------------------------------
+    # Devolver un solo ajuste a como vino Windows
+    # ------------------------------------------------------------------
+    def restore_setting(self, setting: tweaks.Setting) -> None:
+        """Deja **un** ajuste como vino Windows, con su confirmación y su respaldo.
+
+        Es lo contrario de aplicar y no lo mezcla: los demás ajustes se quedan como están, así
+        que se puede deshacer un cambio suelto sin renunciar a los que sí se quieren.
+        """
+        ok, motivo = tweaks.can_restore_default(setting)
+        if not ok:
+            QMessageBox.information(self, "No se puede dejar como vino Windows", motivo)
+            self.status.emit(motivo)
+            return
+        fabrica = "\n".join(f"• {spec.describe()} → {spec.default_label}" for spec in setting.values)
+        pregunta = QMessageBox(self)
+        pregunta.setWindowTitle("Dejar como vino Windows")
+        pregunta.setIcon(QMessageBox.Question)
+        pregunta.setText(
+            f"¿Devolver «{setting.name}» a como viene Windows?\n\n{fabrica}\n\n"
+            "Solo se toca este ajuste: los demás se quedan como están. Antes de escribir se "
+            "guarda el valor que había (y un respaldo .reg), así que se puede deshacer."
+        )
+        pregunta.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        pregunta.button(QMessageBox.Yes).setText("Devolver")
+        pregunta.button(QMessageBox.No).setText("Cancelar")
+        if pregunta.exec() != QMessageBox.Yes:
+            self.status.emit("No se devolvió nada.")
+            return
+        hecho, mensaje = tweaks.restore_default(setting, store=self.store)
+        self.analyse()
+        self.status.emit(mensaje if hecho else f"No se pudo: {mensaje}")
+
+    # ------------------------------------------------------------------
+    # Perfiles: guardar lo elegido y abrir uno de fuera
+    # ------------------------------------------------------------------
+    def _app_settings(self) -> AppSettings:
+        """Las preferencias de la aplicación (se crean la primera vez que hacen falta)."""
+        if self._settings is None:
+            self._settings = AppSettings()
+        return self._settings
+
+    def _limpieza_habitual(self) -> tuple[str, ...]:
+        """Lo que la aplicación está configurada para limpiar (mantenimiento y limpieza aparte)."""
+        ajustes = self._app_settings()
+        claves: list[str] = []
+        for clave in (*ajustes.schedule_config.clean_targets, *ajustes.cleanup_schedule.targets):
+            if clave not in claves:
+                claves.append(clave)
+        return tuple(claves)
+
+    def save_profile(self) -> None:
+        """Guarda los ajustes marcados, la limpieza y el mantenimiento en un archivo."""
+        marcados = self.selected_settings()
+        if not marcados and not self._limpieza_habitual():
+            QMessageBox.information(
+                self,
+                "No hay nada que guardar",
+                "Marca antes los ajustes que quieras guardar en el perfil.",
+            )
+            self.status.emit("No hay nada marcado que guardar.")
+            return
+        ajustes = self._app_settings()
+        limpieza = self._limpieza_habitual()
+        dialogo = SaveProfileDialog(
+            ajustes=marcados,
+            limpieza=limpieza,
+            mantenimiento=ajustes.schedule_config,
+            parent=self,
+        )
+        if dialogo.exec() != QDialog.Accepted:
+            self.status.emit("No se guardó ningún perfil.")
+            return
+        destino, nota = dialogo.resultado()
+        perfil = profiles.construir(
+            ajustes=marcados,
+            limpieza=limpieza,
+            mantenimiento=ajustes.schedule_config,
+            limpieza_programada=ajustes.cleanup_schedule,
+            nota=nota,
+        )
+        try:
+            guardado = profiles.guardar(perfil, destino)
+        except OSError as exc:
+            mensaje = f"No se pudo guardar el perfil: {exc}"
+            QMessageBox.warning(self, "No se pudo guardar", mensaje)
+            self.status.emit(mensaje)
+            return
+        profiles.registrar(perfil, "guardado")
+        self.status.emit(f"Perfil guardado: {guardado} ({profiles.nota_de_resumen(perfil)}).")
+
+    def open_profile(self) -> None:
+        """Lee un perfil y **marca** lo que propone (no aplica nada por su cuenta)."""
+        elegido, _filtro = QFileDialog.getOpenFileName(
+            self,
+            "Abrir un perfil",
+            str(profiles.ruta_sugerida().parent),
+            f"{profiles.FILTRO};;Todos los archivos (*)",
+        )
+        if not elegido:
+            return
+        perfil, motivo = profiles.leer(elegido)
+        if perfil is None:
+            QMessageBox.warning(self, "No se pudo abrir el perfil", motivo)
+            self.status.emit(motivo)
+            return
+        # El perfil se compara con lo que hay **ahora** en este equipo: sin analizar antes,
+        # «ya aplicado» y «no disponible» no se pueden decir y la revisión mentiría.
+        self.analyse()
+        revision = profiles.revisar(perfil, self._states)
+        dialogo = OpenProfileDialog(perfil, revision, archivo=Path(elegido), parent=self)
+        if dialogo.exec() != QDialog.Accepted:
+            self.status.emit("No se marcó nada del perfil.")
+            return
+
+        marcados = self.mark_settings([setting.id for setting in revision["marcar"]])
+        avisos = [f"{marcados} ajuste(s) marcados"]
+        if revision["ya"]:
+            avisos.append(f"{len(revision['ya'])} ya estaban aplicados")
+        if revision["bloqueados"]:
+            avisos.append(f"{len(revision['bloqueados'])} no se pueden aplicar aquí")
+        if revision["desconocidos"]:
+            avisos.append(f"{len(revision['desconocidos'])} desconocidos para esta versión")
+
+        if dialogo.abrir_limpieza and revision["limpieza"]:
+            limpieza = CleanDialog(self._app_settings(), parent=self, prechecked=revision["limpieza"])
+            limpieza.done_changes.connect(self.status.emit)
+            limpieza.exec()
+
+        if dialogo.aplicar_mantenimiento:
+            # Solo las opciones que guarda la aplicación: programar la tarea de Windows se
+            # hace en la página de mantenimiento, con su botón y su confirmación.
+            ajustes = self._app_settings()
+            plan = profiles.mantenimiento_del_perfil(perfil)
+            if plan is not None:
+                ajustes.schedule_config = plan
+                avisos.append("mantenimiento puesto")
+            programada = profiles.limpieza_programada_del_perfil(perfil)
+            if programada is not None:
+                ajustes.cleanup_schedule = programada
+                avisos.append("limpieza programada puesta")
+            ajustes.sync()
+
+        profiles.registrar(perfil, "abierto")
+        self.status.emit("Perfil abierto: " + ", ".join(avisos) + ".")
+
+    def mark_settings(self, ids: Sequence[str]) -> int:
+        """Marca solo esos ajustes (y desmarca el resto): un perfil, una lista."""
+        elegidos = set(ids)
+        marcados = 0
+        for fila in self._rows:
+            coincide = fila.setting.id in elegidos and fila.state.available
+            fila.mark(coincide)
+            marcados += int(coincide)
+        self._update_buttons()
+        return marcados

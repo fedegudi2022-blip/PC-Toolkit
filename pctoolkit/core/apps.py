@@ -32,6 +32,7 @@ from typing import Any, Sequence
 
 from . import logs, undo
 from .config import APP_NAME, APP_VERSION, format_bytes
+from . import native
 from .tools import powershell_environment
 
 try:  # pragma: no cover - fuera de Windows no hay paquetes que quitar
@@ -443,15 +444,99 @@ def folder_size(folder: str | Path, *, budget: float = SIZE_BUDGET_SECONDS) -> i
     return total
 
 
+def _descomponer(identificador: str) -> tuple[str, str, str, str]:
+    """Nombre, versión, familia y editor a partir del identificador del paquete.
+
+    Windows escribe los paquetes como `Nombre_Versión_Arquitectura_Recurso_Editor`
+    (`Microsoft.BingNews_4.55.0.0_x64__8wekyb3d8bbwe`), así que los datos que PowerShell
+    contaba por separado salen de aquí. La familia —lo que identifica a la aplicación entre
+    versiones— es el nombre con el editor.
+    """
+    partes = (identificador or "").split("_")
+    nombre = partes[0] if partes else ""
+    version = partes[1] if len(partes) > 1 else ""
+    editor = partes[-1] if len(partes) > 1 else ""
+    familia = f"{nombre}_{editor}" if editor else nombre
+    return nombre, version, familia, editor
+
+
+def _editor_del_manifiesto(carpeta: str) -> str:
+    """Editor visible («Microsoft Corporation») leyendo el `AppxManifest.xml` del paquete.
+
+    Es lo único que el registro no guarda, y son unos milisegundos por paquete: leer los 97
+    del equipo cuesta ~50 ms, mucho menos que las ocho consultas por aplicación que haría
+    falta abrir a PowerShell para lo mismo.
+    """
+    if not carpeta:
+        return ""
+    from xml.etree import ElementTree
+
+    try:
+        raiz = ElementTree.parse(Path(carpeta) / "AppxManifest.xml").getroot()
+    except (OSError, ElementTree.ParseError):
+        return ""
+    for nodo in raiz.iter():
+        if nodo.tag.rsplit("}", 1)[-1] == "PublisherDisplayName" and (nodo.text or "").strip():
+            return nodo.text.strip()
+    return ""
+
+
+def list_apps_from_registry() -> list[AppEntry] | None:
+    """Aplicaciones instaladas leídas del registro por el módulo nativo.
+
+    `Get-AppxPackage` tarda varios segundos (medido: 5,73 s con 97 paquetes) porque arranca
+    un PowerShell y le pide el catálogo entero; los mismos datos están en el registro del
+    usuario, al día, y leerlos cuesta milisegundos. Devuelve `None` cuando el módulo no está
+    compilado, para que quien llame decida si pregunta a PowerShell.
+    """
+    if not IS_WINDOWS:
+        return None
+    paquetes = native.listar_paquetes()
+    if not paquetes:
+        return None
+    entradas: list[AppEntry] = []
+    for fila in paquetes:
+        identificador = str(fila.get("id") or "").strip()
+        if not identificador:
+            continue
+        nombre, version, familia, editor = _descomponer(identificador)
+        carpeta = str(fila.get("carpeta") or "").strip()
+        entradas.append(
+            AppEntry(
+                name=nombre,
+                family=familia,
+                full_name=identificador,
+                publisher=_editor_del_manifiesto(carpeta) or editor,
+                version=version,
+                location=carpeta,
+                label=str(fila.get("visible") or "").strip(),
+                framework=bool(fila.get("marco")),
+                system=bool(fila.get("sistema")),
+            )
+        )
+    if not entradas:
+        return None
+    entradas.sort(key=sort_key)
+    return entradas
+
+
 def list_apps(*, with_size: bool = True, timeout: int = 120) -> list[AppEntry]:
-    """Aplicaciones instaladas del usuario, ordenadas (las recomendadas primero)."""
+    """Aplicaciones instaladas del usuario, ordenadas (las recomendadas primero).
+
+    Primero se le pide la lista al **módulo nativo** (el registro, milisegundos) y, si no
+    está compilado, se pregunta a PowerShell como siempre. Los dos caminos devuelven lo
+    mismo: el de PowerShell es además el que se usa si el registro no tiene el listado, que
+    es lo que pasa en algunas ediciones de Windows Server.
+    """
     if not IS_WINDOWS:
         return []
-    codigo, salida, error = _run_script(LIST_SCRIPT, timeout=timeout)
-    if codigo != 0 and not salida.strip():
-        logs.warning(f"PowerShell devolvió {codigo} al listar aplicaciones: {error.strip()[:200]}", None, name="aplicaciones")
-        return []
-    entradas = parse_packages(salida)
+    entradas = list_apps_from_registry()
+    if entradas is None:
+        codigo, salida, error = _run_script(LIST_SCRIPT, timeout=timeout)
+        if codigo != 0 and not salida.strip():
+            logs.warning(f"PowerShell devolvió {codigo} al listar aplicaciones: {error.strip()[:200]}", None, name="aplicaciones")
+            return []
+        entradas = parse_packages(salida)
     if with_size:
         for entrada in entradas:
             entrada.size_bytes = folder_size(entrada.location)
