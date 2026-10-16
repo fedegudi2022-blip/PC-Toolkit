@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 from ..core import apps
 from ..core.config import COLORS, format_bytes, format_integer
 from ..core.undo import UndoStore
-from . import accessibility, icons, workers
+from . import accessibility, theme, workers
 from .widgets import Card, IconBadge, Muted, hline
 
 RISK_COLORS = {
@@ -69,13 +69,15 @@ class AppRow(Card):
         top.addWidget(self.name_label, 1)
 
         self.badge = QLabel(entry.risk_label)
-        self.badge.setStyleSheet(
-            f"color: {RISK_COLORS.get(entry.risk, COLORS['text_muted'])}; font-size: 11.5px; font-weight: 600;"
+        theme.styled(
+            self.badge,
+            "color: {tono}; font-size: 11.5px; font-weight: 600;",
+            tono=RISK_COLORS.get(entry.risk, "text_muted"),
         )
         top.addWidget(self.badge)
 
         self.shield = QLabel()
-        self.shield.setPixmap(icons.pixmap_for("shield", 14, COLORS["warn"]))
+        theme.pixmap(self.shield, "shield", 14, "warn")
         self.shield.setToolTip("Es una pieza del sistema: no se puede quitar")
         self.shield.setVisible(not entry.removable)
         top.addWidget(self.shield)
@@ -286,7 +288,7 @@ class DebloatDialog(QDialog):
     def _resultado(self, mensaje: str, *, color: str | None = None) -> None:
         """Enseña el resultado de la última operación (y lo deja visible)."""
         self.result_label.setText(mensaje)
-        self.result_label.setStyleSheet(f"color: {color or COLORS['text_muted']}; font-size: 12px;")
+        theme.styled(self.result_label, "color: {tono}; font-size: 12px;", tono=color or "text_muted")
         self.result_label.setVisible(bool(mensaje))
 
     def copy_list(self) -> None:

@@ -25,7 +25,7 @@ from ..core import undo as undo_core
 from ..core.config import COLORS
 from . import icons, theme
 from .optimize_page import ElidedLabel, relaunch_elevated
-from .widgets import Card, IconBadge, Muted, PageHeader, SectionTitle, hline
+from .widgets import Card, Chip, IconBadge, Muted, PageHeader, SectionTitle, hline
 from .workers import run_in_background
 
 KIND_ICONS = {
@@ -48,14 +48,9 @@ COST_COLORS = {
 MAX_UNDO_ROWS = 6
 
 
-def pill(text: str, color: str, parent: QWidget | None = None) -> QLabel:
+def pill(text: str, color: str, parent: QWidget | None = None) -> Chip:
     """Etiqueta redondeada y coloreada, como las del registro de tareas."""
-    label = QLabel(text, parent)
-    label.setStyleSheet(
-        f"background: {theme.with_alpha(color, 31)}; color: {color}; border-radius: 9px;"
-        "padding: 2px 8px; font-size: 11px;"
-    )
-    return label
+    return Chip(text, color, parent)
 
 
 class StartupRow(Card):
@@ -112,7 +107,7 @@ class StartupRow(Card):
             meta.addWidget(problem)
         if entry.needs_admin:
             shield = QLabel()
-            shield.setPixmap(icons.pixmap_for("shield", 14, COLORS["warn"]))
+            theme.pixmap(shield, "shield", 14, "warn")
             shield.setToolTip("Es una entrada de todos los usuarios: cambiarla pide permisos de administrador.")
             meta.addWidget(shield)
         meta.addStretch(1)

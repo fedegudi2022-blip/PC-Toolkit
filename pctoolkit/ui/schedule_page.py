@@ -34,8 +34,18 @@ from ..core import scheduler as scheduler_core
 from ..core.config import COLORS, format_bytes
 from ..core.tools import MIN_TEMP_AGE_HOURS
 from ..core.settings import AppSettings
-from . import icons, theme
-from .widgets import Card, IconBadge, Muted, PageHeader, SectionTitle, hline, kv_row
+from . import icons
+from .widgets import (
+    CHIP_ESTADO,
+    Card,
+    Chip,
+    IconBadge,
+    Muted,
+    PageHeader,
+    SectionTitle,
+    hline,
+    kv_row,
+)
 from .workers import run_in_background
 
 STATUS_ROWS = (
@@ -221,7 +231,7 @@ class MaintenanceSchedulePage(QWidget):
         head.addWidget(IconBadge("calendar", 30, 16, COLORS["accent"]))
         head.addWidget(SectionTitle("Estado en Windows"))
         head.addStretch(1)
-        self.state_badge = QLabel("—")
+        self.state_badge = Chip("—", "text_muted", **CHIP_ESTADO)
         self.state_badge.setObjectName("HealthBadge")
         head.addWidget(self.state_badge)
         layout.addLayout(head)
@@ -431,11 +441,7 @@ class MaintenanceSchedulePage(QWidget):
         self._status_loaded = True
         self._status_querying = True
         self.state_badge.setText("Consultando…")
-        self.state_badge.setStyleSheet(
-            f"#HealthBadge {{ background: {theme.with_alpha(COLORS['text_muted'], 34)}; "
-            f"color: {COLORS['text_muted']}; "
-            f"border: 1px solid {theme.with_alpha(COLORS['text_muted'], 85)}; }}"
-        )
+        self.state_badge.set_color("text_muted")
         self.notice_label.setText("Leyendo el Programador de tareas… puede tardar unos segundos.")
         self._set_busy(True, "Consultando el Programador de tareas…")
         run_in_background(self, scheduler_core.task_status, self._after_status)
@@ -459,11 +465,7 @@ class MaintenanceSchedulePage(QWidget):
         for key, _label in STATUS_ROWS:
             self.status_rows[key].setText("—")
         self.state_badge.setText("Sin consultar")
-        self.state_badge.setStyleSheet(
-            f"#HealthBadge {{ background: {theme.with_alpha(COLORS['text_muted'], 34)}; "
-            f"color: {COLORS['text_muted']}; "
-            f"border: 1px solid {theme.with_alpha(COLORS['text_muted'], 85)}; }}"
-        )
+        self.state_badge.set_color("text_muted")
         self.command_label.setText(scheduler_core.command_line(self.schedule))
         self.notice_label.setText(
             "El estado se lee del Programador de tareas al abrir esta página (tarda unos segundos)."
@@ -530,16 +532,13 @@ class MaintenanceSchedulePage(QWidget):
         self.command_label.setText(status.command or scheduler_core.command_line(self.schedule))
 
         if status.exists and status.enabled:
-            text, color = "Programada", COLORS["good"]
+            text, color = "Programada", "good"
         elif status.exists:
-            text, color = "Desactivada", COLORS["warn"]
+            text, color = "Desactivada", "warn"
         else:
-            text, color = "Sin programar", COLORS["text_muted"]
+            text, color = "Sin programar", "text_muted"
         self.state_badge.setText(text)
-        self.state_badge.setStyleSheet(
-            f"#HealthBadge {{ background: {theme.with_alpha(color, 34)}; color: {color}; "
-            f"border: 1px solid {theme.with_alpha(color, 85)}; }}"
-        )
+        self.state_badge.set_color(color)
 
         if not status.exists:
             self.notice_label.setText(

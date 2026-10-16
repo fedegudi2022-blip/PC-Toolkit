@@ -10,11 +10,23 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import (
+    QColor,
+    QIcon,
+    QIconEngine,
+    QImage,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
 
 from ..core.config import COLORS
 
 _CACHE: dict[tuple[str, int, str, float], QIcon] = {}
+# Los motores de los iconos que siguen al tema. El `QIcon` se queda con ellos en C++, pero
+# la parte de Python tiene que seguir viva: sin esto, Qt se quedaría con un objeto recogido.
+_ENGINES: dict[tuple[str, int, str, float], "_PaletteIconEngine"] = {}
 
 # --- Logotipo -------------------------------------------------------------
 # El original (`assets\pc_toolkit_logo.png`, 1024×1024) es la marca de la aplicación y se
@@ -59,13 +71,52 @@ def logo_pixmap(size: int = 64) -> QPixmap | None:
 
 
 def icon(name: str, size: int = 20, color: str | None = None, width: float = 1.6) -> QIcon:
+    """Icono de la interfaz, dibujado con la paleta que esté activa.
+
+    Sin color propio (`color=None`) devuelve un icono que **se dibuja cada vez que se pinta**,
+    así que el mismo objeto que ya está puesto en un botón cambia de color con el tema. Con un
+    color propio se guarda como siempre: ese color no depende del tema (el de encima del
+    acento, por ejemplo, se pide a propósito).
+    """
     key = (name, size, color or "default", width)
     if key in _CACHE:
         return _CACHE[key]
-    pixmap = pixmap_for(name, size, color or COLORS["text_muted"], width)
-    result = QIcon(pixmap)
+    if color is None:
+        engine = _PaletteIconEngine(name, size, width)
+        result = QIcon(engine)
+        _ENGINES[key] = engine
+    else:
+        result = QIcon(pixmap_for(name, size, color, width))
     _CACHE[key] = result
     return result
+
+
+class _PaletteIconEngine(QIconEngine):
+    """Motor que dibuja el icono al pedirlo, con los colores de la paleta de ahora.
+
+    Un `QIcon` normal guarda los píxeles ya pintados: al cambiar de tema se queda con los
+    colores del tema viejo y habría que volver a ponerlo en cada sitio donde se use (menú,
+    barra lateral, botones de cada página…). Este motor no guarda nada: cada vez que alguien
+    pide el mapa de píxeles, lo dibuja con la paleta activa.
+    """
+
+    def __init__(self, name: str, size: int, width: float) -> None:
+        super().__init__()
+        self._name = name
+        self._size = size
+        self._width = width
+
+    def _dibujar(self) -> QPixmap:
+        return pixmap_for(self._name, self._size, None, self._width)
+
+    def paint(self, painter, rect, mode, state) -> None:  # noqa: N802 (Qt)
+        painter.drawPixmap(rect, self._dibujar())
+
+    def pixmap(self, size, mode, state) -> QPixmap:  # noqa: N802 (Qt)
+        return self._dibujar()
+
+    def clone(self) -> QIconEngine:  # noqa: N802 (Qt)
+        return _PaletteIconEngine(self._name, self._size, self._width)
 
 
 def icon_from_pixmap(pixmap: QPixmap) -> QIcon:
@@ -337,6 +388,25 @@ def _draw_power(p: QPainter, s: float) -> None:
     p.drawLine(QPointF(0.5 * s, 0.16 * s), QPointF(0.5 * s, 0.5 * s))
 
 
+def _draw_theme(p: QPainter, s: float) -> None:
+    """Círculo con media luna rellena: el tema claro y el oscuro en el mismo icono."""
+    p.drawEllipse(QPointF(0.5 * s, 0.5 * s), 0.26 * s, 0.26 * s)
+    path = QPainterPath()
+    path.moveTo(0.5 * s, 0.24 * s)
+    path.arcTo(_rect(s, 0.24, 0.24, 0.52, 0.52), 90, 180)
+    path.closeSubpath()
+    p.setBrush(p.pen().color())
+    p.drawPath(path)
+
+
+def _draw_window(p: QPainter, s: float) -> None:
+    """Ventana con su barra de título: tamaño, sitio y maximizar."""
+    p.drawRoundedRect(_rect(s, 0.2, 0.26, 0.6, 0.48), 3, 3)
+    p.drawLine(QPointF(0.2 * s, 0.4 * s), QPointF(0.8 * s, 0.4 * s))
+    p.drawPoint(QPointF(0.29 * s, 0.34 * s))
+    p.drawPoint(QPointF(0.38 * s, 0.34 * s))
+
+
 def _draw_check(p: QPainter, s: float) -> None:
     p.drawLine(QPointF(0.28 * s, 0.52 * s), QPointF(0.44 * s, 0.68 * s))
     p.drawLine(QPointF(0.44 * s, 0.68 * s), QPointF(0.74 * s, 0.32 * s))
@@ -390,6 +460,8 @@ _DRAWERS = {
     "temp": _draw_temp,
     "power": _draw_power,
     "heart": _draw_heart,
+    "theme": _draw_theme,
+    "window": _draw_window,
     "check": _draw_check,
     "arrow": _draw_arrow,
     "up": _draw_up,

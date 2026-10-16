@@ -33,7 +33,7 @@ from ..core import plugins as plugins_core
 from ..core import windows_settings as tweaks
 from ..core.config import COLORS, format_integer
 from ..core.undo import UndoStore
-from . import accessibility, icons
+from . import accessibility, theme
 from .debloat import DebloatDialog
 from .plugins_ui import PluginsDialog
 from .widgets import Card, IconBadge, Muted, PageHeader, SectionTitle, hline
@@ -127,7 +127,7 @@ class SettingRow(Card):
         top.addWidget(self.risk_label)
 
         self.admin_label = QLabel()
-        self.admin_label.setPixmap(icons.pixmap_for("shield", 14, COLORS["warn"]))
+        theme.pixmap(self.admin_label, "shield", 14, "warn")
         self.admin_label.setToolTip("Este ajuste toca HKEY_LOCAL_MACHINE y necesita permisos de administrador")
         self.admin_label.setVisible(False)
         top.addWidget(self.admin_label)

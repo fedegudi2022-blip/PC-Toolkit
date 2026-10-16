@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 
 from ..core import plugins, windows_settings as tweaks
 from ..core.config import COLORS
-from . import accessibility, icons
+from . import accessibility, icons, theme
 from .widgets import Card, IconBadge, Muted, SectionTitle, hline
 
 RISK_COLORS = {
@@ -98,7 +98,7 @@ class PluginCard(Card):
                 + ". Revísalos uno a uno antes de aceptar."
             )
             aviso.setWordWrap(True)
-            aviso.setStyleSheet(f"color: {COLORS['bad']}; font-size: 12px;")
+            theme.styled(aviso, "color: {bad}; font-size: 12px;")
             layout.addWidget(aviso)
 
         if info.path is not None:
@@ -115,7 +115,11 @@ class PluginCard(Card):
             nombre.setWordWrap(True)
             linea.addWidget(nombre, 1)
             riesgo = QLabel(f"{setting.risk_label}" + (" · administrador" if setting.needs_admin else ""))
-            riesgo.setStyleSheet(f"color: {RISK_COLORS.get(setting.risk, COLORS['text_muted'])}; font-size: 11.5px;")
+            theme.styled(
+                riesgo,
+                "color: {tono}; font-size: 11.5px;",
+                tono=RISK_COLORS.get(setting.risk, "text_muted"),
+            )
             linea.addWidget(riesgo)
             layout.addLayout(linea)
             claves = QLabel("\n".join(f"• {linea_clave}" for linea_clave in setting.registry_lines) or "sin claves")
@@ -281,7 +285,7 @@ class PluginsDialog(QDialog):
             for archivo, motivo in resultado.errors:
                 linea = QLabel(f"• {archivo}: {motivo}")
                 linea.setWordWrap(True)
-                linea.setStyleSheet(f"color: {COLORS['bad']}; font-size: 12px;")
+                theme.styled(linea, "color: {bad}; font-size: 12px;")
                 errores_layout.addWidget(linea)
             self.rows_layout.insertWidget(self.rows_layout.count() - 1, errores)
 

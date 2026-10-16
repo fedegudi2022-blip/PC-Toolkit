@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.config import APP_NAME, COLORS, SURFACES, health_color
-from . import accessibility, icons
+from . import accessibility, icons, theme
 
 
 def make_shadow(widget: QWidget, blur: int = 28, color: str | None = None, alpha: int = 110, dy: int = 8) -> None:
@@ -67,7 +67,14 @@ class Card(QFrame):
 
 
 class IconBadge(QLabel):
-    """Cuadrado redondeado con un icono vectorial."""
+    """Cuadrado redondeado con un icono vectorial.
+
+    El dibujo sigue a la paleta: si el color con el que se pidió era un tono de la paleta, al
+    cambiar de tema se vuelve a dibujar con el mismo papel en la paleta nueva (una insignia en
+    `text_muted` oscuro sigue siendo `text_muted` en claro). Sin esto, el mapa de píxeles ya
+    pintado se quedaba con los colores del tema viejo y era justo lo que obligaba a rehacer la
+    ventana al cambiar entre claro y oscuro.
+    """
 
     def __init__(
         self,
@@ -79,7 +86,7 @@ class IconBadge(QLabel):
     ) -> None:
         super().__init__(parent)
         self.setFixedSize(size, size)
-        self.setPixmap(icons.pixmap_for(name, icon_size, color or COLORS["text_muted"]))
+        theme.pixmap(self, name, icon_size, color)
 
 
 class BrandLogo(QLabel):
@@ -96,7 +103,7 @@ class BrandLogo(QLabel):
         self.setFixedSize(size, size)
         logotipo = icons.logo_pixmap(size)
         if logotipo is None:
-            self.setPixmap(icons.pixmap_for("cpu", max(16, size // 2), COLORS["accent"]))
+            theme.pixmap(self, "cpu", max(16, size // 2), "accent")
         else:
             self.setPixmap(logotipo)
         accessibility.mark(self, QAccessible.Role.Graphic, name or APP_NAME)
@@ -115,6 +122,38 @@ class Muted(QLabel):
     def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
         super().__init__(text, parent)
         self.setObjectName("Muted")
+
+
+# Apariencia de las chapas de estado que llevan relleno y borde del mismo tono (las del panel
+# y las del mantenimiento programado): son las medidas de la regla `#HealthBadge` de la hoja
+# de estilos, puestas aquí para que la etiqueta siga al tema en vez de quedarse con el color.
+CHIP_ESTADO = {"alpha": 34, "borde": 85, "radio": 10, "relleno": "3px 10px"}
+
+
+class Chip(QLabel):
+    """Etiqueta redondeada del color de un estado (categoría, vencida, programada…).
+
+    El color se da como clave de la paleta o como tono ya resuelto y la etiqueta lo sigue al
+    cambiar de tema, que es lo que hace que un chip creado al abrir la página siga teniendo
+    sentido en el tema nuevo.
+    """
+
+    def __init__(
+        self,
+        text: str = "",
+        color: str | None = None,
+        parent: QWidget | None = None,
+        **apariencia,
+    ) -> None:
+        super().__init__(text, parent)
+        self.setWordWrap(False)
+        self.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        self._apariencia = apariencia
+        theme.chip(self, color or "text_muted", **apariencia)
+
+    def set_color(self, color: str | None) -> None:
+        """Cambia el tono del chip; el texto y la visibilidad los pone quien lo usa."""
+        theme.chip(self, color or "text_muted", **self._apariencia)
 
 
 class PageHeader(QWidget):
@@ -485,7 +524,7 @@ class BarRow(QWidget):
         from ..core.config import format_bytes
 
         size = QLabel(format_bytes(getattr(node, "size", 0)))
-        size.setStyleSheet(f"font-size: 12.5px; font-weight: 600; color: {COLORS['text']};")
+        theme.styled(size, "font-size: 12.5px; font-weight: 600; color: {text};")
         header.addWidget(size)
         layout.addLayout(header)
 
@@ -578,9 +617,16 @@ class ActionCard(Card):
 
 
 def hline() -> QFrame:
+    """Separador de una línea, del tono del borde de la paleta activa.
+
+    Va por `theme.styled` y no con el color ya resuelto: los separadores son de los primeros
+    widgets que se construyen y hay decenas repartidos por todas las páginas. Con el color
+    escrito en el estilo, al cambiar de tema se quedaban con el borde del tema anterior (en
+    claro, un hilo casi blanco sobre fondo blanco: invisible).
+    """
     line = QFrame()
     line.setFixedHeight(1)
-    line.setStyleSheet(f"background: {COLORS['border_soft']}; border: none;")
+    theme.styled(line, "background: {border_soft}; border: none;")
     return line
 
 

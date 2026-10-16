@@ -136,39 +136,13 @@ jobs:
       - name: Comprobaciones automáticas
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Continue'
-          $registro = Join-Path $env:RUNNER_TEMP 'suite.log'
-          python -u tests/smoke_test.py 2>&1 | Tee-Object -FilePath $registro
-          $codigo = $LASTEXITCODE
-          if ($codigo -eq 0) { exit 0 }
-
-          $destacadas = @(
-            Select-String -Path $registro -Pattern '\[FALLO\]|Traceback|Fatal' -ErrorAction SilentlyContinue |
-              Select-Object -First 30 | ForEach-Object { $_.Line.Trim() } | Where-Object { $_ }
-          )
-          if (-not $destacadas) {
-            $destacadas = @(Get-Content -LiteralPath $registro -Tail 10 -ErrorAction SilentlyContinue) |
-              ForEach-Object { $_.Trim() } | Where-Object { $_ }
-          }
-          $cierre = @(
-            Select-String -Path $registro -Pattern '^\d+/\d+ comprobaciones|^Fallos: ' -ErrorAction SilentlyContinue |
-              ForEach-Object { $_.Line.Trim() }
-          )
-          $textos = @($cierre + $destacadas) | Select-Object -Unique | Select-Object -First 40
-
-          '### Fallos de la suite' | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
-          $textos | ForEach-Object { '- ' + $_ } | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
-          foreach ($linea in $textos) {
-            $texto = $linea -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
-            Write-Host "::error title=Fallo de la suite::$texto"
-          }
-          if (Test-Path $registro) {
-            $cuerpo = @('', '<details><summary>Las comprobaciones de esta pasada</summary>', '', '```')
-            $cuerpo += @(Get-Content -LiteralPath $registro -Encoding utf8)
-            $cuerpo += @('```', '</details>')
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ($cuerpo -join "`n") -Encoding utf8
-          }
-          exit $codigo
+          # Quién pasa la suite, quién cuenta los fallos y cuándo se repite vive en
+          # `tools\pasada_de_la_suite.ps1`: un fallo con informe se cuenta tal cual y una
+          # muerte sin informe se vuelve a intentar (hasta tres veces), porque repetir la
+          # comprobación no gasta ninguna versión —la etiqueta, los ejecutables y los hashes
+          # ya están hechos—. El paso solo tiene que no morirse con ella.
+          pwsh -NoProfile -File tools/pasada_de_la_suite.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Comprobar que el paquete se instala y se desinstala
         shell: pwsh

@@ -249,6 +249,18 @@ temporales del usuario, que es lo que la aplicación limpiaba siempre.
   muestre un error del programa justo al cerrarlo.
 - Los **avisos propios** de la portada son otra cosa (apartado 3.13): estos saltan con el umbral en
   el momento, y aquellos cuentan la tendencia y se descartan.
+- Todo esto se ajusta en **Ajustes y alertas** (`Ctrl+9`), que enseña al lado de cada umbral lo que
+  marca el equipo **en ese momento** (la última muestra que ya tiene la ventana) y lo pone en ámbar
+  cuando el equipo ya lo supera: un «90 %» sin saber que la CPU está al 42 % no dice si el aviso
+  llegará pronto o nunca. El diálogo tiene barra lateral con cinco secciones, un buscador que dice en
+  qué secciones están las coincidencias (Ctrl+F), un botón para volver a los **valores
+  recomendados** —sin guardar, se confirma con «Guardar»— y un aviso en el pie cuando hay cambios sin
+  guardar.
+- La ventana **recuerda su tamaño, su sitio, la pantalla y si estaba maximizada**: se apunta al
+  cerrar (`saveGeometry`, en base64 dentro de las preferencias) y se recupera al abrir, así que se
+  abre donde se dejó y una ventana maximizada vuelve maximizada. Si nunca se ha guardado nada —o se
+  pide «Abrir con el tamaño de fábrica» desde Apariencia— se usa el tamaño de siempre (1360x860),
+  recortado si la pantalla es más pequeña.
 - El **historial** guarda una muestra cada 30 s (configurable) en JSON Lines y conserva 24 horas; en
   Inicio se dibuja con una línea por métrica —CPU, memoria, disco y **tarjeta gráfica**—, leyenda para
   ocultar series y cursor con los valores exactos de cada instante. La tarjeta gráfica es la única que
@@ -620,10 +632,22 @@ aplicación seguiría pintando con la paleta vieja.
 
 El cambio se hace en **Ajustes y alertas → Apariencia**, y la propia ventana explica en una línea
 qué supone la opción elegida *según cómo esté Windows ahora mismo* («Se usa el mismo modo que
-Windows, que ahora mismo está en oscuro»). Al guardar, la paleta se aplica y **la ventana se vuelve
-a montar**: los colores se leen al construir cada widget (iconos, gráficos, estilos en línea,
-gráficas), así que rehacerla es más fiable que repintar cientos de detalles a mano. La ventana nueva
-hereda tamaño, posición y visibilidad, y la anterior se cierra de verdad (no se queda en la bandeja).
+Windows, que ahora mismo está en oscuro»). Al guardar, la paleta se aplica **sobre la ventana que ya
+está abierta**, sin montarla de nuevo: `apply_theme` rehace la paleta de Qt y la hoja QSS entera, y
+`theme.repaint()` vuelve a pintar lo que se había quedado con un color ya resuelto —separadores,
+barra lateral, insignias de icono, chips de estado, el icono de la ventana— mientras que los iconos
+de la interfaz se dibujan **al pedirlos** (`icons.icon` sin color propio devuelve un `QIcon` con un
+motor que pinta con la paleta activa cada vez que alguien lo pide, así que el mismo objeto puesto en
+un botón cambia de color solo). Antes la ventana se volvía a montar entera —los colores se leen al
+construir cada widget, así que era lo más simple— y se notaba: parpadeo, foco perdido y un segundo
+icono en la bandeja mientras la vieja se cerraba.
+
+Ese repintado no deja nada colgando: `theme` guarda por widget una **receta de datos** (tipo y
+valores: nada que se quede el widget) junto a una referencia débil, y `repaint()` va olvidando los
+widgets que ya no existen. Un color pedido con su clave (`"warn"`) se busca en la paleta activa; uno
+pedido ya resuelto (el que había al construir el widget) se traduce con una tabla que conoce **las
+dos** paletas, que es lo que permite seguir pintando bien aunque el widget se construyera en el tema
+anterior.
 
 Con `--tema claro|oscuro|auto` se fuerza el tema **solo para esa ejecución**, sin tocar lo guardado:
 es la forma de probarlo o de generar documentación reproducible.
@@ -885,7 +909,7 @@ pctoolkit/
                                 GPU (`gpu_monitor.py`), controlador de los avisos (`insights.py`),
                                 ventana de limpieza (`clean.py`), bandeja, ventana principal y una
                                 página por módulo
-tests/smoke_test.py             981 comprobaciones automáticas (núcleo, interfaz, instalador,
+tests/smoke_test.py             999 comprobaciones automáticas (núcleo, interfaz, instalador,
                                 firma, dependencias, logotipo, actualizaciones, ajustes de Windows,
                                 aplicaciones preinstaladas, plugins, limpieza, limpieza programada y
                                 avisos)
@@ -979,7 +1003,7 @@ de instalar, ejecutar y desinstalar.
 Pruebas:
 
 ```bat
-.venv\Scripts\python.exe tests\smoke_test.py            981 comprobaciones
+.venv\Scripts\python.exe tests\smoke_test.py            999 comprobaciones
 .venv\Scripts\python.exe tools\verificar_instalacion.py  Instala de verdad y desinstala al terminar
 .venv\Scripts\python.exe tests\documentacion.py         Solo las guardas de documentación
 .venv\Scripts\python.exe tests\smoke_test.py --sin-documentacion   Sin las guardas de documentación
@@ -993,7 +1017,7 @@ pruebas de código: así una captura todavía por rehacer no bloquea la comproba
 comprueba únicamente cuando se ejecutan como última parte de la suite.
 
 El total depende del equipo: unas pocas comprobaciones solo se hacen si el sistema tiene bandeja,
-si hay `signtool` disponible o si `dist\` ya está compilado. Con la plataforma real de Qt salen 981;
+si hay `signtool` disponible o si `dist\` ya está compilado. Con la plataforma real de Qt salen 999;
 en modo sin pantalla son unas cuantas menos, porque las que necesitan una bandeja de verdad no se
 ejecutan (la comprobación de que la bandeja solo se usa si el sistema la tiene sí se hace siempre).
 
@@ -1042,6 +1066,16 @@ Publicar es empujar la rama y la etiqueta con el mismo número:
 git push origin main
 git push origin v1.4.1
 ```
+
+El flujo pasa la suite con `tools\pasada_de_la_suite.ps1`, el mismo lanzador que usa el flujo de
+integración (antes el código estaba escrito entero en cada uno, y una mejora en uno no llegaba al
+otro). Lo que decide qué se repite es lo que dejó la pasada: si el proceso se **muere sin dar su
+informe** —un cierre duro, una excepción del sistema—, la vuelve a lanzar hasta tres veces, porque
+repetirla **no gasta ninguna versión**: la etiqueta, los ejecutables y los SHA-256 ya están hechos y
+siguen siendo los mismos. Un fallo **con informe** se cuenta tal cual y no se repite, que repetirlo no
+arreglaría nada. Entre intentos se recogen las tareas del Programador y los procesos de la aplicación
+que dejó a medias la pasada interrumpida, y esa limpieza solo se hace en el servidor
+(`GITHUB_ACTIONS`): en un equipo de verdad no se toca nada de nadie.
 
 Antes del día del estreno conviene **ensayarlo**: en «Actions → Publicar la versión (Windows) → Run
 workflow» se lanza el mismo flujo a mano, con una etiqueta de prueba (`v1.4.1-ensayo` si no se dice

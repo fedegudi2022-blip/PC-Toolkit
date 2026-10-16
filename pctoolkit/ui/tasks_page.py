@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 from ..core.config import COLORS
 from ..core.tasks import PRIORITIES, STATUS_DONE, TASK_CATEGORIES, TEMPLATES, MaintenanceTask
 from . import icons, theme
-from .widgets import Card, IconBadge, Muted, PageHeader, SectionTitle, hline
+from .widgets import Card, Chip, IconBadge, Muted, PageHeader, SectionTitle, hline
 
 PRIORITY_COLORS = {"Alta": COLORS["bad"], "Normal": COLORS["accent"], "Baja": COLORS["text_muted"]}
 
@@ -137,16 +137,16 @@ class TaskRow(Card):
         self.check_button.setObjectName("CheckRound")
         color = COLORS["good"] if task.is_done else COLORS["text_dim"]
         self.check_button.setIcon(icons.icon("check", 16, color))
-        self.check_button.setStyleSheet(
-            "QPushButton { border: 1px solid %s; border-radius: 15px; background: %s; }"
-            "QPushButton:hover { border-color: %s; }"
-            % (
-                COLORS["good"] if task.is_done else COLORS["border"],
-                # El ayudante escribe `rgba(...)`: pegar `22` al hexadecimal no vale,
-                # porque Qt lee los ocho dígitos como `#AARRGGBB`.
-                theme.with_alpha(COLORS["good"], 34) if task.is_done else "transparent",
-                COLORS["good"],
-            )
+        # El relleno del botón marcado sale del mismo verde con transparencia y se recalcula
+        # al cambiar de tema: con el color ya resuelto, la fila se quedaba con el verde del
+        # tema anterior sobre el fondo del nuevo.
+        theme.styled(
+            self.check_button,
+            "QPushButton {{ border: 1px solid {borde}; border-radius: 15px; background: {fondo}; }}"
+            "QPushButton:hover {{ border-color: {acento}; }}",
+            borde=COLORS["good"] if task.is_done else "border",
+            fondo=theme.alpha_de("good", 34) if task.is_done else "transparent",
+            acento="good",
         )
         self.check_button.setToolTip("Marcar como pendiente" if task.is_done else "Marcar como completada")
         self.check_button.clicked.connect(lambda: self.toggled.emit(task.id))
@@ -206,13 +206,8 @@ class TaskRow(Card):
         actions.addWidget(remove)
         layout.addLayout(actions, 0)
 
-    def _pill(self, text: str, color: str) -> QLabel:
-        label = QLabel(text)
-        label.setStyleSheet(
-            f"background: {theme.with_alpha(color, 31)}; color: {color}; border-radius: 9px;"
-            f"padding: 2px 8px; font-size: 11px;"
-        )
-        return label
+    def _pill(self, text: str, color: str) -> Chip:
+        return Chip(text, color)
 
 
 class TaskStat(Card):

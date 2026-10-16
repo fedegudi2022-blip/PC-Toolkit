@@ -13,10 +13,49 @@ al importar el módulo, que es lo que permite cambiar de tema en caliente.
 
 from __future__ import annotations
 
+import weakref
+from typing import Any
+
 from PySide6.QtGui import QColor, QFont, QPalette
 
 from ..core.appearance import MODE_AUTO, resolve_mode
-from ..core.config import COLORS, SURFACES, active_palette, data_dir, use_palette
+from ..core.config import (
+    COLORS,
+    DARK_COLORS,
+    DARK_SURFACES,
+    LIGHT_COLORS,
+    LIGHT_SURFACES,
+    SURFACES,
+    active_palette,
+    data_dir,
+    use_palette,
+)
+
+# Lo que hay que volver a aplicar cuando cambia el tema, por widget. Cada entrada es una
+# **receta de datos** —tipo y valores—, nunca una función que se guarde el widget: una función
+# así lo mantendría vivo para siempre y el diccionario no soltaría nada. Con datos sueltos,
+# la única referencia al widget es débil y lo que ya no existe se olvida en `repaint`.
+#
+# Va por `id` del widget porque el mismo sitio se repinta muchas veces —un mensaje de estado
+# cambia de tono a cada rato—: se queda la última receta y no una lista que crezca.
+_POR_REPINTAR: dict[int, tuple[weakref.ref, str, tuple[Any, ...]]] = {}
+
+# Qué clave de la paleta dio cada color. Se llena con **las dos** paletas, no con la activa:
+# quien construyó un widget con `COLORS["warn"]` ya tiene el tono resuelto del tema de
+# entonces, y ese valor hay que poder reconocer también cuando ya se cambió de tema.
+_CLAVES: dict[str, str] = {}
+
+
+def _mapa_de_claves() -> dict[str, str]:
+    mapa: dict[str, str] = {}
+    for origen in (DARK_COLORS, LIGHT_COLORS, DARK_SURFACES, LIGHT_SURFACES):
+        for clave, color in origen.items():
+            if isinstance(color, str) and color.startswith("#"):
+                mapa[color.upper()] = clave
+    return mapa
+
+
+_CLAVES = _mapa_de_claves()
 
 
 def apply_theme(app, mode: str = MODE_AUTO) -> str:
@@ -32,6 +71,205 @@ def apply_theme(app, mode: str = MODE_AUTO) -> str:
     app.setFont(font)
     app.setStyleSheet(stylesheet())
     return palette
+
+
+def follow(color: str | None) -> str | None:
+    """El mismo color, pero de la paleta de ahora.
+
+    Un sitio que ya tenía resuelto el color —el tono de una insignia, el de un chip— necesita
+    esta traducción para seguir al tema: se mira de qué clave salió y se devuelve la de la
+    paleta activa. Si el color no era de la paleta (uno escrito a mano), se devuelve tal cual.
+    """
+    if not color:
+        return color
+    clave = _CLAVES.get(str(color).upper())
+    return COLORS.get(clave, SURFACES.get(clave, color)) if clave else color
+
+
+def styled(widget, plantilla: str, **valores) -> None:
+    """Pinta un widget con un estilo que sigue a la paleta activa.
+
+    `plantilla` se escribe como la hoja QSS: las claves de la paleta van entre llaves
+    (`"color: {warn}; font-size: 12px;"`) y se rellenan **en cada aplicación**, no al llamar.
+    Los `valores` extra son para lo que elige quien llama —el tono de un mensaje de estado,
+    por ejemplo— y pueden darse de las dos maneras: como clave de la paleta (`tono="warn"`) o
+    con el color ya resuelto (`tono=COLORS["good"]`). En los dos casos el valor se vuelve a
+    resolver en cada aplicación, que es lo que hace que siga al tema.
+
+    Se apunta el estilo para que `repaint` lo vuelva a aplicar cuando cambie el tema: un
+    `setStyleSheet` con el color ya resuelto se queda con los colores del tema viejo, que es
+    justo lo que obligaba a rehacer la ventana entera al cambiar entre claro y oscuro.
+    """
+    _apuntar(widget, "estilo", (plantilla, dict(valores)))
+
+
+def pixmap(widget, name: str, size: int = 18, color: str | None = None) -> None:
+    """Dibuja un icono en una etiqueta y lo deja siguiendo a la paleta.
+
+    Es para lo que no se puede escribir como plantilla: un mapa de píxeles ya dibujado (la
+    insignia de una tarjeta, un escudo de aviso). Con el color sin resolver —una clave de
+    `COLORS` o directamente nada— el dibujo se rehace con la paleta nueva al cambiar de tema.
+    """
+    _apuntar(widget, "pixmap", (name, size, color))
+
+
+def window_icon(widget, name: str, size: int = 64, color: str | None = None) -> None:
+    """Pone el icono de la ventana (el de la barra de tareas) siguiendo a la paleta.
+
+    La ventana no se rehace al cambiar de tema, así que su icono es el único que Qt no vuelve a
+    pedir: si se dejara el mapa de píxeles del tema anterior, la barra de tareas conservaría el
+    glifo viejo hasta cerrar el programa.
+    """
+    _apuntar(widget, "ventana", (name, size, color))
+
+
+def chip(
+    widget,
+    color: str,
+    *,
+    alpha: int = 31,
+    borde: int = 0,
+    radio: int = 9,
+    fuente: float = 11,
+    relleno: str = "2px 8px",
+) -> None:
+    """Etiqueta redondeada del color de un estado (una «píldora»), siguiendo a la paleta.
+
+    El relleno y el borde salen del mismo color con transparencia, y se calculan **en cada
+    aplicación**: con el tono ya resuelto al construir la etiqueta, al cambiar de tema quedaba
+    un fondo tintado con el tono del tema viejo sobre la tarjeta nueva (en claro, un ámbar
+    oscuro sobre blanco).
+    """
+    _apuntar(widget, "chip", (color, alpha, borde, radio, fuente, relleno))
+
+
+def dot(widget, color: str, size: int = 8) -> None:
+    """Pinta el punto de color de una serie en una etiqueta, siguiendo a la paleta."""
+    _apuntar(widget, "punto", (color, size))
+
+
+def dot_icon(widget, color: str, size: int = 9) -> None:
+    """Pone el punto de color de una leyenda como icono, siguiendo a la paleta.
+
+    El punto es del color de su serie (acento, verde, ámbar o rojo), así que el mapa de
+    píxeles se vuelve a dibujar al cambiar de tema, igual que los demás dibujos a mano.
+    """
+    _apuntar(widget, "punto_icono", (color, size))
+
+
+def alpha_de(color: str, alpha: int) -> tuple[str, str, int]:
+    """Valor para `styled`: el color pedido con transparencia, resuelto en cada tema.
+
+    Se usa donde el fondo sale del mismo color con alfa (una píldora, un botón marcado) y hay
+    que recalcularlo al cambiar de paleta. Es un dato —una tupla— y no una función, para que
+    la receta siga sin poder quedarse con ningún widget.
+    """
+    return ("alpha", color, alpha)
+
+
+def _resolver(valor):
+    """Deja un color de la paleta como el tono que le toca en el tema de ahora.
+
+    Acepta las dos formas en que se pide un color por aquí: la clave (`"warn"`) y el valor ya
+    resuelto (`COLORS["warn"]`, el que había al construir el widget). Lo que no sea un color
+    de la paleta se devuelve tal cual, así que un tamaño de letra o un grosor pasan de largo.
+    """
+    if isinstance(valor, tuple) and len(valor) == 3 and valor[0] == "alpha":
+        return with_alpha(_tono(valor[1]), int(valor[2]))
+    if not isinstance(valor, str):
+        return valor
+    return follow(COLORS.get(valor, SURFACES.get(valor, valor)))
+
+
+def _tono(color, por_defecto: str = "text_muted") -> str:
+    """Un tono de la paleta, venga como clave (`"warn"`) o ya resuelto (`COLORS["warn"]`).
+
+    Lo que no sea un color válido cae al tono por defecto: es lo que evita que una clave escrita
+    a mano (`"warn"`) llegue a `QColor` y deje el dibujo en blanco —un `QPen` con un color
+    inválido no pinta nada, y eso no se ve como un error, se ve como un hueco.
+    """
+    resuelto = _resolver(color) if color else COLORS.get(por_defecto, COLORS["text_muted"])
+    if not isinstance(resuelto, str) or not QColor(resuelto).isValid():
+        return COLORS.get(por_defecto, COLORS["text_muted"])
+    return resuelto
+
+
+def _apuntar(widget, tipo: str, datos: tuple[Any, ...]) -> None:
+    """Deja la receta apuntada y la aplica ya (la primera vez es la del constructor)."""
+    try:
+        referencia = weakref.ref(widget)
+    except TypeError:  # pragma: no cover - un objeto de Qt que no admite referencias débiles
+        return
+    _POR_REPINTAR[id(widget)] = (referencia, tipo, datos)
+    _aplicar(widget, tipo, datos)
+
+
+def _aplicar(widget, tipo: str, datos: tuple[Any, ...]) -> None:
+    """Pinta una receta sobre el widget vivo. Nunca deja escapar el error de un widget muerto."""
+    try:
+        if tipo == "estilo":
+            plantilla, valores = datos
+            completos: dict[str, Any] = {**COLORS, **SURFACES, **valores}
+            for clave, valor in valores.items():
+                completos[clave] = _resolver(valor)
+            widget.setStyleSheet(plantilla.format_map(completos))
+        elif tipo == "pixmap":
+            from .icons import pixmap_for
+
+            name, size, color = datos
+            # Sin color propio se deja en `None`: el icono elige entonces el tono por defecto
+            # al dibujarse, que es lo que hace que el mismo dibujo valga para los dos temas.
+            widget.setPixmap(pixmap_for(name, size, _tono(color) if color else None))
+        elif tipo == "ventana":
+            from .icons import icon_from_pixmap, pixmap_for
+
+            name, size, color = datos
+            widget.setWindowIcon(icon_from_pixmap(pixmap_for(name, size, _tono(color, "accent"))))
+        elif tipo == "chip":
+            color, alpha, borde, radio, fuente, relleno = datos
+            tono = _tono(color)
+            partes = [
+                f"background: {with_alpha(tono, alpha)};",
+                f"color: {tono};",
+                f"border-radius: {radio}px;",
+                f"padding: {relleno};",
+                f"font-size: {fuente}px;",
+            ]
+            if borde:
+                partes.append(f"border: 1px solid {with_alpha(tono, borde)};")
+            widget.setStyleSheet(" ".join(partes))
+        elif tipo == "punto":
+            from .icons import dot_pixmap
+
+            color, size = datos
+            widget.setPixmap(dot_pixmap(_tono(color, "accent"), size))
+        elif tipo == "punto_icono":
+            from .icons import dot_pixmap, icon_from_pixmap
+
+            color, size = datos
+            widget.setIcon(icon_from_pixmap(dot_pixmap(_tono(color, "accent"), size)))
+    except RuntimeError:
+        return  # el widget ya no existe: Qt destruyó su parte de C++
+
+
+def repaint() -> int:
+    """Vuelve a pintar la interfaz que ya está abierta con la paleta activa.
+
+    Devuelve cuántos widgets se repintaron. Se llama justo después de `apply_theme` (que ya
+    rehace la paleta de la aplicación y la hoja QSS entera) y es lo que deja el tema nuevo
+    aplicado **sin rehacer la ventana**: los iconos se dibujan al pedirlos, lo que llevaba el
+    color ya resuelto se vuelve a resolver aquí y lo que se pinta solo —arcos, medidores,
+    gráficas— lee la paleta al pintarse. De paso se olvidan los widgets que ya no existen.
+    """
+    hechos = 0
+    for clave, (referencia, tipo, datos) in list(_POR_REPINTAR.items()):
+        destino = referencia()
+        if destino is None:
+            del _POR_REPINTAR[clave]
+            continue
+        _aplicar(destino, tipo, datos)
+        hechos += 1
+    return hechos
 
 
 def stylesheet() -> str:

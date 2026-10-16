@@ -69,66 +69,13 @@ jobs:
       - name: Comprobaciones automáticas (sin firma)
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Continue'
-          $registro = Join-Path $env:RUNNER_TEMP 'suite.log'
-
-          # La suite se ejecuta sin búfer (`-u`): si el proceso se muere a mitad, en el registro
-          # queda dicho todo lo que había contado hasta ese momento, en vez de perderse el
-          # último bloque dentro del búfer del proceso.
-          python -u tests/smoke_test.py 2>&1 | Tee-Object -FilePath $registro
-          $codigo = $LASTEXITCODE
-
-          # En una pasada correcta no se anota nada. La suite habla de «errores» que provoca a
-          # propósito —un lanzador que falla, un registro sin errores de lectura, una firma de
-          # prueba—, así que esas líneas no se toman por fallos: solo se mira el registro cuando
-          # el código de salida dice que algo ha ido mal.
-          if ($codigo -eq 0) { exit 0 }
-
-          # La suite imprime el resultado de todas las comprobaciones al final, así que un cierre
-          # duro a mitad —una excepción del sistema, un proceso que se va sin decir por qué—
-          # deja el registro sin ningún `[FALLO]` y el trabajo falla mudo. Se buscan las líneas
-          # de fallo y las excepciones; si no hay ninguna, las últimas líneas del registro, que
-          # son las que dicen por dónde iba. Y siempre el cierre del recuento, que es el titular.
-          $destacadas = @(
-            Select-String -Path $registro -Pattern '\[FALLO\]|Traceback|Fatal' -ErrorAction SilentlyContinue |
-              Select-Object -First 30 | ForEach-Object { $_.Line.Trim() } | Where-Object { $_ }
-          )
-          if (-not $destacadas) {
-            $destacadas = @(Get-Content -LiteralPath $registro -Tail 10 -ErrorAction SilentlyContinue) |
-              ForEach-Object { $_.Trim() } | Where-Object { $_ }
-          }
-          $cierre = @(
-            Select-String -Path $registro -Pattern '^\d+/\d+ comprobaciones|^Fallos: ' -ErrorAction SilentlyContinue |
-              ForEach-Object { $_.Line.Trim() }
-          )
-          $textos = @($cierre + $destacadas) | Select-Object -Unique | Select-Object -First 40
-
-          if ($textos.Count -eq 0) {
-            '### La suite falló sin dejar ni una línea de salida' |
-              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
-            Write-Host '::error title=Fallo de la suite::El registro quedó vacío: la suite no llegó a escribir nada.'
-          }
-          if ($textos) {
-            '### Fallos de la suite' | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
-            $textos | ForEach-Object { '- ' + $_ } | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
-            foreach ($linea in $textos) {
-              $texto = $linea -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
-              Write-Host "::error title=Fallo de la suite::$texto"
-            }
-          }
-
-          # El informe entero, plegado al final del resumen: en un servidor el registro no se
-          # puede abrir desde otro equipo (GitHub pide sesión hasta en un repositorio público),
-          # y hay fallos que solo se ven con la lista completa delante. El caso que lo trajo
-          # aquí: la guarda de recuentos dice cuántas comprobaciones salieron, pero para saber
-          # **cuál** falta hace falta comparar esta lista con la de un equipo completo.
-          if (Test-Path $registro) {
-            $cuerpo = @('', '<details><summary>Las comprobaciones de esta pasada</summary>', '', '```')
-            $cuerpo += @(Get-Content -LiteralPath $registro -Encoding utf8)
-            $cuerpo += @('```', '</details>')
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ($cuerpo -join "`n") -Encoding utf8
-          }
-          exit $codigo
+          # Quién pasa la suite, quién cuenta los fallos, cuándo se repite y qué se deja en el
+          # resumen vive en `tools\pasada_de_la_suite.ps1`, compartido con el flujo de
+          # publicación: un fallo con informe se cuenta tal cual, y una muerte sin informe
+          # —el proceso se va sin recuento ni `[FALLO]`— se vuelve a intentar, porque repetir
+          # la comprobación no toca ni la etiqueta ni los ejecutables ya hechos.
+          pwsh -NoProfile -File tools/pasada_de_la_suite.ps1
+          exit $LASTEXITCODE
 
       # El registro en archivo es nuevo: si algo falla, conviene poder mirarlo sin volver a
       # reproducir el fallo en local.

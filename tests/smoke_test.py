@@ -5758,6 +5758,111 @@ def test_interface() -> None:
     dialog.close()
     app_settings.history_interval_seconds = 30
 
+    # --- El diálogo enseña con qué se compara un umbral --------------------
+    # Un «90 %» no dice nada por sí solo: al lado va lo que marca el equipo ahora mismo, de la
+    # muestra que ya tiene la ventana. Se le pasa una muestra conocida para poder afirmar qué
+    # es lo que dice el diálogo, y se comprueba que la marca cambia cuando el umbral baja por
+    # debajo de lo que se está usando.
+    from pctoolkit.core.metrics import MetricsSnapshot
+    from pctoolkit.ui.alert_settings import RECOMENDADOS
+    from pctoolkit.ui.widgets import Chip as Chapa
+
+    lectura = MetricsSnapshot(cpu_percent=42.0, ram_percent=53.0, disk_percent=21.0)
+    con_datos = AlertSettingsDialog(app_settings, history_store, tray_available(), snapshot=lectura)
+    check(
+        "Los umbrales enseñan lo que marca el equipo ahora",
+        all(isinstance(chapa, Chapa) for chapa in con_datos.reading_chips.values())
+        and con_datos.reading_chips[METRIC_CPU].text() == "ahora 42 %"
+        and con_datos.reading_chips[METRIC_RAM].text() == "ahora 53 %"
+        and con_datos.reading_chips[METRIC_DISK].text() == "ahora 21 %",
+        " · ".join(chapa.text() for chapa in con_datos.reading_chips.values()),
+    )
+    # Lo que viene de fábrica se distingue de lo que se ha tocado: el pie lo dice y «Restaurar»
+    # solo está activo cuando hay algo que restaurar. Se mira **antes de tocar nada** —las
+    # preferencias de esta pasada no son las de fábrica, así que hay algo que restaurar, pero no
+    # hay ningún cambio sin guardar— y otra vez después de mover una opción.
+    check(
+        "Al abrir, el diálogo no dice que haya cambios sin guardar",
+        not con_datos.dirty_label.isVisibleTo(con_datos)
+        and not con_datos.dirty_label.text()
+        and con_datos.restore_button.isEnabled(),
+        f"aviso: {con_datos.dirty_label.text()!r} · restaurar activo: {con_datos.restore_button.isEnabled()}",
+    )
+
+    # CPU por debajo de su lectura (30 < 42: avisaría ya) y memoria por encima de la suya
+    # (90 > 53: no avisaría). Los dos a mano: los umbrales que trae esta pasada son los que
+    # dejó el bloque de alertas de arriba, y para afirmar qué marca cada chapa hay que
+    # saberlos.
+    con_datos.spins[METRIC_CPU].setValue(30)
+    con_datos.spins[METRIC_RAM].setValue(90)
+    _settle(app, 80)
+    check(
+        "El umbral se marca cuando el equipo ya lo supera",
+        COLORS["warn"] in con_datos.reading_chips[METRIC_CPU].styleSheet()
+        and COLORS["warn"] not in con_datos.reading_chips[METRIC_RAM].styleSheet(),
+        con_datos.reading_chips[METRIC_CPU].toolTip(),
+    )
+    con_datos.spins[METRIC_RAM].setValue(60)
+    _settle(app, 80)
+    check(
+        "Tocar una opción avisa de que no se ha guardado",
+        con_datos.dirty_label.isVisibleTo(con_datos) and "sin guardar" in con_datos.dirty_label.text(),
+        con_datos.dirty_label.text(),
+    )
+
+    esperados = dict(RECOMENDADOS)
+    if not tray_available():
+        # Sin bandeja, la casilla y lo de «seguir en la bandeja» no pueden quedar marcados.
+        esperados["bandeja"] = False
+        esperados["cerrar_a_bandeja"] = False
+    con_datos.restore_recommended()
+    _settle(app, 80)
+    check(
+        "Restaurar los recomendados deja los valores de fábrica",
+        con_datos.values() == esperados
+        and not con_datos.restore_button.isEnabled()
+        and con_datos.spins[METRIC_CPU].value() == int(esperados[f"umbral_{METRIC_CPU}"]),
+        f"umbral {con_datos.spins[METRIC_CPU].value()} % · tema {con_datos.values()['tema']} · "
+        f"sostenido {con_datos.values()['sostenido']}",
+    )
+
+    # El buscador dice en qué secciones está lo que coincide: sin eso, encontrar algo en una
+    # sección dejaba los aciertos de las otras escondidos detrás de la barra lateral.
+    con_datos.search.setText("bandeja")
+    _settle(app, 120)
+    botones_aciertos = con_datos.matches_box.findChildren(QPushButton)
+    check(
+        "La búsqueda dice en qué secciones está lo que coincide",
+        con_datos.matches_box.isVisibleTo(con_datos) and len(botones_aciertos) >= 2,
+        " · ".join(boton.text() for boton in botones_aciertos) or "sin secciones señaladas",
+    )
+    con_datos.search.clear()
+    _settle(app, 120)
+    # `isHidden` y no `isVisible`: las filas de las secciones que no se están mirando están en
+    # una página oculta, y lo que se comprueba aquí es que ninguna quedó escondida por el filtro.
+    escondidas = sum(1 for fila, _, _ in con_datos._rows if fila.isHidden())  # noqa: SLF001
+    check(
+        "Al vaciar la búsqueda se sueltan las coincidencias",
+        not con_datos.matches_box.isVisibleTo(con_datos) and escondidas == 0,
+        f"{escondidas} opciones siguen escondidas de las {len(con_datos._rows)}",  # noqa: SLF001
+    )
+    con_datos.close()
+
+    # El botón de fábrica de la ventana olvida el tamaño y el sitio guardados. Se prueba con
+    # unas preferencias propias: escribir en las de la ventana desharía su estado en pruebas.
+    otras = AppSettings(QSettings(str(Path(_TEMP_HOME) / "ajustes_geometria.ini"), QSettings.IniFormat))
+    otras.window_geometry = "QUJD"
+    olvidadiza = AlertSettingsDialog(otras, history_store, tray_available())
+    olvidadiza.geometry_reset_button.click()
+    _settle(app, 80)
+    olvidadiza.apply()
+    check(
+        "El diálogo puede devolver la ventana a su tamaño de fábrica",
+        otras.window_geometry == "" and bool(olvidadiza.values()["ventana_de_fabrica"]),
+        f"geometría guardada después de guardar: {otras.window_geometry!r}",
+    )
+    olvidadiza.close()
+
     window.settings.alert_config = config
     window.settings.tray_enabled = True
     window.settings.close_to_tray = True
@@ -6684,28 +6789,92 @@ def test_interface() -> None:
         "check_light.png" in theme_ui.stylesheet(),
         "check_light.png en el QSS (la imagen es blanca; en oscuro sería invisible)",
     )
-    clara = window.reload_theme()
-    _settle(app, 700)
+    # --- El tema se repinta, no se rehace ---------------------------------
+    # Antes, cambiar de claro a oscuro rehacía la ventana entera (con su bandeja, sus hilos y
+    # su sitio en la pantalla). Ahora se vuelve a pintar la que está abierta: los iconos se
+    # dibujan al pedirlos y lo que llevaba el color ya resuelto lo vuelve a resolver
+    # `theme.repaint`, que es lo que llama la ventana después de aplicar la paleta. Aquí se
+    # comprueba que sigue siendo la misma ventana y que lo repintado lleva el tema nuevo.
+    from pctoolkit.core.config import DARK_COLORS
+    from pctoolkit.ui.widgets import IconBadge as Insignia
+
+    ventana_clara = window
+    ventana_clara.show()
+    _activar(app, ventana_clara)
+    repintados_claro = theme_ui.repaint()
+    _settle(app, 400)
     check(
-        "La ventana nueva se abre con la paleta clara",
-        clara.isVisible() and clara.size() == window.size(),
-        f"visible={clara.isVisible()} {clara.size().width()}x{clara.size().height()}",
+        "Cambiar de tema repinta la ventana, sin rehacerla",
+        window is ventana_clara and not hasattr(window, "reload_theme") and repintados_claro > 0,
+        f"{repintados_claro} widgets repintados · la misma ventana sigue en pie",
     )
-    clara.navigate("home")
+
+    # Una insignia dibujada a mano (su mapa de píxeles se pinta una vez) es el caso difícil:
+    # se crea con el tono del tema de ahora y tiene que cambiar de tono con el tema.
+    insignia = Insignia("shield", 30, 16, "warn")
+
+    def _pixeles_parecidos(imagen, color, tolerancia: int = 60) -> int:
+        objetivo = _Color(color)
+        total = 0
+        for y in range(imagen.height()):
+            for x in range(imagen.width()):
+                tono = imagen.pixelColor(x, y)
+                if tono.alpha() and (
+                    abs(tono.red() - objetivo.red())
+                    + abs(tono.green() - objetivo.green())
+                    + abs(tono.blue() - objetivo.blue())
+                ) < tolerancia:
+                    total += 1
+        return total
+
+    def _insignia_en() -> tuple[int, int]:
+        """Píxeles de la insignia con el tono de aviso oscuro y con el claro."""
+        imagen = insignia.pixmap().toImage()
+        return (
+            _pixeles_parecidos(imagen, DARK_COLORS["warn"]),
+            _pixeles_parecidos(imagen, LIGHT_COLORS["warn"]),
+        )
+
+    oscura_px, clara_px = _insignia_en()
+    check(
+        "Los dibujos ya pintados siguen al tema claro",
+        clara_px > 0 and oscura_px == 0,
+        f"{clara_px} píxeles con el ámbar claro, {oscura_px} con el oscuro",
+    )
+
+    # Los separadores y la barra lateral llevan su color en el estilo del widget (no en la
+    # hoja global), que es justo lo que se quedaba con el tema viejo.
+    con_gris_claro = [
+        widget for widget in ventana_clara.findChildren(QWidget) if LIGHT_COLORS["bg_alt"] in widget.styleSheet()
+    ]
+    con_gris_oscuro = [
+        widget for widget in ventana_clara.findChildren(QWidget) if DARK_COLORS["bg_alt"] in widget.styleSheet()
+    ]
+    check(
+        "Los estilos en línea siguen al tema nuevo",
+        bool(con_gris_claro) and not con_gris_oscuro,
+        f"{len(con_gris_claro)} widgets con el gris claro, {len(con_gris_oscuro)} con el oscuro",
+    )
+
+    ventana_clara.navigate("home")
     _settle(app, 500)
-    # La ventana nueva pinta sus indicadores cuando le llega la primera muestra de
-    # métricas: sin esperarla, el render puede salir con los abanicos a cero y el
-    # recuento de acento no mediría lo que dice medir.
+    # La ventana pinta sus indicadores cuando le llega la primera muestra de métricas: sin
+    # esperarla, el render puede salir con los abanicos a cero y el recuento de acento no
+    # mediría lo que dice medir.
     muestras_listas = False
     for _intento in range(60):
-        if clara.dashboard.cpu_gauge.accessibleDescription() not in ("", "Sin datos todavía"):
+        if ventana_clara.dashboard.cpu_gauge.accessibleDescription() not in ("", "Sin datos todavía"):
             muestras_listas = True
             break
         _settle(app, 100)
-    check("La ventana nueva recibe métricas", muestras_listas, clara.dashboard.cpu_gauge.accessibleDescription())
-    _activar(app, clara)
+    check(
+        "La ventana recibe métricas después de cambiar de tema",
+        muestras_listas,
+        ventana_clara.dashboard.cpu_gauge.accessibleDescription(),
+    )
+    _activar(app, ventana_clara)
     _settle(app, 150)
-    imagen_clara = clara.grab().toImage()
+    imagen_clara = ventana_clara.grab().toImage()
     # El acento de la paleta activa **ahora**: en claro es la tinta oscura, no el casi
     # blanco del tema oscuro.
     acento_claro = _Color(COLORS["accent"])
@@ -6730,19 +6899,101 @@ def test_interface() -> None:
     check("Texto oscuro sobre el fondo claro", oscuro_px / muestreo > 0.005, f"{oscuro_px / muestreo:.2%} de píxeles oscuros")
     check("El acento del tema sigue ahí en claro", acento_px > 200, f"{acento_px} píxeles de acento")
 
-    # Se vuelve al tema oscuro para el resto de comprobaciones.
+    # Se vuelve al tema oscuro para el resto de comprobaciones, por el mismo camino: sobre la
+    # ventana que ya está abierta.
     app_settings.theme_mode = "dark"
     apply_theme(app, "dark")
-    window = clara.reload_theme()
-    _settle(app, 700)
+    repintados = theme_ui.repaint()
+    _settle(app, 500)
+    oscura_px, clara_px = _insignia_en()
     check(
-        "Volver al tema oscuro rehace la ventana",
-        active_palette() == "dark" and window.stack.currentWidget() is not None
+        "Volver al tema oscuro repinta la misma ventana",
+        active_palette() == "dark"
+        and window is ventana_clara
+        and window.stack.currentWidget() is not None
+        and repintados > 0
         and "check_dark.png" in theme_ui.stylesheet(),
-        active_palette(),
+        f"{repintados} widgets repintados, paleta {active_palette()}",
+    )
+    check(
+        "Los dibujos ya pintados vuelven al tema oscuro",
+        oscura_px > 0 and clara_px == 0,
+        f"{oscura_px} píxeles con el ámbar oscuro, {clara_px} con el claro",
     )
     window.navigate("home")
     _settle(app, 300)
+
+    # --- La ventana recuerda dónde estaba ---------------------------------
+    # Tamaño, sitio y maximizada viajan dentro de lo que devuelve `saveGeometry()`, que lleva
+    # también la pantalla: una ventana que se dejó en el segundo monitor vuelve ahí. Se apunta
+    # al cerrar y se recupera al abrir, que es lo que se comprueba aquí.
+    from PySide6.QtCore import QSize as Tamano
+
+    from pctoolkit.ui.shell import DEFAULT_WINDOW_SIZE, MIN_WINDOW_SIZE
+
+    window.showNormal()
+    window.resize(1240, 780)
+    window.move(140, 110)
+    _settle(app, 250)
+    window.save_window_geometry()
+    guardada = app_settings.window_geometry
+    check(
+        "La ventana apunta su tamaño, su sitio y su estado al cerrar",
+        bool(guardada) and len(guardada) > 20,
+        f"{len(guardada)} caracteres en base64",
+    )
+
+    otra = MainWindow(app_settings, history_store)
+    otra.show()
+    _settle(app, 600)
+    check(
+        "La ventana vuelve al tamaño y al sitio que se dejaron",
+        abs(otra.width() - 1240) <= 8
+        and abs(otra.height() - 780) <= 8
+        and abs(otra.x() - 140) <= 25
+        and abs(otra.y() - 110) <= 25,
+        f"{otra.width()}x{otra.height()} en ({otra.x()}, {otra.y()}), apuntado 1240x780 en (140, 110)",
+    )
+
+    window.showMaximized()
+    _settle(app, 400)
+    maximizada = window.isMaximized()
+    window.save_window_geometry()
+    otra_max = MainWindow(app_settings, history_store)
+    otra_max.show()
+    _settle(app, 600)
+    check(
+        "La ventana vuelve maximizada si se dejó maximizada",
+        maximizada and otra_max.isMaximized(),
+        f"dejada maximizada: {maximizada}; recuperada: {otra_max.isMaximized()}",
+    )
+
+    # Sin nada apuntado se abre con el tamaño de siempre (el de las capturas), recortado si la
+    # pantalla es más pequeña que eso.
+    app_settings.window_geometry = ""
+    recien = MainWindow(app_settings, history_store)
+    disponible = (recien.screen() or app.primaryScreen()).availableGeometry()
+    esperado = Tamano(
+        min(DEFAULT_WINDOW_SIZE.width(), max(MIN_WINDOW_SIZE.width(), disponible.width() - 80)),
+        min(DEFAULT_WINDOW_SIZE.height(), max(MIN_WINDOW_SIZE.height(), disponible.height() - 120)),
+    )
+    check(
+        "Sin geometría guardada se abre con el tamaño de fábrica",
+        abs(recien.width() - esperado.width()) <= 4 and abs(recien.height() - esperado.height()) <= 4,
+        f"{recien.width()}x{recien.height()} (esperado {esperado.width()}x{esperado.height()})",
+    )
+
+    for sobrante in (otra, otra_max, recien):
+        sobrante._force_quit = True  # noqa: SLF001
+        sobrante.close()
+    _settle(app, 300)
+
+    # La ventana principal vuelve a su tamaño para el resto de comprobaciones.
+    window.showNormal()
+    window.resize(1360, 860)
+    window.move(60, 60)
+    window.save_window_geometry()
+    _settle(app, 250)
 
     # Asistente del instalador: se construye, se pinta y recoge las opciones.
     from installer import installer_core as installer_core_test
@@ -7776,6 +8027,14 @@ def revisar_guiones_de_los_flujos() -> None:
                 continue
             indice += 1
 
+    # Los guiones de PowerShell del propio proyecto (los que llaman los pasos) también tienen
+    # que leerse: un error de sintaxis ahí rompe la publicación igual que en un paso de un
+    # flujo, y tampoco se descubre hasta el día de publicar.
+    for guion in sorted((ROOT / "tools").rglob("*.ps1")):
+        guiones.append(
+            (str(guion.relative_to(ROOT)).replace("\\", "/"), "guion del proyecto", guion.read_text(encoding="utf-8"))
+        )
+
     carpeta = Path(_TEMP_HOME) / "flujos"
     carpeta.mkdir(parents=True, exist_ok=True)
     for numero, (flujo, paso, guion) in enumerate(guiones):
@@ -7801,7 +8060,7 @@ if ($fallos -gt 0) {{ exit 1 }}
 """
     if not interpretes:
         check(
-            "Los guiones de PowerShell de los flujos se pueden ejecutar",
+            "Los guiones de PowerShell de los flujos y del proyecto se pueden ejecutar",
             False,
             "no hay ningún PowerShell a mano para leerlos",
         )
@@ -7814,10 +8073,10 @@ if ($fallos -gt 0) {{ exit 1 }}
     )
     problemas = ((resultado.stdout or "") + (resultado.stderr or "")).strip()
     check(
-        "Los guiones de PowerShell de los flujos se pueden ejecutar",
+        "Los guiones de PowerShell de los flujos y del proyecto se pueden ejecutar",
         bool(guiones) and resultado.returncode == 0,
         " · ".join(problemas.splitlines())[:300]
-        or f"{len(guiones)} pasos de los flujos, leídos por {Path(interpretes[0]).name}",
+        or f"{len(guiones)} guiones, leídos por {Path(interpretes[0]).name}",
     )
 
 
@@ -7899,7 +8158,9 @@ def test_publicacion() -> None:
     )
     check(
         "La publicación comprueba el paquete antes de publicarlo",
-        "tests/smoke_test.py" in publicar
+        # La suite no se pasa aquí a mano: la pasa el lanzador compartido, que además repite
+        # la comprobación si el proceso se murió sin dejar informe.
+        ("tests/smoke_test.py" in publicar or "pasada_de_la_suite.ps1" in publicar)
         and "tools/verificar_instalacion.py" in publicar
         and "attest-build-provenance" in publicar
         # La firma de procedencia pide su token (OIDC): sin él el paso falla y la
@@ -7916,6 +8177,41 @@ def test_publicacion() -> None:
         "Solo un flujo publica al empujar una etiqueta (el de firma ya no)",
         'tags: ["v*"]' not in firmar and "workflow_dispatch" in firmar,
         "la firma con Azure se lanza a mano, como hasta ahora",
+    )
+
+    # --- La suite, contada en un solo sitio -------------------------------
+    # Pasar la suite, contar lo que dijo y repetirla cuando el proceso se muere sin informe
+    # vive en `tools\pasada_de_la_suite.ps1`, y los dos flujos lo llaman: antes estaba escrito
+    # entero en cada uno y una mejora en el de publicación no llegaba al de integración.
+    lanzador = (ROOT / "tools" / "pasada_de_la_suite.ps1").read_text(encoding="utf-8")
+    integracion = (ROOT / ".github" / "workflows" / "integracion.yml").read_text(encoding="utf-8")
+    check(
+        "Publicar e integrar pasan la suite con el mismo lanzador",
+        "tools/pasada_de_la_suite.ps1" in publicar and "tools/pasada_de_la_suite.ps1" in integracion,
+        "un solo sitio decide quién pasa la suite, qué se repite y qué se resume",
+    )
+    check(
+        "Una muerte sin informe se repite sola (y no gasta versión)",
+        "param(" in lanzador
+        and "$Intentos = 3" in lanzador
+        and "python -u tests/smoke_test.py" in lanzador
+        and lanzador.count("Clear-Leftovers") >= 2
+        # Solo se repite la pasada que no dejó informe: un fallo con informe se cuenta tal
+        # cual, porque repetirlo no arreglaría nada.
+        and "if ($informe.Count -gt 0) { break }" in lanzador
+        and "La suite murió sin dar su informe" in lanzador,
+        "hasta tres intentos, repitiendo solo lo que se murió muda",
+    )
+    check(
+        "La repetición limpia lo que dejó a medias, y solo en el servidor",
+        # La tarea programada que crea la propia suite y los procesos que lanza quedarían
+        # vivos entre intentos: la repetición mediría un equipo distinto. En un equipo de
+        # verdad no se toca nada de nadie, así que va detrás de `GITHUB_ACTIONS`.
+        "GITHUB_ACTIONS" in lanzador
+        and "schtasks /Delete" in lanzador
+        and "Stop-Process" in lanzador
+        and "app\\.py" in lanzador,
+        "tareas y procesos de la pasada interrumpida, solo en el servidor",
     )
     revisar_guiones_de_los_flujos()
 

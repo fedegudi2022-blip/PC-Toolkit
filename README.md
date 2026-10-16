@@ -46,7 +46,7 @@ Datos y preferencias se guardan en `%APPDATA%\PCToolkit` (véase [Dónde se guar
 | **Programas de inicio** | Lo que abre Windows al encender: desactiva sin borrar, avisa de entradas muertas y todo se puede deshacer. |
 | **Ajustes de Windows** | Catálogo de ajustes de anuncios, privacidad, telemetría, interfaz y rendimiento: **analiza** sin tocar nada, enseña qué está recomendado y con qué riesgo, y aplica solo lo que se marca y se confirma. Con ayuda por ajuste (`F1`), respaldo `.reg`, gestor de **aplicaciones preinstaladas** y **plugins** en JSON. |
 | **Mantenimiento** | Tarea propia en el Programador de Windows (limpieza, memoria e informes) con estado real leído del sistema. |
-| **Alertas y bandeja** | Icono en la bandeja, umbrales de CPU, memoria y disco, y aviso por notificación. |
+| **Alertas y bandeja** | Icono en la bandeja, umbrales de CPU, memoria y disco —con lo que marca el equipo **al lado de cada uno**—, aviso por notificación y «Ajustes y alertas» con buscador, valores recomendados y aviso de cambios sin guardar. La ventana **recuerda su tamaño, su sitio y si estaba maximizada**. |
 | **Analizar disco** | Escaneo por carpetas con barras proporcionales, uso por categoría y archivos grandes. |
 | **Herramientas** | 28 accesos directos a las utilidades de Windows, con buscador y **liberador de espacio** propio: mide (temporales del usuario y de Windows, cachés de los navegadores, miniaturas, volcados de error y papelera), enseña cuánto liberaría **antes de borrar nada** y puede **programar la limpieza de lo marcado** en su propia tarea de Windows, sin activar el mantenimiento completo. |
 | **Tareas** | Registro de mantenimiento con estados, prioridades, fechas límite y estadísticas. |
@@ -54,8 +54,10 @@ Datos y preferencias se guardan en `%APPDATA%\PCToolkit` (véase [Dónde se guar
 | **Actualizaciones** | Al arrancar comprueba si hay una versión nueva (como mucho una vez al día), enseña qué cambia y la instala **verificando antes su SHA-256**. Se puede desactivar o pedir a mano desde Ajustes. |
 
 Dos temas completos —oscuro «grafito» (fondo casi negro y grises fríos, cada nivel de superficie
-separado del siguiente) y claro «papel»— que se cambian al instante; por defecto abre en oscuro y en
-**Ajustes y alertas → Apariencia** se puede seguir a Windows o pasar al claro. El acento es neutro
+separado del siguiente) y claro «papel»— que se cambian **sin rehacer la ventana**: la que está
+abierta se vuelve a pintar con la paleta nueva (iconos, arcos, insignias y estilos en línea), así que
+no hay parpadeo ni foco perdido. Por defecto abre en oscuro y en **Ajustes y alertas → Apariencia** se
+puede seguir a Windows o pasar al claro. El acento es neutro
 —casi blanco en el tema oscuro y tinta en el claro— y manda en los botones principales y el foco.
 El color tiene significado: **verde** para lo saludable, **ámbar** para los avisos y **rojo** para
 los errores. Los datos llevan cuatro tonos propios (CPU azul, memoria cian, disco naranja y red gris
@@ -304,7 +306,7 @@ Desinstalar conserva estos datos salvo que se pidan borrar desde el asistente.
 .venv\Scripts\python.exe tests\smoke_test.py
 ```
 
-**981 comprobaciones** sin marco externo: métricas y disco reales, persistencia, alertas,
+**999 comprobaciones** sin marco externo: métricas y disco reales, persistencia, alertas,
 los **avisos propios** (umbrales, orden, descarte que caduca y vuelve si la cosa empeora, y qué
 categorías marca cada uno al abrir la limpieza desde él) y el
 **catálogo de limpieza** (vista previa que no borra, archivos en uso que no se prometen, carpetas
@@ -364,7 +366,7 @@ pctoolkit/
                              mantenimiento, programador, ajustes de Windows, aplicaciones y plugins
   ui/                        Interfaz PySide6: tema, accesibilidad, iconos, widgets, gráfica,
                              vigía de la GPU, bandeja, diálogos y una página por sección
-tests/smoke_test.py          981 comprobaciones (núcleo, interfaz, instalador, firma, dependencias,
+tests/smoke_test.py          999 comprobaciones (núcleo, interfaz, instalador, firma, dependencias,
                              logotipo, actualizaciones, ajustes de Windows, aplicaciones, plugins,
                              limpieza, limpieza programada y avisos)
 tests/documentacion.py       Guardas de capturas, informe y recuentos (van aparte)

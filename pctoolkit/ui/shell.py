@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QByteArray, QSize, Qt, QTimer
 from PySide6.QtGui import QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -38,7 +38,7 @@ from ..core.metrics import PROFILE_ECO, PROFILE_FULL, MetricsService
 from ..core.settings import AppSettings
 from ..core.tasks import TaskStore
 from ..core.undo import ORIGIN_AVISO, UndoStore
-from . import accessibility, icons
+from . import accessibility, icons, theme
 from .actualizaciones import UpdateController
 from .alert_settings import AlertSettingsDialog
 from .dashboard import DashboardPage
@@ -56,6 +56,13 @@ from .theme import apply_theme
 from .tray import TrayController, tray_available
 from .widgets import BrandLogo
 from .workers import run_in_background, shutdown_background, wait_thread
+
+# Tamaño con el que se abre la ventana la primera vez (el resto de las veces manda el que
+# se dejó apuntado en las preferencias). Es el mismo con el que se documentan las capturas;
+# en una pantalla más pequeña se recorta para que no nazca más grande que el escritorio.
+DEFAULT_WINDOW_SIZE = QSize(1360, 860)
+# Por debajo de esto la interfaz deja de caber con holgura (barra lateral, tarjetas y tabla).
+MIN_WINDOW_SIZE = QSize(1180, 740)
 
 # Herramienta -> categoría del registro de mantenimiento
 AUTO_TASK_CATEGORY = {
@@ -98,9 +105,15 @@ class MainWindow(QMainWindow):
         # aplicación. Si no estuviera el archivo, se usa el glifo dibujado: la ventana
         # nunca se queda sin icono.
         logotipo = icons.logo_pixmap(64)
-        self.setWindowIcon(QIcon(logotipo) if logotipo is not None else icons.icon("cpu", 64, COLORS["accent_glow"]))
-        self.resize(1320, 840)
-        self.setMinimumSize(1180, 740)
+        if logotipo is not None:
+            self.setWindowIcon(QIcon(logotipo))
+        else:
+            # Sin el archivo del logotipo se enseña el glifo de siempre, y sigue al tema: la
+            # barra de tareas no vuelve a pedir el icono cuando se cambia de claro a oscuro.
+            theme.window_icon(self, "cpu", 64, COLORS["accent_glow"])
+        # El tamaño de apertura no se fija aquí: lo pone `_restore_window_geometry` con el que
+        # se dejó apuntado la última vez (o con el de siempre la primera vez).
+        self.setMinimumSize(MIN_WINDOW_SIZE)
 
         self.settings = settings or AppSettings()
         self.task_store = TaskStore(self)
@@ -135,13 +148,16 @@ class MainWindow(QMainWindow):
         self._memory_busy = False
         self._maintenance_busy = False
         self._startup_busy = False
-        self._replacement = None  # ventana nueva al cambiar de tema (evita que se recoja)
         self._pages: dict[str, QWidget] = {}
         self._nav_buttons: dict[str, SidebarButton] = {}
         self._shortcuts: list[QShortcut] = []
+        # Última muestra del equipo (la que enseña el panel). Se guarda porque los ajustes la
+        # usan para poner las lecturas al lado de los umbrales sin volver a preguntar nada.
+        self.last_snapshot = None
 
         self._build()
         self._wire()
+        self._restore_window_geometry()
         if self.settings.history_enabled:
             self.recorder.attach()
         self.metrics.start()
@@ -160,7 +176,7 @@ class MainWindow(QMainWindow):
 
         separator = QFrame()
         separator.setFixedWidth(1)
-        separator.setStyleSheet(f"background: {COLORS['border_soft']};")
+        theme.styled(separator, "background: {border_soft};")
         layout.addWidget(separator)
 
         self.stack = QStackedWidget()
@@ -216,7 +232,7 @@ class MainWindow(QMainWindow):
     def _sidebar(self) -> QWidget:
         sidebar = QWidget()
         sidebar.setFixedWidth(226)
-        sidebar.setStyleSheet(f"background: {COLORS['bg_alt']};")
+        theme.styled(sidebar, "background: {bg_alt};")
         layout = QVBoxLayout(sidebar)
         layout.setContentsMargins(16, 20, 16, 18)
         layout.setSpacing(8)
@@ -383,7 +399,15 @@ class MainWindow(QMainWindow):
     def open_alert_settings(self) -> None:
         paleta_antes = active_palette()
         dialog = AlertSettingsDialog(
-            self.settings, self.history, tray_available(), self, updates=self.updates
+            self.settings,
+            self.history,
+            tray_available(),
+            self,
+            updates=self.updates,
+            # La última muestra va al diálogo: los umbrales se enseñan al lado de lo que marca
+            # el equipo ahora mismo, y esa lectura ya la tiene la ventana (no hay que volver a
+            # preguntarle al sistema, ni esperar a un segundo muestreo para tener un dato).
+            snapshot=self.last_snapshot,
         )
         if dialog.exec() == AlertSettingsDialog.Accepted:
             config = dialog.config
@@ -401,12 +425,14 @@ class MainWindow(QMainWindow):
             resumen = _describe_alert_config(config)
             paleta_nueva = apply_theme(QApplication.instance(), self.settings.theme_mode)
             if paleta_nueva != paleta_antes:
-                # Los colores se leen al construir cada widget (iconos, estilos en
-                # línea, gráficas), así que el tema nuevo se aplica rehaciendo la
-                # ventana en vez de repintar cientos de detalles a mano.
-                self.set_status(resumen)
-                nueva = self.reload_theme()
-                nueva.set_status(
+                # El tema se aplica sobre la ventana que ya está abierta: la paleta de la
+                # aplicación y la hoja QSS se rehacen en `apply_theme`, los iconos se dibujan
+                # al pedirlos y los estilos en línea se vuelven a resolver aquí. Antes se
+                # rehacía la ventana entera —con su bandeja, sus hilos y su sitio en la
+                # pantalla— y eso se notaba: parpadeo, foco perdido y un segundo icono de
+                # bandeja mientras la vieja se cerraba.
+                theme.repaint()
+                self.set_status(
                     resumen
                     + "  ·  Tema "
                     + ("claro." if paleta_nueva == THEME_LIGHT else "oscuro.")
@@ -417,20 +443,41 @@ class MainWindow(QMainWindow):
             # Si se cancela, los controles de la bandeja vuelven a su estado real.
             self.tray.refresh_config(self.settings.alert_config)
 
-    def reload_theme(self) -> "MainWindow":
-        """Rehace la ventana con la paleta ya aplicada y devuelve la nueva.
+    def save_window_geometry(self) -> None:
+        """Deja apuntado el tamaño, el sitio y si la ventana estaba maximizada.
 
-        Se conserva el tamaño y el sitio de la ventana, y si estaba oculta (solo
-        en la bandeja) la nueva también lo queda.
+        Se llama al cerrar (también cuando cerrar solo la manda a la bandeja) y sirve para
+        que la próxima vez se abra donde se dejó, en la misma pantalla y con el mismo estado.
         """
-        nueva = MainWindow(self.settings, self.history)
-        nueva.setGeometry(self.geometry())
-        if self.isVisible():
-            nueva.show()
-        self._force_quit = True  # cerrar la anterior de verdad, no a la bandeja
-        self._replacement = nueva  # se mantiene viva hasta que la vieja desaparezca
-        QTimer.singleShot(0, self.close)
-        return nueva
+        try:
+            self.settings.window_geometry = bytes(self.saveGeometry().toBase64()).decode("ascii")
+        except RuntimeError:  # pragma: no cover - la ventana ya no existe
+            return
+
+    def _restore_window_geometry(self) -> None:
+        """Devuelve la ventana a donde estaba; sin nada apuntado, a su tamaño de siempre.
+
+        Lo que se guarda lleva dentro la pantalla y si estaba maximizada, así que una ventana
+        que se dejó a pantalla completa vuelve a pantalla completa.
+        """
+        guardada = self.settings.window_geometry
+        if guardada:
+            try:
+                if self.restoreGeometry(QByteArray.fromBase64(guardada.encode("ascii"))):
+                    return
+            except (ValueError, TypeError):
+                pass
+        # Primera vez (o preferencias rotas): el tamaño con el que se documenta la aplicación,
+        # recortado si la pantalla es más pequeña que eso.
+        pantalla = self.screen() or QApplication.primaryScreen()
+        disponible = pantalla.availableGeometry() if pantalla is not None else None
+        if disponible is None:  # pragma: no cover - sin pantalla no hay nada que calcular
+            self.resize(DEFAULT_WINDOW_SIZE)
+            return
+        self.resize(
+            min(DEFAULT_WINDOW_SIZE.width(), max(MIN_WINDOW_SIZE.width(), disponible.width() - 80)),
+            min(DEFAULT_WINDOW_SIZE.height(), max(MIN_WINDOW_SIZE.height(), disponible.height() - 120)),
+        )
 
     def _on_history_sample(self, sample) -> None:
         self.dashboard.append_history_sample(sample)
@@ -584,6 +631,9 @@ class MainWindow(QMainWindow):
 
     def _on_sample(self, snap) -> None:
         """Actualiza la interfaz, la bandeja y evalúa los umbrales."""
+        # Se guarda la última muestra: es la que se enseña en los ajustes (al lado de cada
+        # umbral) y la que se puede releer sin volver a tocar el sistema.
+        self.last_snapshot = snap
         # Con la ventana oculta no se repinta nada: es lo que mantiene bajo el
         # consumo cuando la aplicación solo vive en la bandeja.
         if self.isVisible():
@@ -691,7 +741,7 @@ class MainWindow(QMainWindow):
 
     def _show_alert_badge(self, event) -> None:
         self.alert_indicator.setText(f"⚠ {event.label} {event.value:.0f}% ({event.time_display})")
-        self.alert_indicator.setStyleSheet(f"color: {COLORS['warn']}; font-size: 12px;")
+        theme.styled(self.alert_indicator, "color: {warn}; font-size: 12px;")
         self.alert_indicator.setVisible(True)
 
     @property
@@ -825,6 +875,8 @@ class MainWindow(QMainWindow):
         )
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt)
+        # El tamaño y el sitio se apuntan siempre, también cuando cerrar solo la esconde.
+        self.save_window_geometry()
         # Con la bandeja activa, cerrar la ventana mantiene la app en segundo plano.
         if not self._force_quit and self.tray.active and self.settings.close_to_tray:
             event.ignore()

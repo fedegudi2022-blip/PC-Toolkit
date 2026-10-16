@@ -43,20 +43,25 @@ class FormatButton(QPushButton):
         self.setText(f"{fmt}\n{description}")
         self.setMinimumHeight(62)
         self.setMinimumWidth(150)
-        self.setStyleSheet(
-            f"""
+        # El estilo va por `theme.styled` y no con los colores ya resueltos: estos botones se
+        # construyen una vez, al abrir la página, y con el color escrito dentro se quedaban con
+        # la paleta del tema que hubiera al arrancar (en claro, un botón oscuro sobre blanco).
+        theme.styled(
+            self,
+            """
             QPushButton {{
                 text-align: left; padding: 10px 14px; border-radius: 12px;
-                background: {COLORS['bg_alt']}; border: 1px solid {COLORS['border']};
-                color: {COLORS['text_muted']}; font-size: 12px;
+                background: {bg_alt}; border: 1px solid {border};
+                color: {text_muted}; font-size: 12px;
             }}
-            QPushButton:hover {{ border-color: {COLORS['accent_soft']}; color: {COLORS['text']}; }}
+            QPushButton:hover {{ border-color: {accent_soft}; color: {text}; }}
             QPushButton:checked {{
-                background: {theme.with_alpha(COLORS['accent'], 34)};
-                border: 1px solid {COLORS['accent']};
-                color: {COLORS['text']}; font-weight: 600;
+                background: {acento};
+                border: 1px solid {accent};
+                color: {text}; font-weight: 600;
             }}
-            """
+            """,
+            acento=theme.alpha_de("accent", 34),
         )
 
 

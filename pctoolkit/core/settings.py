@@ -112,6 +112,20 @@ class AppSettings:
 
     # --- Apariencia ------------------------------------------------------
     @property
+    def window_geometry(self) -> str:
+        """Tamaño, posición y estado de la ventana, en base64 (vacío si nunca se guardó).
+
+        Se guarda tal cual lo que devuelve `QWidget.saveGeometry()`: lleva dentro el tamaño,
+        el sitio, la pantalla en la que estaba y si la ventana estaba maximizada, así que al
+        abrirla otra vez vuelve donde se dejó aunque se haya cambiado de monitor por medio.
+        """
+        return str(self._settings.value("ventana_geometria", "", type=str) or "")
+
+    @window_geometry.setter
+    def window_geometry(self, value: str) -> None:
+        self.set("ventana_geometria", str(value or ""))
+
+    @property
     def theme_mode(self) -> str:
         """Tema de la interfaz: `auto` (el que tenga Windows), `dark` o `light`.
 

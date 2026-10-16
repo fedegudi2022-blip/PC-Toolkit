@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (
 from ..core import cleaner
 from ..core import scheduler as scheduler_core
 from ..core.config import COLORS, format_bytes, format_integer
-from . import accessibility, icons, workers
+from . import accessibility, icons, theme, workers
 from .widgets import Card, IconBadge, Muted, SectionTitle, hline
 
 # Color e icono de cada motivo por el que una categoría no se puede limpiar ahora.
@@ -112,7 +112,7 @@ class TargetRow(Card):
         if item.blocked:
             motivo = QLabel(item.blocked)
             motivo.setWordWrap(True)
-            motivo.setStyleSheet(f"color: {COLORS['warn']}; font-size: 12px;")
+            theme.styled(motivo, "color: {warn}; font-size: 12px;")
             layout.addWidget(motivo)
         elif not item.present:
             sin = QLabel("No hay nada de este tipo en este equipo.")
@@ -122,7 +122,7 @@ class TargetRow(Card):
 
         detalle = Muted(item.detail)
         detalle.setWordWrap(True)
-        detalle.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11.5px;")
+        theme.styled(detalle, "color: {text_dim}; font-size: 11.5px;")
         layout.addWidget(detalle)
 
         accessibility.mark(self, QAccessible.Role.ListItem, item.name, self._spoken())
@@ -692,7 +692,7 @@ class CleanDialog(QDialog):
 
     def _resultado(self, mensaje: str, *, color: str | None = None) -> None:
         self.result_label.setText(mensaje)
-        self.result_label.setStyleSheet(f"color: {color or COLORS['text_muted']}; font-size: 12px;")
+        theme.styled(self.result_label, "color: {tono}; font-size: 12px;", tono=color or "text_muted")
         self.result_label.setVisible(bool(mensaje))
 
     # --- Mantenimiento automático ----------------------------------------

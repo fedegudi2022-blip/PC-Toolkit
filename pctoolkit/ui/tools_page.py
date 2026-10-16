@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 from ..core.config import COLORS, format_bytes, format_integer
 from ..core import cleaner
 from ..core import tools as tool_core
-from . import accessibility, icons, workers
+from . import accessibility, icons, theme, workers
 from .clean import CleanDialog
 from .widgets import Card, IconBadge, Muted, PageHeader, SectionTitle
 
@@ -51,7 +51,7 @@ class ToolTile(Card):
         top.addWidget(name, 1)
         if tool.admin:
             badge = QLabel()
-            badge.setPixmap(icons.pixmap_for("shield", 14, COLORS["warn"]))
+            theme.pixmap(badge, "shield", 14, "warn")
             badge.setToolTip("Solicita permisos de administrador (UAC)")
             top.addWidget(badge)
         layout.addLayout(top)

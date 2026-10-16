@@ -18,15 +18,17 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.alerts import METRIC_CPU, METRIC_DISK, METRIC_RAM, AlertConfig
-from ..core.config import COLORS, format_bytes, format_integer
+from ..core.config import COLORS, format_bytes, format_integer, health_color
 from ..core.history import HistoryStore
 from ..core import gpu, insights as insights_core
 from . import accessibility, icons, theme
 from .chart import SERIES, HistoryChart
 from .widgets import (
+    CHIP_ESTADO,
     ActionCard,
     ArcGauge,
     Card,
+    Chip,
     HealthMeter,
     IconBadge,
     Muted,
@@ -210,7 +212,7 @@ class DashboardPage(QWidget):
         top.addStretch(1)
         layout.addLayout(top)
 
-        self.health_badge = QLabel("—")
+        self.health_badge = Chip("—", "text_muted", **CHIP_ESTADO)
         self.health_badge.setObjectName("HealthBadge")
         self.health_badge.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.health_badge)
@@ -241,7 +243,7 @@ class DashboardPage(QWidget):
         texts.setSpacing(0)
         title_label = QLabel(title)
         title_label.setObjectName("CardTitle")
-        title_label.setStyleSheet(f"color: {COLORS[color_key]};")
+        theme.styled(title_label, "color: {tono};", tono=COLORS[color_key])
         self_subtitle = QLabel(subtitle)
         self_subtitle.setObjectName("CardSubtitle")
         texts.addWidget(title_label)
@@ -250,7 +252,7 @@ class DashboardPage(QWidget):
         head.addStretch(1)
         # El aviso por umbral va con un chip de texto: el color solo no basta ni para
         # quien no distingue colores ni para saber qué pasa de un vistazo.
-        chip = QLabel()
+        chip = Chip("", "warn", **CHIP_ESTADO)
         chip.setObjectName("HealthBadge")
         chip.setWordWrap(True)
         chip.setVisible(False)
@@ -368,7 +370,7 @@ class DashboardPage(QWidget):
             button.setCheckable(True)
             button.setChecked(True)
             button.setCursor(Qt.PointingHandCursor)
-            button.setIcon(icons.icon_from_pixmap(icons.dot_pixmap(COLORS[color_key], 9)))
+            theme.dot_icon(button, COLORS[color_key], 9)
             button.toggled.connect(lambda checked, name=key: self._toggle_series(name, checked))
             self.legend_buttons[key] = button
             head.addWidget(button)
@@ -384,7 +386,7 @@ class DashboardPage(QWidget):
             holder = QHBoxLayout()
             holder.setSpacing(6)
             dot = QLabel()
-            dot.setPixmap(icons.dot_pixmap(COLORS[color_key], 8))
+            theme.dot(dot, COLORS[color_key], 8)
             holder.addWidget(dot)
             text = QLabel(f"{label}: sin datos")
             text.setObjectName("Muted")
@@ -719,13 +721,9 @@ class DashboardPage(QWidget):
         score = snap.health_score
         self.health_meter.set_score(score, snap.health_label)
         self.health_badge.setText(snap.health_label)
-        color = COLORS["good"] if score >= 70 else (COLORS["warn"] if score >= 45 else COLORS["bad"])
-        # El relleno y el borde salen del mismo color de estado con transparencia: el
-        # ayudante evita el formato de ocho dígitos, que Qt interpreta al revés.
-        self.health_badge.setStyleSheet(
-            f"#HealthBadge {{ background: {theme.with_alpha(color, 34)}; color: {color}; "
-            f"border: 1px solid {theme.with_alpha(color, 85)}; }}"
-        )
+        # El relleno y el borde salen del mismo color de estado con transparencia; el chip lo
+        # vuelve a calcular él solo cuando cambia el tema.
+        self.health_badge.set_color(health_color(score))
         self.health_score.setText(f"Puntuación {score:.0f}/100")
 
         rows = self.detail_rows
@@ -797,14 +795,10 @@ class DashboardPage(QWidget):
             chip.setVisible(False)
             return
         sostenido = self._streaks.get(metric, 0) >= max(1, self._alerts.sustained_samples)
-        color = COLORS["bad"] if sostenido else COLORS["warn"]
         chip.setText(
             f"{'Crítico' if sostenido else 'Aviso'} · {percent:.0f} % (umbral {threshold:.0f} %)"
         )
-        chip.setStyleSheet(
-            f"#HealthBadge {{ background: {theme.with_alpha(color, 34)}; color: {color}; "
-            f"border: 1px solid {theme.with_alpha(color, 85)}; }}"
-        )
+        chip.set_color("bad" if sostenido else "warn")
         chip.setVisible(True)
 
     def _net_scale(self) -> float:

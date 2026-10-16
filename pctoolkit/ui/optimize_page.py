@@ -35,7 +35,7 @@ from PySide6.QtGui import QColor, QPainter
 from ..core import memory as memory_core
 from ..core.config import COLORS, format_bytes
 from ..core.settings import AppSettings
-from . import icons
+from . import icons, theme
 from .widgets import ArcProgress, Card, IconBadge, Muted, PageHeader, SectionTitle, hline, kv_row
 
 MAX_LISTED_PROCESSES = 12
@@ -260,7 +260,7 @@ class ProcessMemoryRow(QWidget):
     def set_result(self, text: str, ok: bool = True) -> None:
         self.trim_button.setEnabled(False)
         self.trim_button.setText(text)
-        self.trim_button.setStyleSheet(f"color: {COLORS['good' if ok else 'bad']};")
+        theme.styled(self.trim_button, "color: {tono};", tono="good" if ok else "bad")
 
 
 class OptimizeMemoryPage(QWidget):
@@ -352,7 +352,7 @@ class OptimizeMemoryPage(QWidget):
 
         layout.addWidget(hline())
         self.last_freed = QLabel("Sin liberaciones todavía")
-        self.last_freed.setStyleSheet(f"font-size: 13px; font-weight: 600; color: {COLORS['accent_glow']};")
+        theme.styled(self.last_freed, "font-size: 13px; font-weight: 600; color: {accent_glow};")
         self.last_freed.setWordWrap(True)
         layout.addWidget(self.last_freed)
         self.last_detail = QLabel("")
@@ -560,14 +560,14 @@ class OptimizeMemoryPage(QWidget):
             self.privilege_label.setText(
                 "Permisos de administrador disponibles: se vaciará también la caché del sistema."
             )
-            self.privilege_label.setStyleSheet(f"color: {COLORS['good']}; font-size: 11.5px;")
+            theme.styled(self.privilege_label, "color: {good}; font-size: 11.5px;")
             self.elevate_button.setVisible(False)
         else:
             self.privilege_label.setText(
                 "Sin permisos de administrador, la caché del sistema y la lista de espera no se "
                 "pueden tocar. El resto de la limpieza funciona igual."
             )
-            self.privilege_label.setStyleSheet(f"color: {COLORS['warn']}; font-size: 11.5px;")
+            theme.styled(self.privilege_label, "color: {warn}; font-size: 11.5px;")
             self.elevate_button.setVisible(True)
 
     def refresh_processes(self) -> None:
