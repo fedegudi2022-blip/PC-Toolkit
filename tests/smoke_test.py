@@ -561,6 +561,73 @@ def _cerrar_handle(handle) -> None:
         ctypes.windll.kernel32.CloseHandle(handle)  # type: ignore[attr-defined]
 
 
+# --- Mandar mensajes de Windows con la firma declarada ---------------------------
+# El aviso de cambio de tema se manda con `SendMessageW`. Esa llamada lleva **declarada su
+# firma** y sus números van envueltos en su tipo de Windows: sin declararla, `ctypes` pasa los
+# números como enteros de 32 bits y el puntero del último argumento no cabe cuando le toca una
+# dirección alta —«OverflowError: int too long to convert»—. Es exactamente como se cayó la
+# publicación en el servidor, tres intentos seguidos, mientras en un equipo de escritorio
+# pasaba porque la dirección caía baja. Con `LPARAM` el último argumento es del ancho del
+# puntero, así que da igual dónde caiga. Se declara una sola vez.
+_SENDA_AVISO = None
+
+
+def _senda_del_aviso():
+    """`user32.SendMessageW` con la firma de Windows declarada."""
+    global _SENDA_AVISO
+    if _SENDA_AVISO is None:
+        import ctypes
+        from ctypes import wintypes
+
+        senda = ctypes.windll.user32.SendMessageW  # type: ignore[attr-defined]
+        senda.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+        senda.restype = wintypes.LPARAM
+        _SENDA_AVISO = senda
+    return _SENDA_AVISO
+
+
+def _aviso_de_tema_a_la_ventana(ventana, mensaje: int) -> str:
+    """Manda el aviso de cambio de tema a la ventana y dice desde dónde se mandó.
+
+    Lo que se comprueba con esto es que el aviso de Windows llega y se aplica; pero el texto va
+    puesto, a propósito, **en una página reservada por encima de los 32 bits** cuando el sistema
+    deja reservarla. Esa dirección alta es la que no cabía en la llamada sin firma declarada: la
+    comprobación así no depende de dónde caiga la dirección del texto esta vez. Si el sistema no
+    deja reservar arriba, se manda desde la dirección de siempre —se pierde cobertura, no se
+    inventa un fallo— y el detalle de la comprobación lo dice.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    kernel32.VirtualAlloc.restype = ctypes.c_void_p
+    kernel32.VirtualAlloc.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_ulong, ctypes.c_ulong]
+    kernel32.VirtualFree.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_ulong]
+
+    texto = ctypes.create_unicode_buffer("ImmersiveColorSet")
+    # MEM_COMMIT | MEM_RESERVE (0x3000) con PAGE_READWRITE (0x04), en la zona alta del espacio
+    # de usuario de 64 bits.
+    alta = kernel32.VirtualAlloc(ctypes.c_void_p(0x7F00_0000_0000), 0x1000, 0x3000, 0x04)
+    try:
+        if alta and int(alta) >= 1 << 31:
+            ctypes.memmove(alta, texto, ctypes.sizeof(texto))
+            direccion = int(alta)
+            de_donde = f"desde una dirección alta (0x{direccion:x})"
+        else:
+            direccion = ctypes.addressof(texto)
+            de_donde = "desde la dirección de siempre"
+        _senda_del_aviso()(
+            wintypes.HWND(int(ventana.winId())),
+            wintypes.UINT(mensaje),
+            wintypes.WPARAM(0),
+            wintypes.LPARAM(direccion),
+        )
+    finally:
+        if alta:
+            kernel32.VirtualFree(ctypes.c_void_p(int(alta)), 0, 0x8000)  # MEM_RELEASE
+    return f'WM_SETTINGCHANGE con "ImmersiveColorSet" {de_donde}'
+
+
 def test_cleaner() -> None:
     """Catálogo de limpieza: vista previa, garantías y papelera."""
     check(
@@ -7660,13 +7727,7 @@ def test_interface() -> None:
             # seguridad, que también acaba en `poll`.
             ventana.theme_watcher.poll()
             return "lectura directa (sin API de Windows)"
-        from ctypes import c_void_p, c_wchar_p, cast, windll
-
-        texto = c_wchar_p("ImmersiveColorSet")
-        windll.user32.SendMessageW(
-            int(ventana.winId()), apariencia.WM_SETTINGCHANGE, 0, cast(texto, c_void_p).value
-        )
-        return 'WM_SETTINGCHANGE con "ImmersiveColorSet"'
+        return _aviso_de_tema_a_la_ventana(ventana, apariencia.WM_SETTINGCHANGE)
 
     system_mode_de_verdad = apariencia.system_mode
     try:
