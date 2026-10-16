@@ -324,7 +324,7 @@ Desinstalar conserva estos datos salvo que se pidan borrar desde el asistente.
 .venv\Scripts\python.exe tests\smoke_test.py
 ```
 
-**1045 comprobaciones** sin marco externo: métricas y disco reales, persistencia, alertas,
+**1046 comprobaciones** sin marco externo: métricas y disco reales, persistencia, alertas,
 los **avisos propios** (umbrales, orden, descarte que caduca y vuelve si la cosa empeora, y qué
 categorías marca cada uno al abrir la limpieza desde él) y el
 **catálogo de limpieza** (vista previa que no borra, archivos en uso que no se prometen, carpetas
@@ -351,9 +351,13 @@ verdad. Los **perfiles** se prueban con archivos de todo tipo —rotos, ajenos, 
 más nuevo y con campos del tipo que no toca— y por la ventana: que abrir uno marque sus ajustes **sin
 aplicar nada**, que la limpieza llegue a su ventana ya marcada y que el mantenimiento vuelva a su
 página. El **módulo nativo** se prueba con la DLL compilada: que el listado de aplicaciones salga del
-registro sin arrancar PowerShell, que traiga lo que traía, que sin módulo se pregunte a PowerShell
-como antes y que el recorrido del disco dé **exactamente lo mismo** que el de Python (con un árbol de
-prueba con enlaces y uniones). Las **aplicaciones preinstaladas** y los
+registro sin arrancar PowerShell, que lea ese registro **igual que Python** (una segunda
+implementación escrita a mano, como el recorrido del disco), que no pierda ninguna aplicación que no
+sea de Windows, que sin módulo se pregunte a PowerShell como antes y que el recorrido del disco dé
+**exactamente lo mismo** que el de Python (con un árbol de prueba con enlaces y uniones). En los
+recuentos que separa PowerShell de lo que hay en el registro, la diferencia se cuenta y se enseña:
+Windows Server guarda las aplicaciones que trae provisionadas solo en su base de datos interna (véase
+[DOCUMENTACION.md](DOCUMENTACION.md), apartado 3.12). Las **aplicaciones preinstaladas** y los
 **plugins** se prueban con un PowerShell interceptado y una carpeta de plugins temporal: la lista
 blanca, los riesgos, que una pieza del sistema no llegue a ejecutar nada, que el nombre del paquete
 vaya por variable de entorno y no dentro del comando, la validación campo por campo de los JSON (con
@@ -396,7 +400,7 @@ pctoolkit/
                              el módulo nativo opcional de C++ (`native.py`) y los perfiles
   ui/                        Interfaz PySide6: tema, accesibilidad, iconos, widgets, gráfica,
                              vigía de la GPU, bandeja, diálogos y una página por sección
-tests/smoke_test.py          1045 comprobaciones (núcleo, interfaz, instalador, firma, dependencias,
+tests/smoke_test.py          1046 comprobaciones (núcleo, interfaz, instalador, firma, dependencias,
                              logotipo, actualizaciones, ajustes de Windows, perfiles, módulo nativo,
                              aplicaciones, plugins, limpieza, limpieza programada y avisos)
 tests/documentacion.py       Guardas de capturas, informe y recuentos (van aparte)

@@ -4,7 +4,12 @@ Las partes que se llevan al módulo nativo (C++, `nativo\\*.cpp`, se compila con
 `nativo\\construir.py`) son las que se midieron antes y después:
 
 * **paquetes instalados**: leerlos del registro en vez de preguntarle a PowerShell. Medido en
-  un equipo con 97 paquetes: 5,73 s con `Get-AppxPackage` frente a ~0,05 s por aquí.
+  un equipo con 97 paquetes: 5,73 s con `Get-AppxPackage` frente a ~0,05 s por aquí. El
+  registro se lee en **dos** sitios —lo que la cuenta tiene registrado y lo que la máquina
+  tiene puesto para ella—, porque uno solo deja fuera aplicaciones instaladas. Lo que el
+  registro no puede dar son las aplicaciones que algunas ediciones (Windows Server) guardan
+  solo en su base de datos interna: ahí el listado trae menos que `Get-AppxPackage` (véase
+  `pctoolkit/core/apps.py` y, en la documentación, el apartado 3.12).
 * **recorrido del disco**: va en el módulo, pero **no se usa por defecto**: en las medidas
   sale igual que el de Python (0,83 s frente a 0,83 s en `C:\\Program Files`, 5,44 frente a
   5,18 en `C:\\Windows\\WinSxS`), porque el recorrido es de disco y `os.scandir` ya es C. Se
@@ -145,7 +150,10 @@ def listar_paquetes() -> list[dict[str, Any]] | None:
 
     Devuelve lo mismo que traía `Get-AppxPackage` en lo que la aplicación usa —nombre
     completo, nombre visible, carpeta, marco de trabajo y si viene con Windows—, pero sin
-    arrancar un proceso de PowerShell (que era lo que costaba los seis segundos).
+    arrancar un proceso de PowerShell (que era lo que costaba los seis segundos). En Windows
+    10 y 11, que es donde vive la aplicación, el registro trae **más** que `Get-AppxPackage`
+    (medido: 98 y 89 en un Windows 11); en ediciones de servidor puede traer menos, porque
+    Windows guarda ahí las aplicaciones provisionadas solo en su base de datos interna.
     """
     libreria, _motivo = _cargar()
     if libreria is None:

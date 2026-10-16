@@ -801,6 +801,17 @@ se deja **vacío a propósito**, para que la lista enseñe el nombre del paquete
 compilado, se sigue preguntando a PowerShell **como antes**: el módulo es opcional y esta es su única
 parte que se usa por defecto.
 
+El listado sale de **dos sitios del registro**, porque ninguno está completo por sí solo: lo que la
+cuenta tiene **registrado** y lo que la máquina tiene **puesto para ella**, quedándose solo con lo que
+existe de verdad en el disco. Así aparecen aplicaciones que la primera clave no tenía: medido en este
+equipo, Intel Arc Software —instalada, con su carpeta en `WindowsApps`, y que `Get-AppxPackage` ni
+siquiera cuenta—. Lo que el registro **no** puede dar son las aplicaciones que Windows trae
+provisionadas en algunas ediciones: en Windows Server las guarda **solo en su base de datos interna**
+(que es la que consulta `Get-AppxPackage`) y no las escribe en el registro, así que ahí ni están en el
+repositorio ni en el almacén (comprobado en un Windows Server 2025 con Seguridad de Windows, el
+Narrador, el Centro de opiniones y WSL). En Windows 10 y 11 —los sistemas para los que es esta
+aplicación— pasa lo contrario: el registro trae **más** que `Get-AppxPackage`.
+
 Mide lo que ocupa cada uno con un tope de tiempo —una aplicación con miles de archivos no puede
 bloquear la lista— y los clasifica:
 
@@ -932,8 +943,10 @@ Lleva dos trabajos, cada uno en su archivo, y cada uno se llevó a C++ por un mo
 | Listado de aplicaciones instaladas | `paquetes_appx.cpp` | 5,73 s de `Get-AppxPackage` (PowerShell) → **0,05 s** leyéndolo del registro |
 | Recorrido del disco | `escaner_disco.cpp` | Medido **igual** que el de Python (0,83 s frente a 0,83 s): es disco, no CPU |
 
-El segundo no se usa por defecto, precisamente por eso: llevar a C++ algo que ya iba en C no mejora
-nada y añade una pieza más que mantener. Se puede encender con `PCTOOLKIT_NATIVO_DISCO=1` para
+El primero lee el registro en **dos** sitios —lo que la cuenta tiene registrado y lo que la máquina
+tiene puesto para ella—, porque uno solo deja fuera aplicaciones instaladas (véase 3.12) y en un
+Windows Server deja fuera cuatro. El segundo no se usa por defecto, precisamente por eso: llevar a C++
+algo que ya iba en C no mejora nada y añade una pieza más que mantener. Se puede encender con `PCTOOLKIT_NATIVO_DISCO=1` para
 medirlo, y la suite comprueba que los dos caminos dan **exactamente lo mismo** sobre un árbol de
 prueba con enlaces, uniones y acentos.
 
@@ -1059,7 +1072,7 @@ pctoolkit/
                                 GPU (`gpu_monitor.py`), controlador de los avisos (`insights.py`),
                                 ventana de limpieza (`clean.py`), bandeja, ventana principal y una
                                 página por módulo
-tests/smoke_test.py             1045 comprobaciones automáticas (núcleo, interfaz, instalador,
+tests/smoke_test.py             1046 comprobaciones automáticas (núcleo, interfaz, instalador,
                                 firma, dependencias, logotipo, actualizaciones, ajustes de Windows,
                                 perfiles, módulo nativo, aplicaciones preinstaladas, plugins,
                                 limpieza, limpieza programada y avisos)
@@ -1162,7 +1175,7 @@ de instalar, ejecutar y desinstalar.
 Pruebas:
 
 ```bat
-.venv\Scripts\python.exe tests\smoke_test.py            1045 comprobaciones
+.venv\Scripts\python.exe tests\smoke_test.py            1046 comprobaciones
 .venv\Scripts\python.exe tools\verificar_instalacion.py  Instala de verdad y desinstala al terminar
 .venv\Scripts\python.exe tests\documentacion.py         Solo las guardas de documentación
 .venv\Scripts\python.exe tests\smoke_test.py --sin-documentacion   Sin las guardas de documentación
@@ -1177,7 +1190,7 @@ comprueba únicamente cuando se ejecutan como última parte de la suite.
 
 El total depende del equipo: unas pocas comprobaciones solo se hacen si el sistema tiene bandeja,
 si hay `signtool` disponible, si `dist\` ya está compilado o si el módulo nativo está compilado (y
-comprobado con la DLL en su sitio). Con la plataforma real de Qt salen 1045;
+comprobado con la DLL en su sitio). Con la plataforma real de Qt salen 1046;
 en modo sin pantalla son unas cuantas menos, porque las que necesitan una bandeja de verdad no se
 ejecutan (la comprobación de que la bandeja solo se usa si el sistema la tiene sí se hace siempre).
 

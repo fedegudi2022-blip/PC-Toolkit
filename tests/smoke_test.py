@@ -3895,6 +3895,153 @@ def test_aplicaciones() -> None:
         apps._run_script = original_run  # type: ignore[assignment]  # noqa: SLF001
 
 
+# --- El listado de paquetes, leído del registro desde Python ----------------------
+# El módulo nativo lee el registro y devuelve el listado de aplicaciones. Para comprobarlo hace
+# falta una segunda implementación, escrita a mano y sin C++ de por medio, con la que compararlo:
+# es la misma idea que el recorrido del disco de Python, que sirve para comprobar el nativo. Y no
+# sobra: en el servidor el módulo traía **cuatro paquetes menos** que `Get-AppxPackage` y la
+# diferencia no era del código, sino de dónde se lee (véase la comprobación de más abajo).
+REPOSITORIO_DE_PAQUETES = (
+    "Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\"
+    "AppModel\\Repository\\Packages"
+)
+ALMACEN_DE_PAQUETES = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore"
+# Editores de Microsoft: `8wekyb3d8bbwe` es el de la Tienda y `cw5n1h2txyewy` el de las
+# aplicaciones del sistema. Sirven para distinguir lo que se pierde de Windows de lo que se
+# pierde de un tercero.
+EDITORES_DE_WINDOWS = ("8wekyb3d8bbwe", "cw5n1h2txyewy")
+
+
+def _subclaves(raiz: int, ruta: str) -> list[str]:
+    """Nombres de las subclaves de una clave (lista vacía si no está o no se puede abrir)."""
+    import winreg
+
+    nombres: list[str] = []
+    try:
+        with winreg.OpenKey(raiz, ruta) as clave:
+            indice = 0
+            while True:
+                try:
+                    nombres.append(winreg.EnumKey(clave, indice))
+                except OSError:
+                    break
+                indice += 1
+    except OSError:
+        return []
+    return nombres
+
+
+def _sid_del_usuario() -> str:
+    """El SID de quien ejecuta esto, que es lo que identifica su parte del almacén."""
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.windll.advapi32  # type: ignore[attr-defined]
+    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    advapi32.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_wchar_p)]
+    # La firma se declara a mano: `GetCurrentProcess` devuelve un puntero, y sin declararlo
+    # `ctypes` lo pasaría como entero de 32 bits (el seudotestigo -1 se corta y no vale).
+    kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+    advapi32.OpenProcessToken.argtypes = [
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    testigo = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(testigo)):
+        return ""
+    try:
+        largo = wintypes.DWORD()
+        advapi32.GetTokenInformation(testigo, 1, None, 0, ctypes.byref(largo))  # 1 = TokenUser
+        reserva = ctypes.create_string_buffer(max(1, largo.value))
+        if not advapi32.GetTokenInformation(testigo, 1, reserva, largo, ctypes.byref(largo)):
+            return ""
+        # `TOKEN_USER` empieza por el puntero al SID.
+        puntero = ctypes.cast(reserva, ctypes.POINTER(ctypes.c_void_p))[0]
+        texto = ctypes.c_wchar_p()
+        if not advapi32.ConvertSidToStringSidW(ctypes.c_void_p(puntero), ctypes.byref(texto)):
+            return ""
+        sid = texto.value or ""
+        kernel32.LocalFree(ctypes.cast(texto, ctypes.c_void_p))
+        return sid
+    finally:
+        kernel32.CloseHandle(testigo)
+
+
+def paquetes_del_registro_en_python() -> dict[str, tuple[str, bool, bool]]:
+    r"""Los paquetes del registro leídos desde Python: `{paquete: (carpeta, marco, de serie)}`.
+
+    Es la misma lectura que hace `nativo\paquetes_appx.cpp`: el repositorio del usuario más lo
+    que la máquina tiene puesto para él (`AppxAllUserStore\\<SID>`), saltando los huecos de
+    paquete (los que llevan `~`, que son registros de conjunto y no aplicaciones), lo que ya no
+    está en el disco y lo que repite una familia ya listada. Los nombres se comparan sin
+    distinguir mayúsculas, porque el mismo paquete aparece escrito de las dos maneras según la
+    clave.
+    """
+    import winreg
+
+    def de_serie(nombre: str) -> bool:
+        return nombre.lower() in serie
+
+    def familia(identificador: str) -> str:
+        partes = identificador.split("_")
+        return f"{partes[0]}_{partes[-1]}" if len(partes) > 1 else identificador
+
+    def anotar(paquetes: dict, identificador: str, carpeta: str, marco: bool) -> None:
+        paquetes[identificador] = (carpeta, bool(marco), de_serie(identificador))
+
+    def ya_esta(paquetes: dict, identificador: str) -> bool:
+        buscada = familia(identificador).lower()
+        return any(
+            nombre.lower() == identificador.lower() or familia(nombre).lower() == buscada
+            for nombre in paquetes
+        )
+
+    serie = {
+        nombre.lower()
+        for nombre in _subclaves(winreg.HKEY_LOCAL_MACHINE, f"{ALMACEN_DE_PAQUETES}\\InboxApplications")
+    }
+    paquetes: dict[str, tuple[str, bool, bool]] = {}
+    for nombre in _subclaves(winreg.HKEY_CURRENT_USER, REPOSITORIO_DE_PAQUETES):
+        carpeta = ""
+        marco = False
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, f"{REPOSITORIO_DE_PAQUETES}\\{nombre}"
+            ) as detalle:
+                carpeta = str(winreg.QueryValueEx(detalle, "PackageRootFolder")[0])
+                marco = bool(winreg.QueryValueEx(detalle, "Framework")[0])
+        except OSError:
+            # Sin poder leer el detalle, el paquete se lista igual: lo que no puede pasar es
+            # perder una aplicación por no poder leer un dato suyo.
+            pass
+        anotar(paquetes, nombre, carpeta, marco)
+
+    sid = _sid_del_usuario()
+    if sid:
+        ruta = f"{ALMACEN_DE_PAQUETES}\\{sid}"
+        for nombre in _subclaves(winreg.HKEY_LOCAL_MACHINE, ruta):
+            if "~" in nombre.split("_") or ya_esta(paquetes, nombre):
+                continue
+            try:
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, f"{ruta}\\{nombre}") as detalle:
+                    manifiesto = str(winreg.QueryValueEx(detalle, "Path")[0])
+            except OSError:
+                continue
+            # El valor apunta al manifiesto; la carpeta es la que lo contiene, y en los
+            # conjuntos está un nivel más abajo (`AppxMetadata`).
+            carpeta = str(Path(manifiesto).parent)
+            if Path(carpeta).name == "AppxMetadata":
+                carpeta = str(Path(carpeta).parent)
+            if not Path(carpeta).is_dir():
+                continue
+            anotar(paquetes, nombre, carpeta, False)
+    return paquetes
+
+
 def test_nativo() -> None:
     """Módulo nativo (C++): listado de aplicaciones sin PowerShell y recorrido del disco.
 
@@ -3929,15 +4076,61 @@ def test_nativo() -> None:
             bien_formadas and tardado < 2.0 and listado == sorted(listado, key=apps_core.sort_key),
             f"{len(listado)} aplicaciones en {tardado:.3f} s",
         )
+
+        # El módulo de C++ tiene que leer el registro **igual** que Python: ni perder un paquete
+        # ni inventarlo. Esta es la comprobación que vale en cualquier edición de Windows; la del
+        # final compara con lo que ve PowerShell, y eso sí depende de la edición.
+        en_python = paquetes_del_registro_en_python()
+        por_modulo = {entrada.full_name: entrada for entrada in listado}
+        solo_en_python = sorted(set(en_python) - set(por_modulo))
+        solo_en_el_modulo = sorted(set(por_modulo) - set(en_python))
+        con_datos_distintos = sorted(
+            nombre
+            for nombre in set(en_python) & set(por_modulo)
+            if por_modulo[nombre].location != en_python[nombre][0]
+            or por_modulo[nombre].framework != en_python[nombre][1]
+            or por_modulo[nombre].system != en_python[nombre][2]
+        )
+        problemas = solo_en_python + solo_en_el_modulo + con_datos_distintos
+        check(
+            "El módulo lee el registro igual que Python",
+            bool(en_python) and not problemas,
+            (
+                f"{len(en_python)} paquetes leídos de las dos maneras"
+                if not problemas
+                else f"solo en Python: {solo_en_python[:3]}; solo en el módulo: {solo_en_el_modulo[:3]};"
+                f" con la carpeta, el marco o la marca de sistema distintos: {con_datos_distintos[:3]}"
+            ),
+        )
+
+        # --- La vuelta a PowerShell como referencia -----------------------------
+        # Lo que sí se puede exigir en cualquier edición de Windows: que no se pierda ninguna
+        # aplicación que no sea de Windows. En un Windows Server, Windows guarda las aplicaciones
+        # que trae provisionadas (Seguridad de Windows, el Narrador, el Centro de opiniones, WSL)
+        # **solo en su base de datos interna**, que es la que consulta `Get-AppxPackage`, y no las
+        # escribe en el registro: comprobado en un Windows Server 2025, donde las cuatro están en
+        # el disco y en `Get-AppxPackage` pero en ninguna clave del registro (ni el repositorio
+        # del usuario, ni su parte del almacén —vistas de 32 y 64 bits—, ni las de la máquina).
+        # Ahí el módulo no puede traerlas leyendo el registro, así que se cuentan y se enseñan en
+        # el detalle; lo que no se tolera es perder una aplicación de otro editor.
         codigo, salida, _error = original_run(apps_core.LIST_SCRIPT, timeout=120)  # noqa: SLF001
         antiguas = apps_core.parse_packages(salida)
-        faltan = sorted(
+        sin_traer = sorted(
             {entrada.full_name for entrada in antiguas} - {entrada.full_name for entrada in listado}
         )
+        de_windows = [
+            nombre for nombre in sin_traer if apps_core._descomponer(nombre)[3] in EDITORES_DE_WINDOWS  # noqa: SLF001
+        ]
+        ajenas = [nombre for nombre in sin_traer if nombre not in de_windows]
         check(
-            "El listado nativo trae todo lo que traía PowerShell",
-            bool(antiguas) and not faltan,
-            f"{len(antiguas)} por PowerShell, {len(listado)} por el módulo; sin traer: {faltan[:3] or 'ninguna'}",
+            "El listado nativo no pierde ninguna aplicación de otro editor",
+            bool(antiguas) and not ajenas,
+            f"{len(antiguas)} por PowerShell, {len(listado)} por el módulo; "
+            + (
+                f"de Windows y fuera del registro: {len(de_windows)} {[n.split('_')[0] for n in de_windows]}"
+                if de_windows
+                else "sin perder ninguna"
+            ),
         )
     else:
         check(

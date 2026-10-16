@@ -485,9 +485,11 @@ def list_apps_from_registry() -> list[AppEntry] | None:
     """Aplicaciones instaladas leídas del registro por el módulo nativo.
 
     `Get-AppxPackage` tarda varios segundos (medido: 5,73 s con 97 paquetes) porque arranca
-    un PowerShell y le pide el catálogo entero; los mismos datos están en el registro del
-    usuario, al día, y leerlos cuesta milisegundos. Devuelve `None` cuando el módulo no está
-    compilado, para que quien llame decida si pregunta a PowerShell.
+    un PowerShell y le pide el catálogo entero; los mismos datos están en el registro, al día,
+    y leerlos cuesta milisegundos. El módulo lee **dos** sitios —lo que la cuenta tiene
+    registrado y lo que la máquina tiene puesto para ella, quedándose con lo que existe en el
+    disco—, porque uno solo deja fuera aplicaciones instaladas de verdad. Devuelve `None`
+    cuando el módulo no está compilado, para que quien llame decida si pregunta a PowerShell.
     """
     if not IS_WINDOWS:
         return None
@@ -524,9 +526,14 @@ def list_apps(*, with_size: bool = True, timeout: int = 120) -> list[AppEntry]:
     """Aplicaciones instaladas del usuario, ordenadas (las recomendadas primero).
 
     Primero se le pide la lista al **módulo nativo** (el registro, milisegundos) y, si no
-    está compilado, se pregunta a PowerShell como siempre. Los dos caminos devuelven lo
-    mismo: el de PowerShell es además el que se usa si el registro no tiene el listado, que
-    es lo que pasa en algunas ediciones de Windows Server.
+    está compilado, se pregunta a PowerShell como siempre, que es además lo que se usa si el
+    registro no tiene el listado (pasa en algunas ediciones de Windows Server).
+
+    En Windows 10 y 11 los dos caminos coinciden de sobra —el registro trae incluso más—,
+    pero en ediciones de servidor el registro puede traer menos: Windows guarda ahí las
+    aplicaciones que trae provisionadas **solo en su base de datos interna**, que es la que
+    consulta `Get-AppxPackage`, y no las escribe en ninguna clave. Está contado, con lo que se
+    midió, en DOCUMENTACION.md (apartado 3.12).
     """
     if not IS_WINDOWS:
         return []
