@@ -1,4 +1,4 @@
-# PC Toolkit 1.4.0 — qué es, qué hace y cómo funciona
+# PC Toolkit 1.4.1 — qué es, qué hace y cómo funciona
 
 Aplicación de escritorio para **Windows 10 y 11** que reúne el mantenimiento del equipo en un solo
 sitio: libera memoria RAM cuando hace falta, programa el mantenimiento en el propio Windows, vigila
@@ -20,13 +20,13 @@ desinstalador), sin necesidad de ser administrador.
 
 | Módulo | Qué hace |
 | --- | --- |
-| **Inicio** | Medidores de CPU, memoria, disco y red, **tarjeta gráfica** (uso por motor, nombre y controlador), puntuación de salud del equipo, gráfica del historial de las últimas 24 h —CPU, memoria, disco y **tarjeta gráfica**—, detalles del sistema y los procesos que más consumen. |
+| **Inicio** | Medidores de CPU, memoria, disco y red, **tarjeta gráfica** (uso por motor, nombre y controlador), puntuación de salud del equipo, gráfica del historial de las últimas 24 h —CPU, memoria, disco y **tarjeta gráfica**—, detalles del sistema, los procesos que más consumen y los **avisos propios** («la CPU lleva 12 minutos al 88 %», «quedan 4 GB libres», «tienes 12 programas de inicio pesados»), que se pueden descartar **o resolver desde el propio aviso** (apartado 3.13). |
 | **Optimizar memoria** | Libera RAM recortando los conjuntos de trabajo de los procesos y vaciando la caché del sistema (estilo MemReduct), a mano o **automáticamente** al superar un umbral; mide de verdad lo liberado. |
 | **Programas de inicio** | Lista lo que Windows abre solo al encender el equipo (registro, carpetas de inicio y tareas al iniciar sesión), avisa de las entradas que apuntan a programas que ya no están y **desactiva sin borrar nada**, con cada cambio apuntado para deshacerlo. |
 | **Ajustes de Windows** | Catálogo de ajustes recomendados (anuncios y sugerencias, privacidad, telemetría, interfaz y rendimiento) con el flujo **analizar → revisar → aplicar**: el análisis es solo lectura, cada ajuste sale como *Recomendado* o *Ya optimizado* con su riesgo (y escudo si toca `HKEY_LOCAL_MACHINE`), y solo se aplica lo marcado y confirmado, con respaldo `.reg` y vuelta atrás. Dentro van el gestor de **aplicaciones preinstaladas** (debloat, lista blanca y solo el usuario actual) y los **plugins** de ajustes en JSON (apartado 3.12). |
-| **Mantenimiento** | Crea una tarea en el **Programador de tareas de Windows** para limpiar temporales, liberar memoria y generar informes sin abrir la aplicación; muestra próxima ejecución, último resultado e histórico. |
+| **Mantenimiento** | Crea una tarea en el **Programador de tareas de Windows** para limpiar (las categorías que se elijan), liberar memoria y generar informes sin abrir la aplicación; muestra próxima ejecución, último resultado e histórico. |
 | **Analizar disco** | Escaneo por carpetas con barras proporcionales, uso por categoría (vídeo, imágenes, programas…), archivos grandes y navegación hacia dentro con doble clic. |
-| **Herramientas** | 28 accesos directos agrupados por categoría (sistema, mantenimiento, almacenamiento, red y avanzado), buscador y limpieza rápida de archivos temporales. |
+| **Herramientas** | 28 accesos directos agrupados por categoría (sistema, mantenimiento, almacenamiento, red y avanzado), buscador y **liberador de espacio** con vista previa por categorías —temporales del usuario y de Windows, cachés de los navegadores, miniaturas, volcados de error y papelera— que además puede **programar la limpieza de lo marcado** en su propia tarea de Windows (apartados 3.5). |
 | **Tareas** | Registro de mantenimiento con estados, prioridades, fechas límite, plantillas rápidas y estadísticas de progreso. |
 | **Informes** | Exportación a **HTML** (informe visual), **CSV** (Excel) y **JSON**, eligiendo contenido y destino. |
 | **Alertas y bandeja** | Icono de estado en la bandeja del sistema, avisos por umbrales configurables y opción de mantener la app en segundo plano al cerrar la ventana. |
@@ -38,8 +38,8 @@ desinstalador), sin necesidad de ser administrador.
 
 ## 2. El instalador de Windows
 
-**Archivo:** `dist\PC Toolkit Setup.exe` (84,0 MB). Es **un solo archivo**: lleva dentro la
-aplicación comprimida (`pc_toolkit_app.zip`, 37,7 MB, los 166 archivos y el desinstalador) y la saca
+**Archivo:** `dist\PC Toolkit Setup.exe` (85,3 MB). Es **un solo archivo**: lleva dentro la
+aplicación comprimida (`pc_toolkit_app.zip`, 38,4 MB, los 166 archivos y el desinstalador) y la saca
 a una carpeta temporal al instalar, borrándola al terminar. No hay que descomprimir nada ni dejar una
 carpeta al lado; si el instalador encuentra la carpeta `PC Toolkit\` junto a él (por ejemplo al
 probarlo desde `dist\`), la usa directamente y no extrae nada.
@@ -101,7 +101,8 @@ darse por vencida y no abrirse.
   (el registro de la instalación dice cuáles eran), así que actualizar no deja restos.
 - **Desinstalar** desde *Configuración → Aplicaciones → Aplicaciones instaladas*, desde el propio
   desinstalador o desde su menú Inicio. Quita accesos directos, la entrada de registro, el arranque
-  automático y la **tarea de mantenimiento programado** si existía.
+  automático y las **tareas programadas** si existían: la de mantenimiento y la de limpieza (una
+  tarea que apunta a un ejecutable ya desinstalado fallaría todos los días sin decir por qué).
 - **La desinstalación borra solo lo que instaló la aplicación.** Al instalar se deja por escrito en
   `%LOCALAPPDATA%\Programs\PC Toolkit\.pctoolkit_instalacion.json` la lista exacta de archivos que se
   copiaron, y el desinstalador se limita a esa lista; si en la carpeta hay otras cosas (tuyas), las
@@ -133,8 +134,8 @@ Otras opciones: `--sin-escritorio`, `--sin-menu`, `--origen` (carpeta de la apli
   carpeta de prueba con escritorio, menú Inicio y clave de registro propios, comprueba que los
   accesos directos apuntan al programa instalado, que el registro y el arranque automático quedan
   bien, **ejecuta la copia instalada** y desinstala verificando que no queda rastro.
-- **Instalación real en este equipo** (medida): `84,0 MB` de instalador (que ya trae la aplicación
-  dentro), **166 archivos / 85,0 MB** copiados en **10,6 s**, dos accesos directos correctos, entrada
+- **Instalación real en este equipo** (medida): `85,3 MB` de instalador (que ya trae la aplicación
+  dentro), **167 archivos / 85,7 MB** copiados en **8,9 s**, dos accesos directos correctos, entrada
   de registro y arranque automático
   en la bandeja, la copia instalada ejecutando el mantenimiento, y desinstalación dejando todo
   limpio (accesos directos, registro y carpeta eliminados; datos del usuario intactos). Se puede
@@ -218,6 +219,20 @@ python app.py --mantenimiento --antiguedad 72    Solo temporales de más de 72 h
 python app.py --mantenimiento --sin-limpieza --sin-informe --sin-registro
 ```
 
+Hay además un modo de **solo limpieza** (`--limpieza`), que es el que ejecuta la tarea que crea la
+ventana de «Liberar espacio» (apartado 3.5): limpia las categorías indicadas y nada más, sin liberar
+memoria ni generar informes. Es el mismo código de limpieza y el mismo histórico, así que lo que se
+limpia solo se lee igual que lo que se limpia a mano:
+
+```bat
+python app.py --limpieza                                    Solo las categorías guardadas en la ventana
+python app.py --limpieza --categorias temp,browsers,dumps   Las que se indiquen (separadas por comas)
+python app.py --limpieza --categorias recycle --simular      Comprueba qué borraría, sin borrar nada
+```
+
+Una categoría que no se reconozca se omite y se dice cuál; sin ninguna utilizable se usan los
+temporales del usuario, que es lo que la aplicación limpiaba siempre.
+
 ### 3.3 Alertas, bandeja e historial
 
 - **Umbrales independientes** de CPU, memoria y disco (90 % por defecto).
@@ -232,6 +247,8 @@ python app.py --mantenimiento --sin-limpieza --sin-informe --sin-registro
   que terminen las consultas en marcha** —la barra de estado lo indica: «Cerrando: esperando a que
   acaben N tarea(s) en curso…»— en lugar de destruir trabajo a medias. Es lo que evita que Windows
   muestre un error del programa justo al cerrarlo.
+- Los **avisos propios** de la portada son otra cosa (apartado 3.13): estos saltan con el umbral en
+  el momento, y aquellos cuentan la tendencia y se descartan.
 - El **historial** guarda una muestra cada 30 s (configurable) en JSON Lines y conserva 24 horas; en
   Inicio se dibuja con una línea por métrica —CPU, memoria, disco y **tarjeta gráfica**—, leyenda para
   ocultar series y cursor con los valores exactos de cada instante. La tarjeta gráfica es la única que
@@ -253,18 +270,74 @@ Windows (Administrador de tareas, Información del sistema, Liberador de espacio
 disco, Opciones de energía, Configuración de red…). Las que necesitan permisos se marcan con un
 escudo y piden UAC; si se cancelan, la aplicación lo indica sin cerrarse.
 
-La limpieza rápida actúa **solo sobre `%TEMP%` del usuario**, ignora archivos con menos de una hora,
-omite los que están en uso y muestra cuántos archivos y cuántos MB se han liberado.
+El **liberador de espacio** (`pctoolkit.core.cleaner`) trabaja con un **catálogo de objetivos**: cada
+categoría sabe qué carpetas le corresponden, qué antigüedad exige, si necesita permisos de
+administrador y si lo que borra no se puede recuperar. La ventana enseña, **antes de borrar nada**,
+lo que liberaría cada una y lo que se queda fuera:
 
-La antigüedad mínima es una hora de verdad y no se puede desactivar: ni `--antiguedad 0` ni un ajuste
-a cero la bajan, porque un temporal recién escrito puede ser de una instalación en curso. Además:
+| Categoría | Qué toca | Permisos | Se marca sola |
+| --- | --- | --- | --- |
+| Temporales del usuario | `%TEMP%` | No | Sí |
+| Cachés de navegador | Solo `Cache`, `Code Cache`, `GPUCache`… de Chrome, Edge, Brave, Vivaldi, Opera y Firefox | No | Sí (con el navegador cerrado) |
+| Miniaturas e iconos | `thumbcache_*.db` e `iconcache_*.db` de Windows | No | Sí |
+| Volcados de error | `CrashDumps` y los informes de error de Windows | No | Sí |
+| Papelera | La del usuario, por la API del shell | No | **No** (no se puede deshacer) |
+| Temporales de Windows | `C:\Windows\Temp` | Sí | **No** |
+| Caché de Windows Update | `SoftwareDistribution\Download` | Sí | **No** (Windows la administra) |
 
-- **No se siguen los enlaces** (junctions o accesos simbólicos) que haya dentro de `%TEMP%`: si los
-  hubiera, la limpieza se quedaría dentro de `%TEMP%` en vez de borrar al otro lado.
-- **No se toca una carpeta peligrosa.** Si `%TEMP%` apuntara por error a la raíz de una unidad, al
-  perfil del usuario, al escritorio o a una carpeta de Windows, la limpieza se niega y lo explica.
+Lo que hace que esto se pueda ofrecer sin miedo:
+
+- **La vista previa y el borrado son el mismo recorrido.** El número que se enseña (tamaño y
+  archivos) sale de la misma función que después borra, y lo que cambie entre la medida y el borrado
+  se cuenta y se dice. La vista previa **no borra nada**: es solo lectura.
+- **Un archivo en uso no se promete.** Antes de contarlo se intenta abrirlo para escribir, que es
+  exactamente lo que haría falta para borrarlo: si no se puede, se cuenta aparte («N en uso») y se
+  omite al limpiar. Es lo que pasa con las miniaturas mientras el Explorador las tiene abiertas.
+- **Abrir la ventana no borra nada; borrar se confirma siempre.** Los avisos de la portada que
+  hablan de espacio («se pueden liberar 2 GB», «quedan 4 GB libres») traen dentro qué categorías
+  señalan y abren la ventana **con ellas ya marcadas** —las que se pueden limpiar en ese momento,
+  porque una categoría bloqueada se queda sin marcar con su motivo a la vista—. El borrado sigue
+  pidiendo su confirmación con la lista de lo que se va a borrar delante, así que abrir desde un aviso
+  no borra nada por sí solo.
+- **Antigüedad mínima de una hora**, que no se puede desactivar: ni `--antiguedad 0` ni un ajuste a
+  cero la bajan, porque un temporal recién escrito puede ser de una instalación en curso. Las cachés,
+  las miniaturas, los volcados y la papelera no la aplican (no son archivos en uso que estén
+  creciendo): en su lugar exigen que el navegador esté cerrado, o vienen sin marcar.
+- **No se siguen los enlaces** (junctions o accesos simbólicos): la limpieza se queda dentro de la
+  carpeta que le toca en vez de borrar al otro lado.
+- **No se toca una carpeta peligrosa.** Si una categoría apuntara por error a la raíz de una unidad,
+  al perfil del usuario, al escritorio o a una carpeta de Windows, la limpieza se niega y lo explica
+  (vale para las siete categorías, no solo para `%TEMP%`).
 - **Solo se retiran las subcarpetas que quedan vacías de verdad.** Una carpeta con contenido (aunque
   no tenga archivos sueltos y solo le queden subcarpetas dentro) se deja como está.
+- **Las cachés de navegador no tocan el perfil**: contraseñas, cookies, sesiones y marcadores quedan
+  donde están, y solo se limpian con ese navegador cerrado (si está abierto, la categoría aparece
+  como no disponible con el motivo).
+- **La papelera se vacía con la API de Windows** (`SHEmptyRecycleBinW`), no borrando `$Recycle.Bin` a
+  mano, y avisa en la confirmación de que lo que hay ahí no vuelve.
+
+El **mantenimiento automático** limpia las categorías que se dejen marcadas en esa misma ventana
+(casilla «El mantenimiento automático limpia lo que marque aquí») y, de fábrica, solo los temporales
+del usuario: una tarea programada que empiece a vaciar la papelera sola porque la aplicación se
+actualizó sería justo lo que no se quiere. Lo elegido se guarda con la programación
+(`MaintenanceSchedule.clean_targets`) y se ve en la página de Mantenimiento y en la descripción de la
+tarea.
+
+Y la ventana puede **programar la limpieza por su cuenta**, sin activar el mantenimiento completo:
+la tarjeta «Programar esta limpieza» crea una tarea aparte en el Programador de tareas
+(`\PCToolkit\Limpieza PC Toolkit`) que ejecuta `app.py --limpieza --categorias …`, con la misma
+frecuencia, hora y día que se elijan ahí. Solo limpia esas categorías —ni memoria ni informes—, así
+que convive con el mantenimiento: se puede tener una limpieza diaria de temporales y un mantenimiento
+semanal con informe, quitar una sin tocar la otra, y lo programado es exactamente lo que hay marcado
+en ese momento. La tarjeta dice si la tarea está registrada de verdad en Windows (lo pregunta con
+`schtasks`), enseña el estado que lee el propio Programador de tareas —cuándo es la próxima
+ejecución y cómo fue la última, con su resultado— y trae un botón **«Probar ahora»** que la lanza en
+ese momento con `schtasks /Run`, sin esperar a su hora: el resultado aparece en la propia tarjeta en
+cuanto Windows lo anota, y queda en el histórico de Mantenimiento —donde la ejecución se lee como
+«Limpieza: …», con las categorías que se limpiaron, para no confundirla con un mantenimiento
+completo cuando las dos tareas comparten la misma lista—. Avisa en voz alta de que, si entre
+lo marcado hay algo que no se puede deshacer, eso se limpiará solo y sin que estés delante: entonces
+lo pregunta antes de programarlo.
 
 ### 3.6 Tareas e informes
 
@@ -696,6 +769,64 @@ la validación de los plugins y la vuelta atrás son código propio, con la arqu
 
 ---
 
+### 3.13 Avisos propios de la portada
+
+La portada no solo enseña números: los **une** en frases que se pueden leer de un vistazo, con el dato
+que las justifica dentro. El motor (`pctoolkit.core.insights`) es lógica pura —recibe una situación y
+devuelve avisos— y el controlador (`pctoolkit.ui.insights`) es quien reúne los datos de los módulos
+que ya existían:
+
+| Aviso | De dónde sale el número | Cuándo aparece |
+| --- | --- | --- |
+| La CPU lleva N minutos al X % | Media de las muestras del historial (ventana de 10 minutos; no se dice nada con menos de cinco) y el proceso que más gasta | Por encima del umbral de CPU configurado |
+| Quedan X libres en C: | Espacio libre medido (el porcentaje engaña según el tamaño del disco) | Menos de 10 GB (importante por debajo de 5) |
+| El disco del sistema está al X % | Ocupación medida | Por encima del umbral de disco configurado, y solo si aún queda sitio para no repetir el aviso anterior |
+| La memoria está al X % | Uso medido, con el archivo de paginación si está trabajando | Por encima del umbral de memoria configurado |
+| Tienes N programas de inicio pesados | Coste estimado de cada entrada de inicio (el mismo que enseña esa página) | Cinco o más entradas que trabajan al arrancar |
+| N entradas de inicio ya no sirven | Entradas de inicio cuyo archivo ya no está en el equipo | Una o más |
+| Se pueden liberar X | Tamaño de los temporales, las cachés de navegador, las miniaturas y los volcados de error con más de un día (las mismas categorías que mide la ventana de limpieza) | Un giga o más |
+| La salud del equipo está en N/100 | La misma puntuación que enseña la tarjeta de salud | Por debajo de 45 |
+
+Las cuatro reglas que lo mantienen lejos del ruido:
+
+- **Los umbrales son los que ya tiene configurados quien usa el programa** (los de «Ajustes y
+  alertas»), no otros: cambiar el umbral de CPU cambia también el del aviso. Los que no existen en
+  ningún otro sitio (espacio libre, paginación, número de programas de inicio pesados, temporales) son
+  cuatro constantes con su motivo escrito al lado, no cifras redondas al azar.
+- **Sin dato no hay aviso.** Si el historial todavía no tiene muestras suficientes, la CPU no se
+  avisa; si no se pudieron consultar las tareas de inicio, los avisos de inicio no salen.
+- **Cada aviso se descarta y no vuelve a molestar.** El descarte se guarda en
+  `%APPDATA%\PCToolkit\avisos.jsonl` con la **huella** de lo descartado: si la situación sigue igual,
+  no vuelve en una semana; si cambia de tramo (**empeora**: menos de 5 GB libres en vez de 10, más
+  programas de inicio), la huella es otra y el aviso vuelve. En la tarjeta hay un botón para volver a
+  mostrar todos los descartados, y en «Ajustes y alertas → Avisos» un interruptor para apagarlos.
+- **Se puede resolver desde el propio aviso.** Cada aviso lleva al lado lo que hace falta para
+  atenderlo, y **nada cambia sin preguntar**: los cuadros que sí cambian algo llevan el botón con el
+  verbo de lo que va a pasar —**Liberar**, **Desactivar**— con «Cancelar» al lado, para que la
+  respuesta se lea sin dudar de qué se está aceptando.
+  - **Limpieza** («se pueden liberar X», el de espacio libre y el de disco lleno): su botón («Ver qué
+    se puede liberar» el de temporales, **Liberar espacio ahora** los dos de espacio) abre la ventana
+    de limpieza con las categorías que señala **ya marcadas**. El de disco lleno ofrece además
+    «Analizar el disco». Abrir no borra nada: marca, enseña lo que se liberaría y deja la
+    confirmación a quien lo esté usando. Ninguna de esas categorías es la papelera ni pide
+    administrador, así que un aviso nunca marca por su cuenta algo que no se pueda deshacer.
+  - **Memoria** («la memoria está al X %»): **Liberar memoria ahora** pregunta primero, recuerda que
+    no se cierra ninguna aplicación y libera solo lo reservado; «Ver el reparto» lleva a su página,
+    donde se ve qué gasta cada proceso y cómo lo tienes configurado.
+  - **Programas de inicio** («tienes N programas de inicio pesados»): **Desactivar las más pesadas**
+    enumera en la pregunta exactamente qué entradas va a desactivar (solo las que puede, sin
+    administrador), no borra nada y lo apunta con su origen —«desde un aviso»— para poder deshacerlo
+    desde la página de programas de inicio o con «Deshacer». Si no hay ninguna que se pueda cambiar,
+    en vez de fallar en silencio lleva a la página.
+  - **CPU y salud**: llevan al monitor de recursos y al rendimiento, que es donde se mira.
+
+Se calculan como mucho cada 30 s (y al volver a la portada), no con cada muestra: leer el historial
+sesenta veces por minuto para decir lo mismo sería gastar sin motivo. Los datos caros (los programas de
+inicio, que arrancan PowerShell) se piden **una vez en segundo plano** y se refrescan cada media hora.
+En la tarjeta caben cuatro avisos; el resto se cuenta («y N avisos más») en vez de desaparecer.
+
+---
+
 ## 4. Línea de comandos
 
 ```bat
@@ -706,6 +837,7 @@ PC Toolkit.exe --screenshot salida     Guarda una captura de cada página y sale
 PC Toolkit.exe --tema claro            Abre con el tema claro (o `oscuro`/`auto`) sin guardarlo
 PC Toolkit.exe --demo                  Carga tareas de ejemplo
 PC Toolkit.exe --mantenimiento [--simular] [--liberar-memoria] [--antiguedad HORAS]
+PC Toolkit.exe --limpieza [--categorias temp,browsers] [--antiguedad HORAS] [--simular]
 PC Toolkit.exe --comprobar-https        Comprueba (sin red) que esta copia puede usar https y sale
 PC Toolkit.exe --comprobar-actualizaciones  Mira si hay versión nueva, lo cuenta y sale
 PC Toolkit.exe --version
@@ -742,17 +874,21 @@ pctoolkit/
   core/                         Lógica sin interfaz: métricas, tarjeta gráfica (`gpu.py`),
                                 contadores de rendimiento de Windows (`pdh.py`), memoria,
                                 arranque de Windows, mantenimiento, disco, herramientas, tareas,
-                                informes, historial, alertas, preferencias, registro de deshacer y
+                                informes, historial, alertas, avisos propios (`insights.py`), catálogo
+                                de limpieza (`cleaner.py`), Programador de tareas de Windows
+                                (`scheduler.py`), preferencias, registro de deshacer y
                                 actualizaciones desde GitHub (`actualizador.py`), ajustes de Windows
                                 (`windows_settings.py`), aplicaciones preinstaladas (`apps.py`) y
                                 plugins (`plugins.py`)
   ui/                           Interfaz PySide6: temas (claro y oscuro), anuncios accesibles y
                                 roles de los widgets propios, iconos, tarjetas, gráfica, vigía de la
-                                GPU (`gpu_monitor.py`), bandeja, ventana principal y una página por
-                                módulo
-tests/smoke_test.py             851 comprobaciones automáticas (núcleo, interfaz, instalador,
+                                GPU (`gpu_monitor.py`), controlador de los avisos (`insights.py`),
+                                ventana de limpieza (`clean.py`), bandeja, ventana principal y una
+                                página por módulo
+tests/smoke_test.py             981 comprobaciones automáticas (núcleo, interfaz, instalador,
                                 firma, dependencias, logotipo, actualizaciones, ajustes de Windows,
-                                aplicaciones preinstaladas y plugins)
+                                aplicaciones preinstaladas, plugins, limpieza, limpieza programada y
+                                avisos)
   _checks.py                    Recuento de comprobaciones, compartido con las guardas
   documentacion.py              Guardas de documentación: capturas, informe de muestra y recuentos
                                 de las guías (se pueden dejar fuera, véase el apartado 7)
@@ -767,9 +903,9 @@ capturas/                       Imágenes de la documentación (con estado.json 
 
 Al compilar aparecen tres artefactos en `dist\`:
 
-  dist\PC Toolkit\               Programa completo (carpeta autocontenida, 85,0 MB)
-  dist\PC Toolkit.exe            Programa en un solo archivo (47,5 MB)
-  dist\PC Toolkit Setup.exe      Instalador de Windows con la aplicación dentro (84,0 MB)
+  dist\PC Toolkit\               Programa completo (carpeta autocontenida, 85,7 MB)
+  dist\PC Toolkit.exe            Programa en un solo archivo (47,6 MB)
+  dist\PC Toolkit Setup.exe      Instalador de Windows con la aplicación dentro (85,3 MB)
 ```
 
 ---
@@ -843,7 +979,7 @@ de instalar, ejecutar y desinstalar.
 Pruebas:
 
 ```bat
-.venv\Scripts\python.exe tests\smoke_test.py            851 comprobaciones
+.venv\Scripts\python.exe tests\smoke_test.py            981 comprobaciones
 .venv\Scripts\python.exe tools\verificar_instalacion.py  Instala de verdad y desinstala al terminar
 .venv\Scripts\python.exe tests\documentacion.py         Solo las guardas de documentación
 .venv\Scripts\python.exe tests\smoke_test.py --sin-documentacion   Sin las guardas de documentación
@@ -857,9 +993,17 @@ pruebas de código: así una captura todavía por rehacer no bloquea la comproba
 comprueba únicamente cuando se ejecutan como última parte de la suite.
 
 El total depende del equipo: unas pocas comprobaciones solo se hacen si el sistema tiene bandeja,
-si hay `signtool` disponible o si `dist\` ya está compilado. Con la plataforma real de Qt salen 851;
+si hay `signtool` disponible o si `dist\` ya está compilado. Con la plataforma real de Qt salen 981;
 en modo sin pantalla son unas cuantas menos, porque las que necesitan una bandeja de verdad no se
 ejecutan (la comprobación de que la bandeja solo se usa si el sistema la tiene sí se hace siempre).
+
+Las **guardas de documentación** comprueban también el catálogo de limpieza y los avisos: que las
+categorías dejen fuera lo que está en uso (con un archivo abierto sin compartir), que una carpeta
+peligrosa se rechace con su motivo, que un enlace no lleve la limpieza al otro lado, que la selección
+de categorías sobreviva al guardar la programación, que la ventana abierta desde un aviso se monte
+con esas categorías marcadas y aun así pregunte antes de borrar, que la limpieza programada tenga su
+propia tarea (con sus argumentos y su histórico) y que un aviso descartado no vuelva… salvo que la
+situación empeore.
 
 La última comprobación de la suite revisa esta documentación: que las guías hablen de la versión
 actual, que cada imagen citada exista y sea un PNG con el fondo de la paleta de hoy, y que el
@@ -896,17 +1040,17 @@ Publicar es empujar la rama y la etiqueta con el mismo número:
 
 ```bat
 git push origin main
-git push origin v1.4.0
+git push origin v1.4.1
 ```
 
 Antes del día del estreno conviene **ensayarlo**: en «Actions → Publicar la versión (Windows) → Run
-workflow» se lanza el mismo flujo a mano, con una etiqueta de prueba (`v1.4.0-ensayo` si no se dice
+workflow» se lanza el mismo flujo a mano, con una etiqueta de prueba (`v1.4.1-ensayo` si no se dice
 otra). Compila, pasa la suite —incluida la instalación y desinstalación reales—, calcula los SHA-256
 y crea la publicación con sus archivos adjuntos, pero la deja **en borrador y preliminar**: no sale
 en `/releases/latest` (que es lo que consulta el actualizador), no la ve nadie que no pueda ver el
 repositorio y **no gasta ningún número de versión**. Si la etiqueta del ensayo no empieza por
 `v<versión>-`, el trabajo se para antes de compilar, porque se ensaya la versión que dice el código
-y no otra. Una publicación de ensayo se borra con `gh release delete v1.4.0-ensayo --cleanup-tag`.
+y no otra. Una publicación de ensayo se borra con `gh release delete v1.4.1-ensayo --cleanup-tag`.
 
 La etiqueta dispara [`.github/workflows/publicar.yml`](.github/workflows/publicar.yml), que hace
 todo lo demás: comprueba que la etiqueta y `APP_VERSION` coinciden (si no, se para antes de compilar:
@@ -1291,6 +1435,16 @@ mismo camino (`--firmar` con las opciones en `PCTOOLKIT_SIGN_ARGS`) que usarías
   y el estado que escribe el Administrador de tareas) y los servicios se administran aparte. El
   «coste» de cada entrada es una estimación propia a partir de su tipo, no la cifra del Administrador
   de tareas.
+- **Limpieza**: se limpia lo que se marque, y solo dentro de las categorías del catálogo. Los
+  temporales de Windows y la caché de Windows Update necesitan administrador: sin él se enseñan como
+  no disponibles con el motivo (la caché de Windows Update, además, no se marca sola: Windows la
+  administra y borrarla con una actualización a medias puede dejarla a medio instalar). Las cachés de
+  navegador solo se limpian con ese navegador cerrado y nunca tocan el perfil; la **papelera** no se
+  puede deshacer. Al limpiar, se omiten los archivos en uso (y se cuentan aparte en la vista previa).
+- **Avisos propios**: necesitan datos para decir algo, así que el aviso de CPU sostenida no aparece
+  hasta que hay unos minutos de historial (y los de inicio, hasta que se pueden consultar los
+  programas de inicio: son segundos de PowerShell, en segundo plano). Se calculan cada 30 s, no con
+  cada muestra, y lo que se descarta queda descartado una semana… o menos, si la situación empeora.
 
 ---
 

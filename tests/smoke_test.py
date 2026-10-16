@@ -38,7 +38,8 @@ except (AttributeError, ValueError):
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from pctoolkit.core import maintenance, memory, reports, scheduler, tools  # noqa: E402
+from pctoolkit.core import cleaner, maintenance, memory, reports, scheduler, tools  # noqa: E402
+from pctoolkit.core import insights as insights_core  # noqa: E402
 from pctoolkit.core.config import APP_VERSION, COLORS, SURFACES, format_bytes  # noqa: E402
 from pctoolkit.core.disk import list_drives, scan_directory  # noqa: E402
 from pctoolkit.core.memory import MemoryGuard, MemoryOptions  # noqa: E402
@@ -532,10 +533,520 @@ def test_tools() -> None:
         check("Carpeta temporal vacía", not any(temp_dir.iterdir()))
 
 
+def _handle_en_exclusiva(ruta: Path):
+    """Abre un archivo **sin compartir**, para probar la detección de «en uso».
+
+    En Windows un archivo abierto así no se puede borrar (ni abrir para escribir), que es
+    justo lo que el catálogo mira antes de prometer que lo va a liberar. Se abre con permiso
+    de lectura y sin compartir nada: no se modifica el archivo.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    return kernel32.CreateFileW(
+        str(ruta), 0x80000000, 0, None, 3, 0x80, None  # GENERIC_READ, sin compartir, OPEN_EXISTING
+    )
+
+
+def _cerrar_handle(handle) -> None:
+    if handle:
+        import ctypes
+
+        ctypes.windll.kernel32.CloseHandle(handle)  # type: ignore[attr-defined]
+
+
+def test_cleaner() -> None:
+    """Catálogo de limpieza: vista previa, garantías y papelera."""
+    check(
+        "El catálogo trae todas las categorías del limpiador",
+        cleaner.target_keys()
+        == ("temp", "browsers", "thumbnails", "dumps", "recycle", "wintemp", "update_cache"),
+        str(cleaner.target_keys()),
+    )
+    check(
+        "Solo los temporales se limpian solos (una tarea programada no vacía la papelera)",
+        cleaner.normalize_keys(None) == cleaner.DEFAULT_TARGETS == ("temp",),
+        str(cleaner.normalize_keys(None)),
+    )
+    check(
+        "Una categoría desconocida se descarta sin romper la limpieza",
+        cleaner.normalize_keys(["recycle", "inventada", "temp", "temp"]) == ("temp", "recycle"),
+        str(cleaner.normalize_keys(["recycle", "inventada", "temp", "temp"])),
+    )
+    check(
+        "La etiqueta de categorías nombra lo que se limpia",
+        cleaner.keys_label(("temp",)) == "Archivos temporales del usuario"
+        and cleaner.keys_label(()) == "ninguna",
+        cleaner.keys_label(("temp", "recycle")),
+    )
+    # El orden de los campos es el de la estructura de Windows: si se intercambian, la API
+    # responde «correcto» y devuelve los dos números cruzados (el tamaño como número de
+    # elementos, con valores imposibles).
+    check(
+        "La estructura de la papelera tiene los campos en el orden de Windows",
+        [nombre for nombre, _tipo in cleaner._SHQUERYRBINFO._fields_]  # noqa: SLF001
+        == ["cbSize", "i64Size", "i64NumItems"],
+        str([nombre for nombre, _tipo in cleaner._SHQUERYRBINFO._fields_]),  # noqa: SLF001
+    )
+    info = cleaner.recycle_info()
+    check(
+        "La papelera se mide sin administrador (bytes y elementos)",
+        info is None
+        or (
+            isinstance(info, tuple)
+            and len(info) == 2
+            and all(isinstance(valor, int) and valor >= 0 for valor in info)
+        ),
+        str(info),
+    )
+    check(
+        "Las cachés de navegador son cachés, nunca el perfil",
+        all(
+            os.path.basename(carpeta)
+            in ("Cache", "Code Cache", "GPUCache", "ShaderCache", "GrShaderCache", "CacheStorage", "cache2")
+            for carpeta in cleaner.browser_cache_folders()
+        ),
+        f"{len(cleaner.browser_cache_folders())} carpetas de caché",
+    )
+    check(
+        "Solo se cuentan los archivos que casan con el patrón de la categoría",
+        cleaner._matches("thumbcache_128.db", ("thumbcache_*.db", "iconcache_*.db"))  # noqa: SLF001
+        and not cleaner._matches("pegatina.txt", ("thumbcache_*.db", "iconcache_*.db"))  # noqa: SLF001
+        and cleaner._matches("cualquiera.tmp", ()),
+    )
+    wintemp = cleaner.find_target("wintemp")
+    check(
+        "Lo que necesita administrador lo dice en el catálogo",
+        wintemp is not None and wintemp.requires_admin and "administrador" in cleaner._admin_blocker(),  # noqa: SLF001
+    )
+    papelera = cleaner.find_target("recycle")
+    check(
+        "La papelera se declara irreversible (y por eso no viene marcada)",
+        papelera is not None and papelera.irreversible and not papelera.preselected,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        (base / "viejo.tmp").write_bytes(b"0" * 120_000)
+        (base / "nuevo.tmp").write_bytes(b"0" * 60_000)
+        envejecer(base / "viejo.tmp")
+        sub = base / "cache" / "sub"
+        sub.mkdir(parents=True)
+        (sub / "otro.tmp").write_bytes(b"0" * 40_000)
+        envejecer(sub / "otro.tmp")
+
+        plan = cleaner.scan(("temp",), min_age_hours=24.0, temp_folder=str(base))
+        item = plan.item("temp")
+        check(
+            "La vista previa cuenta solo lo antiguo",
+            item is not None and item.files == 2 and item.size == 160_000,
+            f"{item.files} archivos, {format_bytes(item.size)}",
+        )
+        check("La vista previa no borra nada", (base / "viejo.tmp").exists() and (sub / "otro.tmp").exists())
+        check(
+            "El resumen dice lo que se liberaría y cuántas categorías hay",
+            "KB" in plan.summary() and "1 categoría(s)" in plan.summary(),
+            plan.summary(),
+        )
+        check(
+            "El volcado de la vista previa lleva sus datos por categoría",
+            plan.to_dict()["categorias"][0]["categoria"] == "temp"  # type: ignore[index]
+            and plan.to_dict()["archivos"] == 2,  # type: ignore[index]
+        )
+
+        # Un archivo abierto sin compartir: ni se cuenta ni se promete.
+        handle = _handle_en_exclusiva(base / "viejo.tmp")
+        try:
+            bloqueado = bool(handle)
+            con_bloqueo = cleaner.scan(("temp",), min_age_hours=24.0, temp_folder=str(base))
+            bloqueada = con_bloqueo.item("temp")
+            check(
+                "Un archivo en uso no entra en lo que se promete liberar",
+                (bloqueada.locked == 1 and bloqueada.files == 1 and bloqueada.size == 40_000)
+                if bloqueado
+                else (bloqueada.files == 2),
+                f"{bloqueada.locked} en uso, {bloqueada.files} liberables",
+            )
+        finally:
+            _cerrar_handle(handle)
+
+        # El suelo de una hora vale para todo el catálogo, no solo para el paso del mantenimiento.
+        sin_filtro = cleaner.scan(("temp",), min_age_hours=0.0, temp_folder=str(base))
+        check(
+            "Pedir cero horas no se lleva por delante lo recién escrito",
+            sin_filtro.item("temp").files == 2 and sin_filtro.item("temp").recent >= 1,
+            f"{sin_filtro.item('temp').files} liberables, {sin_filtro.item('temp').recent} recientes",
+        )
+
+        simulacion = cleaner.clean(("temp",), min_age_hours=24.0, temp_folder=str(base), dry_run=True)
+        check(
+            "La simulación del catálogo no borra y cuadra con la vista previa",
+            simulacion.dry_run and simulacion.freed == 160_000 and (base / "viejo.tmp").exists(),
+            simulacion.summary(),
+        )
+
+        real = cleaner.clean(("temp",), min_age_hours=24.0, temp_folder=str(base))
+        check(
+            "La limpieza borra lo que prometió la vista previa",
+            real.deleted == 2 and real.freed == 160_000 and real.ok,
+            real.summary(),
+        )
+        check("Lo reciente sigue en su sitio", (base / "nuevo.tmp").exists())
+        check("Las subcarpetas que quedan vacías se retiran", not (base / "cache").exists())
+        check(
+            "El resultado se puede volcar a datos",
+            real.to_dict()["categorias"][0]["categoria"] == "temp"  # type: ignore[index]
+            and real.to_dict()["liberado"] == 160_000,  # type: ignore[index]
+        )
+
+    # Una carpeta peligrosa no se toca, ni en la vista previa ni en la limpieza real.
+    raiz = "C:\\" if os.name == "nt" else "/"
+    rechazado = cleaner.scan(("temp",), temp_folder=raiz).item("temp")
+    check(
+        "Una carpeta peligrosa se rechaza con su motivo",
+        rechazado is not None and not rechazado.available and "Por seguridad" in rechazado.blocked,
+        rechazado.blocked[:70] if rechazado else "",
+    )
+    intento = cleaner.clean(("temp",), temp_folder=raiz).item("temp")
+    check(
+        "La limpieza real tampoco toca una carpeta peligrosa",
+        intento is not None and intento.freed == 0 and bool(intento.blocked),
+        intento.blocked[:70] if intento else "",
+    )
+
+    # Lo que cuelga de un enlace (junction) no es del usuario y no se cuenta.
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp) / "temp"
+        base.mkdir()
+        fuera = Path(tmp) / "fuera"
+        fuera.mkdir()
+        (fuera / "ajeno.tmp").write_bytes(b"0" * 90_000)
+        envejecer(fuera / "ajeno.tmp")
+        creacion = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(base / "enlace"), str(fuera)],
+            capture_output=True,
+            text=True,
+        )
+        con_enlace = cleaner.scan(("temp",), min_age_hours=24.0, temp_folder=str(base))
+        check(
+            "Un enlace no lleva la limpieza al otro lado",
+            (fuera / "ajeno.tmp").exists() and con_enlace.item("temp").files == 0,
+            f"enlace {'creado' if creacion.returncode == 0 else 'no disponible'} · "
+            f"{con_enlace.item('temp').files} archivos contados",
+        )
+
+    # El mantenimiento limpia las categorías de la programación.
+    sin_admin = maintenance.run_maintenance(
+        MaintenanceSchedule(clean_temp=True, export_report=False, clean_targets=("wintemp",)),
+        dry_run=True,
+        register=False,
+    )
+    paso = sin_admin.item("limpieza")
+    check(
+        "Una categoría que necesita administrador no rompe el mantenimiento",
+        paso is not None and paso.ok and bool(paso.detail),
+        paso.detail[:70] if paso else "",
+    )
+    controlada = maintenance.run_maintenance(
+        MaintenanceSchedule(clean_temp=True, export_report=False, clean_targets=("temp",)),
+        dry_run=True,
+        register=False,
+        min_age_hours=24.0,
+    )
+    check(
+        "El mantenimiento deja por escrito qué categorías usa",
+        controlada.item("limpieza").data.get("categorias") == {"temp": controlada.item("limpieza").data["bytes"]},  # type: ignore[union-attr]
+        str(controlada.item("limpieza").data.get("categorias")),  # type: ignore[union-attr]
+    )
+    check(
+        "Una programación antigua (sin categorías) limpia los temporales de siempre",
+        MaintenanceSchedule.from_dict({"limpiar": True}).clean_targets == ("temp",),
+        str(MaintenanceSchedule.from_dict({"limpiar": True}).clean_targets),
+    )
+    ida_vuelta = MaintenanceSchedule.from_dict(
+        MaintenanceSchedule(clean_targets=("temp", "recycle")).to_dict()
+    )
+    check(
+        "Las categorías sobreviven al guardar y volver a leer",
+        ida_vuelta.clean_targets == ("temp", "recycle"),
+        str(ida_vuelta.clean_targets),
+    )
+    descripcion = ", ".join(ida_vuelta.task_list())
+    check(
+        "La descripción de la tarea dice qué categorías limpia",
+        "limpiar (Archivos temporales del usuario" in descripcion
+        and "Papelera de reciclaje" in descripcion,
+        descripcion,
+    )
+
+    # Las categorías que la portada mide y señala en su aviso: las que no piden administrador y
+    # no borran nada que no se recupere solo. La papelera queda fuera a propósito: un aviso no
+    # puede marcar por su cuenta algo que no se puede deshacer.
+    recomendadas = [cleaner.find_target(clave) for clave in cleaner.RECOMMENDED_TARGETS]
+    check(
+        "Las categorías que la portada señala no piden administrador ni son irreversibles",
+        bool(cleaner.RECOMMENDED_TARGETS)
+        and all(objetivo is not None for objetivo in recomendadas)
+        and all(
+            not objetivo.requires_admin and not objetivo.irreversible
+            for objetivo in recomendadas
+            if objetivo is not None
+        )
+        and "recycle" not in cleaner.RECOMMENDED_TARGETS,
+        cleaner.keys_label(cleaner.RECOMMENDED_TARGETS),
+    )
+
+
+def test_insights() -> None:
+    """Avisos propios: umbrales, orden, descarte persistente y caducidad."""
+
+    def ev(**cambios) -> insights_core.Evidence:
+        datos = dict(
+            cpu_avg=None,
+            cpu_minutes=0.0,
+            ram_percent=0.0,
+            swap_percent=0.0,
+            disk_percent=0.0,
+            disk_free=0,
+            health_score=100.0,
+        )
+        datos.update(cambios)
+        return insights_core.Evidence(**datos)
+
+    check(
+        "Un pico de CPU no genera aviso: hace falta la media de un rato",
+        insights_core.evaluate(ev(cpu_avg=95.0, cpu_minutes=0.5)) == [],
+    )
+    cpu = insights_core.evaluate(
+        ev(cpu_avg=91.0, cpu_minutes=12.0, cpu_top_process="chrome.exe", cpu_top_percent=41.0)
+    )
+    check(
+        "La CPU sostenida se cuenta con su media y su proceso",
+        [aviso.id for aviso in cpu] == ["cpu-sostenida"]
+        and cpu[0].severity == insights_core.SEVERITY_WARN
+        and "chrome.exe" in cpu[0].detail
+        and "41" in cpu[0].detail,
+        cpu[0].title if cpu else "",
+    )
+    check(
+        "Sin superar el umbral no hay aviso de CPU",
+        insights_core.evaluate(ev(cpu_avg=50.0, cpu_minutes=30.0)) == [],
+    )
+    check(
+        "El umbral del aviso es el que tiene configurado el usuario",
+        len(insights_core.evaluate(ev(cpu_avg=60.0, cpu_minutes=15.0, thresholds={"cpu": 50.0}))) == 1
+        and insights_core.evaluate(ev(cpu_avg=60.0, cpu_minutes=15.0, thresholds={"cpu": 70.0})) == [],
+    )
+    espacio = insights_core.evaluate(ev(disk_free=4 * 1024**3, disk_percent=96.0, disk_mount="C:\\"))
+    check(
+        "Poco espacio libre sale como importante (y sin repetir el de porcentaje)",
+        [aviso.id for aviso in espacio] == ["poco-espacio"]
+        and espacio[0].severity == insights_core.SEVERITY_BAD,
+        espacio[0].title if espacio else "",
+    )
+    holgado = insights_core.evaluate(ev(disk_free=120 * 1024**3, disk_percent=92.0))
+    check(
+        "Disco por encima del umbral pero con sitio: aviso normal",
+        [aviso.id for aviso in holgado] == ["disco-lleno"]
+        and holgado[0].severity == insights_core.SEVERITY_WARN,
+        holgado[0].title if holgado else "",
+    )
+    memoria = insights_core.evaluate(ev(ram_percent=93.0, swap_percent=60.0))
+    check(
+        "Memoria al límite y paginando es un aviso importante",
+        [aviso.id for aviso in memoria] == ["memoria-alta"]
+        and memoria[0].severity == insights_core.SEVERITY_BAD
+        and "paginación" in memoria[0].detail,
+        memoria[0].title if memoria else "",
+    )
+    check(
+        "El aviso de memoria libera desde el propio aviso (y deja verlo con calma)",
+        memoria[0].action == "liberar-memoria"
+        and memoria[0].action_label == "Liberar memoria ahora"
+        and memoria[0].secondary_action == "memoria"
+        and "pregunta antes" in memoria[0].detail,
+        f"{memoria[0].action} · {memoria[0].secondary_action}",
+    )
+    inicio = insights_core.evaluate(ev(startup_total=40, startup_heavy=12, startup_dead=2))
+    check(
+        "Programas de inicio pesados y entradas muertas, con sus cifras",
+        [aviso.id for aviso in inicio] == ["inicio-pesado", "inicio-muerto"]
+        and "12" in inicio[0].title
+        and inicio[0].severity == insights_core.SEVERITY_BAD,
+        str([aviso.id for aviso in inicio]),
+    )
+    check(
+        "El aviso de inicio pesado desactiva desde el propio aviso (y dice que se puede deshacer)",
+        inicio[0].action == "inicio-pesado"
+        and inicio[0].action_label == "Desactivar las más pesadas"
+        and inicio[0].secondary_action == "inicio"
+        and "no se borra nada" in inicio[0].detail
+        and "pregunta antes" in inicio[0].detail,
+        f"{inicio[0].action} · {inicio[0].secondary_action}",
+    )
+    check(
+        "El de entradas muertas sigue llevando a la página (ahí se ven una a una)",
+        inicio[1].action == "inicio" and not inicio[1].secondary_action,
+        inicio[1].action,
+    )
+    check(
+        "Con pocos programas de inicio no se avisa de nada",
+        insights_core.evaluate(ev(startup_total=8, startup_heavy=3)) == [],
+    )
+    check(
+        "Sin entradas muertas no hay aviso de entradas muertas",
+        [aviso.id for aviso in insights_core.evaluate(ev(startup_total=8, startup_dead=0))] == [],
+    )
+    temporales = insights_core.evaluate(ev(temp_bytes=3 * 1024**3, temp_files=900))
+    check(
+        "Los temporales acumulados se cuentan con su tamaño",
+        [aviso.id for aviso in temporales] == ["temporales"]
+        and temporales[0].severity == insights_core.SEVERITY_INFO
+        and "900" in temporales[0].detail,
+        temporales[0].title if temporales else "",
+    )
+    check(
+        "Un poco de temporales no merece un aviso",
+        insights_core.evaluate(ev(temp_bytes=100 * 1024**2)) == [],
+    )
+    # El aviso de limpieza lleva dentro qué categorías marcar: al abrirlo desde la portada
+    # vienen marcadas, y no se borra nada hasta confirmarlo.
+    con_medicion = insights_core.evaluate(
+        ev(temp_bytes=3 * 1024**3, clean_bytes=3 * 1024**3, clean_targets=("temp", "thumbnails"))
+    )[0]
+    check(
+        "El aviso de temporales dice qué categorías se marcarían",
+        con_medicion.targets == ("temp", "thumbnails")
+        and con_medicion.to_dict()["categorias"] == ["temp", "thumbnails"]  # type: ignore[index]
+        and con_medicion.to_dict()["datos"]["objetivos"] == ["temp", "thumbnails"],  # type: ignore[index]
+        str(con_medicion.targets),
+    )
+    sin_medicion = insights_core.evaluate(ev(temp_bytes=3 * 1024**3))[0]
+    check(
+        "Sin medición previa marca las recomendadas (nunca la papelera)",
+        sin_medicion.targets == cleaner.RECOMMENDED_TARGETS
+        and "recycle" not in sin_medicion.targets,
+        str(sin_medicion.targets),
+    )
+    check(
+        "Y el detalle dice que nada se borra hasta confirmarlo",
+        "confirmes" in sin_medicion.detail,
+        sin_medicion.detail[-70:],
+    )
+    espacio_marcado = insights_core.evaluate(ev(disk_free=2 * 1024**3, disk_percent=97.0))[0]
+    check(
+        "El aviso de poco espacio abre la limpieza marcada y deja el analizador al lado",
+        espacio_marcado.action == "limpieza"
+        and espacio_marcado.targets == cleaner.RECOMMENDED_TARGETS
+        and espacio_marcado.secondary_action == "disco"
+        and "confirmes" in espacio_marcado.detail,
+        f"{espacio_marcado.action} · {espacio_marcado.secondary_action}",
+    )
+    lleno_marcado = insights_core.evaluate(
+        ev(disk_free=120 * 1024**3, disk_percent=92.0, clean_targets=("browsers",))
+    )[0]
+    check(
+        "El aviso de disco lleno marca lo que se ha medido con contenido",
+        lleno_marcado.action == "limpieza" and lleno_marcado.targets == ("browsers",),
+        str(lleno_marcado.targets),
+    )
+    check(
+        "La salud baja también se explica",
+        [aviso.id for aviso in insights_core.evaluate(ev(health_score=40.0))] == ["salud-baja"]
+        and insights_core.evaluate(ev(health_score=80.0)) == [],
+    )
+
+    varios = insights_core.evaluate(
+        ev(
+            cpu_avg=96.0,
+            cpu_minutes=20.0,
+            disk_free=4 * 1024**3,
+            disk_percent=96.0,
+            startup_total=30,
+            startup_heavy=6,
+            startup_dead=1,
+            temp_bytes=2 * 1024**3,
+        )
+    )
+    ids = [aviso.id for aviso in varios]
+    check(
+        "Los avisos van de más a menos grave",
+        ids[:2] == ["cpu-sostenida", "poco-espacio"]
+        and ids[-2:] == ["inicio-muerto", "temporales"],
+        str(ids),
+    )
+    visibles, ocultos = insights_core.visible(varios)
+    check(
+        "La tarjeta no se llena: cuatro como mucho y el resto se cuenta",
+        len(visibles) == insights_core.MAX_VISIBLE
+        and ocultos == len(varios) - insights_core.MAX_VISIBLE
+        and ocultos >= 1,
+        f"{len(visibles)} visibles, {ocultos} ocultos de {len(varios)}",
+    )
+    check(
+        "Cada aviso lleva su huella y sus datos",
+        bool(varios[0].fingerprint)
+        and varios[0].to_dict()["gravedad"] == varios[0].severity
+        and "cpu_media" in varios[0].to_dict()["datos"],  # type: ignore[operator]
+        varios[0].to_dict()["huella"],  # type: ignore[index]
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = insights_core.InsightStore(Path(tmp) / "avisos.jsonl")
+        cpu_aviso = varios[0]
+        store.dismiss(cpu_aviso, now=1000.0)
+        vigentes = store.dismissed(now=1000.0)
+        check(
+            "El descarte se guarda con la huella de lo que se descartó",
+            vigentes.get(cpu_aviso.id) == cpu_aviso.fingerprint,
+            str(vigentes),
+        )
+        repetido = insights_core.evaluate(ev(cpu_avg=96.0, cpu_minutes=20.0), dismissed=vigentes)
+        check(
+            "Un aviso descartado no vuelve a salir mientras siga igual",
+            cpu_aviso.id not in [aviso.id for aviso in repetido],
+            str([aviso.id for aviso in repetido]),
+        )
+        empeorado = insights_core.evaluate(
+            ev(cpu_avg=100.0, cpu_minutes=25.0), dismissed=store.dismissed(now=1000.0)
+        )
+        check(
+            "Si la situación empeora (otro tramo), el aviso vuelve",
+            cpu_aviso.id in [aviso.id for aviso in empeorado],
+            str([aviso.id for aviso in empeorado]),
+        )
+        check(
+            "A la semana el descarte caduca y el aviso vuelve",
+            store.dismissed(now=1000.0 + 8 * 86400) == {},
+            str(store.dismissed(now=1000.0 + 8 * 86400)),
+        )
+        store.path.write_text(
+            "{linea rota}\n" + json.dumps({"id": "x", "huella": "1", "caduca": 10**12}) + "\n",
+            encoding="utf-8",
+        )
+        check(
+            "Una línea corrupta no se lleva por delante los descartes",
+            store.dismissed(now=2000.0) == {"x": "1"} and store.count() == 1,
+            str(store.dismissed(now=2000.0)),
+        )
+        store.clear()
+        check(
+            "Se pueden olvidar los descartes (volver a mostrar los avisos)",
+            store.count() == 0 and not store.path.exists(),
+        )
+
+
 def test_reports() -> None:
     service = MetricsService()
     snap = service.poll()
     store = TaskStore()
+
     store.add("Tarea de informe", "Limpieza", "Notas de prueba")
     with tempfile.TemporaryDirectory() as tmp:
         base = build_sample_tree(Path(tmp) / "muestra")
@@ -1822,6 +2333,45 @@ def test_startup() -> None:
         startup._safe_task_name(r"\Microsoft\Windows\X") or "(rechazada)",  # noqa: SLF001
     )
 
+    # Lo que el aviso de la portada llama «programas de inicio pesados»: la misma selección que
+    # desactiva su botón. Solo lo que trabaja de verdad al arrancar (tareas de inicio de sesión y
+    # aplicaciones de la Store), solo lo activo y solo lo que se puede cambiar sin administrador.
+    def _entrada(nombre: str, *, kind: str, enabled: bool = True, admin: bool = False,
+                 conmutable: bool = True) -> "startup.StartupEntry":
+        return startup.StartupEntry(
+            id=f"{kind}|{nombre}",
+            name=nombre,
+            command="",
+            source=startup.SOURCE_TAREA if kind == startup.KIND_TAREA else startup.SOURCE_USUARIO,
+            location="Programador de tareas",
+            kind=kind,
+            enabled=enabled,
+            needs_admin=admin,
+            can_toggle=conmutable,
+        )
+
+    pesada = _entrada("Pesada", kind=startup.KIND_TAREA)
+    ligera = _entrada("Ligera", kind=startup.KIND_REGISTRO)
+    apagada = _entrada("Apagada", kind=startup.KIND_TAREA, enabled=False)
+    de_admin = _entrada("De administrador", kind=startup.KIND_TAREA, admin=True)
+    fija = _entrada("Fija", kind=startup.KIND_TAREA, conmutable=False)
+    todas = [ligera, apagada, de_admin, fija, pesada]
+    check(
+        "Pesadas: solo lo activo, lo que arranca de verdad y lo que se puede cambiar sin administrador",
+        startup.heavy_entries(todas) == [pesada]
+        and startup.heavy_entries([ligera, apagada]) == [],
+        " · ".join(entrada.name for entrada in startup.heavy_entries(todas)),
+    )
+    contadas = [entrada for entrada in todas if entrada.enabled and entrada.cost[0] == startup.COST_MEDIO]
+    solo_miradas = [entrada for entrada in contadas if entrada not in startup.heavy_entries(todas)]
+    check(
+        "Lo que el aviso cuenta y el botón no toca es solo lo que no se puede cambiar sin permisos",
+        {entrada.name for entrada in solo_miradas} == {"De administrador", "Fija"}
+        and all(entrada.needs_admin or not entrada.can_toggle for entrada in solo_miradas)
+        and all(entrada in contadas for entrada in startup.heavy_entries(todas)),
+        " · ".join(f"{entrada.name}={entrada.cost[0]}" for entrada in todas),
+    )
+
     # --- Codificación de lo que se lee de Windows ---------------------------
     # PowerShell escribía en la página del sistema y se leía como UTF-8: las rutas con
     # acentos llegaban corruptas. Ahora los dos scripts lo fijan al principio.
@@ -1921,7 +2471,12 @@ def test_scheduler() -> None:
     check("Descripción legible (diaria)", "todos los días a las 06:05" in daily.describe(), daily.describe())
     check("Descripción legible (semanal)", "los miércoles" in weekly.describe(), weekly.describe())
     check("Descripción legible (sesión)", "al iniciar sesión" in logon.describe(), logon.describe())
-    check("Lista de pasos", daily.task_list() == ["limpiar temporales", "generar informe"], str(daily.task_list()))
+    check(
+        "Lista de pasos (con las categorías que limpia)",
+        daily.task_list()
+        == ["limpiar (Archivos temporales del usuario)", "generar informe"],
+        str(daily.task_list()),
+    )
     restored = MaintenanceSchedule.from_dict(daily.to_dict())
     check("Programación persistente", restored.frequency == scheduler.FREQ_DAILY and restored.time == "06:05", str(restored.to_dict()))
     check("Programación corrupta tolerada", MaintenanceSchedule.from_dict({"hora": 12}).time == "12:00")
@@ -1934,6 +2489,115 @@ def test_scheduler() -> None:
     check("Estado coherente con la existencia", status.exists == scheduler.task_exists(), f"existe={status.exists}")
     if not status.exists:
         check("Sin tarea: mensaje informativo", bool(status.message), status.message)
+
+    # --- La limpieza programada: otra tarea, que solo limpia -------------------
+    limpieza = scheduler.CleanupSchedule(
+        frequency=scheduler.FREQ_WEEKLY,
+        weekday="Domingo",
+        time="20:30",
+        targets=("temp", "browsers"),
+    )
+    check(
+        "La limpieza programada es una tarea propia (no toca la del mantenimiento)",
+        scheduler.CLEANUP_TASK_PATH != scheduler.TASK_PATH
+        and scheduler.CLEANUP_TASK_NAME in scheduler.CLEANUP_TASK_PATH
+        and scheduler.CLEANUP_TASK_PATH.startswith(f"\\{scheduler.TASK_FOLDER}\\"),
+        scheduler.CLEANUP_TASK_PATH,
+    )
+    argumentos_limpieza = scheduler.cleanup_arguments(limpieza)
+    check(
+        "Sus argumentos piden solo la limpieza, con sus categorías y su antigüedad",
+        argumentos_limpieza[:1] == ["--limpieza"]
+        and "--mantenimiento" not in argumentos_limpieza
+        and "temp,browsers" in argumentos_limpieza
+        and "--antiguedad" in argumentos_limpieza,
+        " ".join(argumentos_limpieza),
+    )
+    programa_limpieza, lanzador_limpieza = scheduler.cleanup_launcher_command(limpieza)
+    check(
+        "Se lanza con el mismo programa (y no con los pasos del mantenimiento)",
+        programa_limpieza == scheduler.launcher_command(daily)[0]
+        and "--limpieza" in lanzador_limpieza
+        and "--mantenimiento" not in lanzador_limpieza,
+        lanzador_limpieza,
+    )
+    linea_limpieza = scheduler.cleanup_command_line(limpieza)
+    check(
+        "Su línea de comando se puede enseñar",
+        linea_limpieza.startswith('"') and "--categorias temp,browsers" in linea_limpieza,
+        linea_limpieza,
+    )
+    xml_limpieza = scheduler.cleanup_task_xml(limpieza, moment=0.0)
+    check(
+        "El XML de la limpieza lleva su nombre, cuándo y su hora",
+        scheduler.CLEANUP_TASK_NAME in xml_limpieza
+        and "limpieza programada" in xml_limpieza
+        and "<Sunday/>" in xml_limpieza
+        and "T20:30:00" in xml_limpieza,
+        xml_limpieza.split("StartBoundary")[1][:30],
+    )
+    check(
+        "La limpieza programada tampoco pide permisos ni contraseña",
+        "<RunLevel>LeastPrivilege</RunLevel>" in xml_limpieza
+        and "<LogonType>InteractiveToken</LogonType>" in xml_limpieza
+        and "<StartWhenAvailable>true</StartWhenAvailable>" in xml_limpieza,
+    )
+    check(
+        "Su XML no arrastra ningún paso del mantenimiento",
+        "--limpieza" in xml_limpieza
+        and "--mantenimiento" not in xml_limpieza
+        and "--sin-informe" not in xml_limpieza,
+        "--mantenimiento" in xml_limpieza,
+    )
+    check(
+        "Se describe con cuándo se limpia y qué",
+        "los domingos a las 20:30" in limpieza.describe()
+        and "Papelera" not in limpieza.describe()
+        and limpieza.task_list()
+        == ["limpiar (Archivos temporales del usuario · Cachés de los navegadores)"],
+        limpieza.describe(),
+    )
+    vuelta_limpieza = scheduler.CleanupSchedule.from_dict(limpieza.to_dict())
+    check(
+        "La programación de la limpieza sobrevive a guardar y volver a leer",
+        vuelta_limpieza.frequency == scheduler.FREQ_WEEKLY
+        and vuelta_limpieza.time == "20:30"
+        and vuelta_limpieza.weekday == "Domingo"
+        and vuelta_limpieza.targets == ("temp", "browsers"),
+        str(vuelta_limpieza.to_dict()),
+    )
+    check(
+        "Sin categorías la programación de limpieza se queda vacía (no limpia nada por su cuenta)",
+        scheduler.CleanupSchedule.from_dict({"categorias": []}).targets == ()
+        and scheduler.CleanupSchedule().normalized().targets == ()
+        and not scheduler.CleanupSchedule().enabled,
+        str(scheduler.CleanupSchedule.from_dict({"categorias": []}).to_dict()),
+    )
+    saneada = scheduler.CleanupSchedule.from_dict(
+        {"hora": "vaya", "dia": "Festivo", "frecuencia": "Nunca", "antiguedad_horas": 0,
+         "categorias": ["temp", "inventada"]}
+    )
+    check(
+        "Una programación de limpieza corrupta se sanea sin perder lo que vale",
+        saneada.time == "12:00"
+        and saneada.weekday == "Lunes"
+        and saneada.frequency == scheduler.FREQ_DAILY
+        and saneada.min_age_hours == 1.0
+        and saneada.targets == ("temp",),
+        str(saneada.to_dict()),
+    )
+    rechazada = scheduler.create_cleanup_task(scheduler.CleanupSchedule())
+    check(
+        "Sin categorías no se registra ninguna tarea (y se dice por qué)",
+        not rechazada.ok and "categoría" in rechazada.message,
+        rechazada.message,
+    )
+    check(
+        "La tarea de limpieza se consulta sin crear nada",
+        isinstance(scheduler.cleanup_task_exists(), bool)
+        and scheduler.cleanup_task_exists() == scheduler.task_exists(scheduler.CLEANUP_TASK_PATH),
+        f"existe={scheduler.cleanup_task_exists()}",
+    )
 
 
 def _borrar_arbol_de_registro(ruta: str) -> None:
@@ -2997,6 +3661,81 @@ def test_maintenance() -> None:
         MaintenanceSchedule(release_memory=True), dry_run=True, register=False
     ).items} == {"limpieza", "memoria", "informe"})
 
+    # La limpieza programada (la tarea que crea la ventana de limpieza): un solo paso, con su
+    # propia carpeta controlada, y sin arrastrar memoria ni informe.
+    with tempfile.TemporaryDirectory() as tmp:
+        carpeta = Path(tmp)
+        (carpeta / "viejo.tmp").write_bytes(b"0" * 2_000_000)
+        envejecer(carpeta / "viejo.tmp")
+        simulada = maintenance.run_cleanup(
+            ("temp",), dry_run=True, register=False, temp_folder=str(carpeta), min_age_hours=24.0
+        )
+        check(
+            "La limpieza programada es un solo paso (ni memoria ni informe)",
+            [item.key for item in simulada.items] == ["limpieza"],
+            str([item.key for item in simulada.items]),
+        )
+        check(
+            "Su simulación mide sin borrar y con la carpeta indicada",
+            simulada.dry_run
+            and simulada.item("limpieza").data["archivos"] == 1
+            and (carpeta / "viejo.tmp").exists(),
+            simulada.summary(),
+        )
+        real = maintenance.run_cleanup(
+            ("temp",), register=False, temp_folder=str(carpeta), min_age_hours=24.0
+        )
+        check(
+            "La limpieza programada borra lo que prometió su simulación",
+            real.removed_files == 1 and real.freed_bytes == 2_000_000 and not any(carpeta.iterdir()),
+            real.summary(),
+        )
+    vacia = maintenance.run_cleanup((), dry_run=True, register=False)
+    check(
+        "Una limpieza programada sin categorías no borra nada y lo dice",
+        vacia.ok and "ninguna categoría" in vacia.item("limpieza").detail,  # type: ignore[union-attr]
+        vacia.item("limpieza").detail,  # type: ignore[union-attr]
+    )
+    # El histórico es común al mantenimiento y a la limpieza programada: la entrada tiene que
+    # decir cuál de las dos tareas se ejecutó y qué categorías limpió. Se deja el registro como
+    # estaba (la entrada de la prueba no se queda en el histórico del equipo).
+    registro = maintenance.maintenance_log_path()
+    respaldo = registro.read_text(encoding="utf-8") if registro.exists() else None
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            carpeta_anotada = Path(tmp)
+            (carpeta_anotada / "viejo.tmp").write_bytes(b"0" * 1_500_000)
+            envejecer(carpeta_anotada / "viejo.tmp")
+            anotada = maintenance.run_cleanup(
+                ("temp",), register=True, temp_folder=str(carpeta_anotada), min_age_hours=24.0
+            )
+        entrada = maintenance.recent_runs(1)[0]
+        check(
+            "La limpieza programada se anota en el histórico como una limpieza",
+            anotada.freed_bytes == 1_500_000
+            and entrada["pasos"][0]["paso"] == "limpieza"
+            and entrada["resumen"].startswith("Limpieza"),
+            f"{entrada['resumen']} · {entrada['pasos'][0]}",
+        )
+        check(
+            "El histórico guarda las categorías que limpió la tarea",
+            entrada["pasos"][0]["categorias"].get("temp") == 1_500_000,
+            str(entrada["pasos"][0]["categorias"]),
+        )
+        informe = maintenance.MaintenanceReport(
+            items=[maintenance.MaintenanceItem("limpieza", "Limpiar archivos", True, "ok")]
+        )
+        check(
+            "El mantenimiento completo sigue anotándose como mantenimiento",
+            informe.summary().startswith("Mantenimiento"),
+            informe.summary(),
+        )
+    finally:
+        if respaldo is None:
+            registro.unlink(missing_ok=True)
+        else:
+            registro.write_text(respaldo, encoding="utf-8")
+
     only_log = maintenance.run_maintenance(
         MaintenanceSchedule(clean_temp=False, export_report=False), dry_run=True, register=False
     )
@@ -3562,6 +4301,72 @@ def test_installer() -> None:
             )
             check("Desinstalación con datos del usuario", borrado_datos.ok and not datos.exists(), borrado_datos.message)
 
+    # La desinstalación se lleva las **dos** tareas programadas: la del mantenimiento y la de la
+    # limpieza. Se prueba con el Programador interceptado, así que no se toca ninguna tarea real.
+    borradas: list[str] = []
+    originales = (
+        scheduler.task_exists,
+        scheduler.delete_task,
+        scheduler.cleanup_task_exists,
+        scheduler.delete_cleanup_task,
+    )
+    scheduler.task_exists = lambda path=scheduler.TASK_PATH: True  # type: ignore[assignment]
+    scheduler.cleanup_task_exists = lambda: True  # type: ignore[assignment]
+    scheduler.delete_task = lambda path=scheduler.TASK_PATH: (  # type: ignore[assignment]
+        borradas.append("mantenimiento"),
+        scheduler.TaskOperation(True, "Mantenimiento eliminado."),
+    )[1]
+    scheduler.delete_cleanup_task = lambda: (  # type: ignore[assignment]
+        borradas.append("limpieza"),
+        scheduler.TaskOperation(True, "Limpieza eliminada."),
+    )[1]
+    try:
+        mensaje = core.remove_scheduled_task()
+    finally:
+        (
+            scheduler.task_exists,
+            scheduler.delete_task,
+            scheduler.cleanup_task_exists,
+            scheduler.delete_cleanup_task,
+        ) = originales
+    check(
+        "La desinstalación se lleva las dos tareas (mantenimiento y limpieza)",
+        borradas == ["mantenimiento", "limpieza"] and "Limpieza eliminada" in mensaje,
+        f"{borradas} · {mensaje}",
+    )
+    # Y sin ninguna tarea registrada no se pide borrar nada: la desinstalación no inventa.
+    pedidos: list[str] = []
+    originales2 = (
+        scheduler.task_exists,
+        scheduler.cleanup_task_exists,
+        scheduler.delete_task,
+        scheduler.delete_cleanup_task,
+    )
+    scheduler.task_exists = lambda path=scheduler.TASK_PATH: False  # type: ignore[assignment]
+    scheduler.cleanup_task_exists = lambda: False  # type: ignore[assignment]
+    scheduler.delete_task = lambda path=scheduler.TASK_PATH: (  # type: ignore[assignment]
+        pedidos.append("mantenimiento"),
+        scheduler.TaskOperation(True, "x"),
+    )[1]
+    scheduler.delete_cleanup_task = lambda: (  # type: ignore[assignment]
+        pedidos.append("limpieza"),
+        scheduler.TaskOperation(True, "x"),
+    )[1]
+    try:
+        sin_tareas = core.remove_scheduled_task()
+    finally:
+        (
+            scheduler.task_exists,
+            scheduler.cleanup_task_exists,
+            scheduler.delete_task,
+            scheduler.delete_cleanup_task,
+        ) = originales2
+    check(
+        "Sin ninguna tarea registrada no se pide borrar nada",
+        sin_tareas == "" and not pedidos,
+        f"mensaje {sin_tareas!r} · pedidos {pedidos}",
+    )
+
 
 def test_interface() -> None:
     from PySide6.QtCore import QPoint, QSettings, QTime, Qt
@@ -3990,6 +4795,55 @@ def test_interface() -> None:
     page._render_status(scheduler.TaskStatus(exists=True, enabled=False, state="Disabled"))  # noqa: SLF001
     check("Estado de tarea desactivada", page.state_badge.text() == "Desactivada", page.state_badge.text())
     check("Histórico de ejecuciones consultado", page.history_list.count() >= 1, str(page.history_list.count()))
+    # El histórico es común a las dos tareas, así que el detalle de cada línea dice qué
+    # categorías se limpiaron: es lo que permite reconocer ahí una limpieza programada.
+    registro_historico = maintenance.maintenance_log_path()
+    respaldo_historico = (
+        registro_historico.read_text(encoding="utf-8") if registro_historico.exists() else None
+    )
+    try:
+        linea = json.dumps(
+            {
+                "momento": "2026-01-01 21:00:00",
+                "origen": "programado",
+                "correcto": True,
+                "liberado_disco": 2048,
+                "liberado_memoria": 0,
+                "resumen": "Limpieza: 3 archivo(s) · 2.0 KB.",
+                "pasos": [
+                    {
+                        "paso": "limpieza",
+                        "titulo": "Limpiar archivos",
+                        "correcto": True,
+                        "detalle": "3 elemento(s) eliminado(s).",
+                        "categorias": {"temp": 2048},
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+        registro_historico.parent.mkdir(parents=True, exist_ok=True)
+        with registro_historico.open("a", encoding="utf-8") as manejador:
+            manejador.write(linea + "\n")
+        page.reload_history()
+        primera = page.history_list.item(0)
+        check(
+            "La limpieza programada se distingue en el histórico",
+            primera is not None and "Limpieza:" in primera.text(),
+            primera.text() if primera else "sin entradas",
+        )
+        detalle = primera.toolTip() if primera else ""
+        check(
+            "El detalle del histórico dice las categorías limpiadas",
+            "Archivos temporales del usuario" in detalle,
+            detalle.replace("\n", " | "),
+        )
+    finally:
+        if respaldo_historico is None:
+            registro_historico.unlink(missing_ok=True)
+        else:
+            registro_historico.write_text(respaldo_historico, encoding="utf-8")
+        page.reload_history()
 
     # --- Bandeja y consumo -------------------------------------------------
     if window.tray.available:
@@ -4020,6 +4874,627 @@ def test_interface() -> None:
     visible = [tile for tile in tools_page._tiles if tile.matches]  # noqa: SLF001
     check("Filtro de herramientas", 0 < len(visible) < len(tools_page._tiles), f"{len(visible)} coincidencias")  # noqa: SLF001
     tools_page.search.setText("")
+
+    # --- Liberar espacio: vista previa antes de borrar ---------------------
+    tools_page.analyze_space()
+    for _ in range(300):
+        workers_ui.pump_events(50)
+        if not tools_page._space_running:  # noqa: SLF001
+            break
+    check(
+        "La tarjeta de Herramientas mide el espacio sin borrar nada",
+        tools_page._space_scan is not None  # noqa: SLF001
+        and tools_page.space_detail_button.isEnabled()
+        and "liberar" in tools_page.space_text(),
+        tools_page.space_text()[:70],
+    )
+    from pctoolkit.ui.clean import CleanDialog
+
+    dialog = CleanDialog(window.settings, tools_page._space_scan, window)  # noqa: SLF001
+    check(
+        "La ventana de limpieza enseña todas las categorías del catálogo",
+        len(dialog._rows) == len(cleaner.target_keys()),  # noqa: SLF001
+        f"{len(dialog._rows)} filas",  # noqa: SLF001
+    )
+    filas = {fila.item.key: fila for fila in dialog._rows}  # noqa: SLF001
+    check(
+        "Lo que no se puede hacer ahora se enseña con el motivo y sin casilla",
+        all(
+            fila.item.available or bool(fila.item.blocked) or not fila.item.present
+            for fila in dialog._rows  # noqa: SLF001
+        )
+        and (filas["temp"].item.available or bool(filas["temp"].item.blocked)),
+        filas["recycle"].item.blocked[:60],
+    )
+    check(
+        "La papelera no viene marcada (vaciar no se puede deshacer)",
+        not filas["recycle"].marked
+        and filas["recycle"].item.irreversible
+        and "No se puede deshacer" in filas["recycle"]._spoken(),  # noqa: SLF001
+    )
+    dialog.mark_defaults()
+    marcadas = dialog.selected()
+    check(
+        "Marcar por defecto solo toca lo que se puede y es seguro",
+        bool(marcadas)
+        and all(filas[clave].item.available for clave in marcadas)
+        and "recycle" not in marcadas
+        and dialog.clean_button.text().endswith(f"({len(marcadas)})"),
+        str(marcadas),
+    )
+    check(
+        "El resumen de la vista previa dice cuánto se liberaría",
+        "liberar" in dialog.summary.text() and bool(dialog.summary.text().strip()),
+        dialog.summary.text()[:80],
+    )
+    # Cada fila se anuncia como una fila de la lista: el lector de pantalla lee de una vez
+    # el nombre, el tamaño, lo que se pierde y el motivo por el que no se puede (si no).
+    from PySide6.QtGui import QAccessible
+
+    def _leida(widget) -> tuple[object, str]:
+        interfaz = QAccessible.queryAccessibleInterface(widget)
+        if interfaz is None:
+            return None, ""
+        return interfaz.role(), interfaz.text(QAccessible.Text.Name)
+
+    anunciadas = [_leida(fila) for fila in dialog._rows]  # noqa: SLF001
+    check(
+        "Cada categoría se anuncia como una fila de la lista con su nombre",
+        bool(anunciadas)
+        and all(rol == QAccessible.Role.ListItem and nombre for rol, nombre in anunciadas),
+        str(anunciadas[:2]),
+    )
+    # Guardar la selección para el mantenimiento automático: es lo que limpia la tarea.
+    dialog.auto_check.setChecked(True)
+    check(
+        "La selección se guarda para el mantenimiento automático",
+        tuple(window.settings.schedule_config.clean_targets) == tuple(marcadas),
+        str(window.settings.schedule_config.clean_targets),
+    )
+
+    # --- Limpieza abierta desde un aviso: ya marcada y sin borrar nada -----------
+    # La portada lleva a la ventana las categorías que señala el aviso; abrir no borra nada y
+    # el borrado sigue pidiendo su confirmación, con la lista delante.
+    from PySide6.QtWidgets import QMessageBox, QPushButton
+
+    pedidas = ("temp", "recycle", "no-existe")
+    avisada = CleanDialog(window.settings, tools_page._space_scan, window, prechecked=pedidas)  # noqa: SLF001
+    filas_aviso = {fila.item.key: fila for fila in avisada._rows}  # noqa: SLF001
+    disponibles_aviso = [
+        clave for clave in pedidas if clave in filas_aviso and filas_aviso[clave].item.available
+    ]
+    check(
+        "La ventana se abre marcando lo que señala el aviso (solo lo que se puede limpiar)",
+        avisada.selected() == disponibles_aviso
+        and "no-existe" not in avisada.selected()
+        and "Nada se borra hasta que confirmes" in avisada.result_label.text(),
+        f"marcadas {avisada.selected()} de {list(pedidas)}",
+    )
+    sin_marcar_aviso = [
+        filas_aviso[clave].item.name
+        for clave in pedidas
+        if clave in filas_aviso and not filas_aviso[clave].item.available
+    ]
+    check(
+        "Lo que no se pudo marcar se dice con su nombre",
+        not sin_marcar_aviso
+        or all(nombre in avisada.result_label.text() for nombre in sin_marcar_aviso),
+        avisada.result_label.text()[:100],
+    )
+    avisada.mark_defaults()
+    if avisada.selected():
+        original_confirmacion = QMessageBox.exec
+        dichos: list[str] = []
+        QMessageBox.exec = lambda cuadro: (dichos.append(cuadro.text()), QMessageBox.No)[1]  # type: ignore[method-assign]
+        try:
+            avisada.clean_marked()
+        finally:
+            QMessageBox.exec = original_confirmacion  # type: ignore[method-assign]
+        check(
+            "El borrado pregunta antes, con la lista de lo que se va a borrar",
+            bool(dichos)
+            and "¿Borrar lo marcado?" in dichos[0]
+            and all(filas_aviso[clave].item.name in dichos[0] for clave in avisada.selected()),
+            dichos[0].splitlines()[2] if dichos else "no se preguntó",
+        )
+        check(
+            "Y si se cancela, no se borra nada",
+            "No se borró nada" in avisada.result_label.text(),
+            avisada.result_label.text(),
+        )
+    avisada.close()
+
+    # --- Programar lo marcado, sin el mantenimiento completo ---------------------
+    tarjeta = dialog.plan_card
+    check(
+        "La ventana deja programar lo marcado sin activar el mantenimiento completo",
+        tarjeta is not None and tarjeta.apply_button.text() == "Programar",
+        "sin tarjeta" if tarjeta is None else tarjeta.state.text()[:70],
+    )
+    programada_antes = window.settings.cleanup_schedule
+    original_crear = scheduler.create_cleanup_task
+    original_quitar = scheduler.delete_cleanup_task
+    original_existe = scheduler.cleanup_task_exists
+    creadas: list = []
+    quitadas: list = []
+    scheduler.create_cleanup_task = lambda s, moment=None: (  # type: ignore[assignment]
+        creadas.append(s) or scheduler.TaskOperation(True, f"Tarea registrada: {s.describe()}")
+    )
+    scheduler.delete_cleanup_task = lambda: (  # type: ignore[assignment]
+        quitadas.append(True), scheduler.TaskOperation(True, "Tarea eliminada.")
+    )[1]
+    scheduler.cleanup_task_exists = lambda: False  # type: ignore[assignment]
+    try:
+        window.settings.cleanup_schedule = scheduler.CleanupSchedule()
+        tarjeta.schedule = window.settings.cleanup_schedule
+        tarjeta._sync_controls()  # noqa: SLF001
+        check(
+            "Sin nada programado la tarjeta lo dice (no se programa sola)",
+            "Sin programar" in tarjeta.state.text(),
+            tarjeta.state.text()[:70],
+        )
+        for fila in dialog._rows:  # noqa: SLF001
+            fila.mark(False)
+        tarjeta.apply()
+        check(
+            "Sin ninguna categoría marcada no se programa nada",
+            not creadas and "Marca al menos una categoría" in dialog.result_label.text(),
+            dialog.result_label.text()[:70],
+        )
+        tarjeta.time_edit.setTime(QTime(3, 30))
+        tarjeta.frequency_combo.setCurrentText(scheduler.FREQ_DAILY)
+        dialog.mark_defaults()
+        tarjeta.apply()
+        # Se espera a la tarea en segundo plano **y** a que la ventana se entere (el resultado
+        # llega por señal, así que `creadas` puede estar puesto y el estado todavía no).
+        for _ in range(160):
+            workers_ui.pump_events(50)
+            if creadas and not tarjeta._busy:  # noqa: SLF001
+                break
+        check(
+            "Programar pide la limpieza de lo marcado, a la hora elegida y sin el mantenimiento",
+            bool(creadas)
+            and tuple(creadas[0].targets) == tuple(dialog.selected())
+            and creadas[0].time == "03:30"
+            and creadas[0].frequency == scheduler.FREQ_DAILY
+            and creadas[0].enabled,
+            str(creadas[0].to_dict()) if creadas else "no se programó",
+        )
+        check(
+            "Y queda guardada en las preferencias",
+            tuple(window.settings.cleanup_schedule.targets) == tuple(dialog.selected())
+            and window.settings.cleanup_schedule.time == "03:30",
+            str(window.settings.cleanup_schedule.to_dict()),
+        )
+        check(
+            "El estado dice que la tarea está registrada en Windows",
+            "registrada en Windows" in tarjeta.state.text(),
+            tarjeta.state.text()[:90],
+        )
+        # Lo que contesta el Programador de tareas y cómo probarla sin esperar a su hora: sin
+        # esto, «programada» sería una promesa que no se puede mirar desde la propia ventana.
+        estado_windows = scheduler.TaskStatus(
+            exists=True,
+            enabled=True,
+            state="Ready",
+            next_run="2026-10-17 03:30",
+            last_run="2026-10-16 03:30",
+            last_result=0,
+            command="app.py --limpieza --categorias temp",
+        )
+        original_estado = scheduler.cleanup_task_status
+        original_lanzar = scheduler.run_task_now
+        lanzadas: list[str] = []
+        scheduler.cleanup_task_status = lambda: estado_windows  # type: ignore[assignment]
+        scheduler.run_task_now = lambda ruta=(): (  # type: ignore[assignment]
+            lanzadas.append(ruta),
+            scheduler.TaskOperation(True, "Limpieza programada lanzada."),
+        )[1]
+        try:
+            tarjeta.check_status()
+            for _ in range(160):
+                workers_ui.pump_events(50)
+                if tarjeta._status is not None:  # noqa: SLF001
+                    break
+            texto_estado = tarjeta.state.text()
+            check(
+                "El estado de la limpieza programada es el que lee Windows de verdad",
+                "Próxima: 2026-10-17 03:30" in texto_estado
+                and "Última: 2026-10-16 03:30 (Correcta)" in texto_estado,
+                texto_estado.replace("\n", " | ")[:110],
+            )
+            check(
+                "Y se puede probar ahora, sin esperar a su hora",
+                tarjeta.run_button.text() == "Probar ahora" and tarjeta.run_button.isEnabled(),
+                f"«{tarjeta.run_button.text()}» habilitado={tarjeta.run_button.isEnabled()}",
+            )
+            tarjeta.run_now()
+            for _ in range(160):
+                workers_ui.pump_events(50)
+                if lanzadas and not tarjeta._busy:  # noqa: SLF001
+                    break
+            check(
+                "Probar ahora lanza la tarea de limpieza (no la del mantenimiento) y lo dice",
+                lanzadas == [scheduler.CLEANUP_TASK_PATH]
+                and lanzadas[0] == r"\PCToolkit\Limpieza PC Toolkit"
+                and "Tarda unos segundos" in dialog.result_label.text(),
+                f"{lanzadas} · {dialog.result_label.text()[:70]}",
+            )
+            # Windows tarda unos segundos en anotar el resultado: se pregunta unas cuantas veces
+            # y, cuando lo cuenta, la ventana lo dice y deja de preguntar.
+            tarjeta._polls_left = 2  # noqa: SLF001
+            tarjeta._poll_status()  # noqa: SLF001
+            for _ in range(160):
+                workers_ui.pump_events(50)
+                if not tarjeta._waiting_result:  # noqa: SLF001
+                    break
+            check(
+                "Cuando Windows anota el resultado, la ventana lo cuenta y deja de preguntar",
+                "terminó" in dialog.result_label.text()
+                and "Correcta" in dialog.result_label.text()
+                and not tarjeta._poll.isActive(),  # noqa: SLF001
+                dialog.result_label.text()[:90],
+            )
+        finally:
+            scheduler.cleanup_task_status = original_estado  # type: ignore[assignment]
+            scheduler.run_task_now = original_lanzar  # type: ignore[assignment]
+        # Sin tarea registrada no hay nada que probar (y el botón lo refleja).
+        tarjeta._registered = False  # noqa: SLF001
+        tarjeta._status = None  # noqa: SLF001
+        tarjeta._refresh_state()  # noqa: SLF001
+        check(
+            "Sin tarea registrada no se ofrece probar nada",
+            not tarjeta.run_button.isEnabled(),
+            f"habilitado={tarjeta.run_button.isEnabled()}",
+        )
+        tarjeta.remove()
+        for _ in range(160):
+            workers_ui.pump_events(50)
+            if quitadas and not tarjeta._busy:  # noqa: SLF001
+                break
+        check(
+            "Quitar elimina la tarea y deja la programación inactiva",
+            bool(quitadas)
+            and not window.settings.cleanup_schedule.enabled
+            and "no está registrada" in tarjeta.state.text(),
+            tarjeta.state.text()[:90],
+        )
+        # Lo que no se puede deshacer se pregunta antes de programarlo.
+        original_exec = QMessageBox.exec
+        preguntas: list[str] = []
+        QMessageBox.exec = lambda cuadro: (preguntas.append(cuadro.text()), QMessageBox.No)[1]  # type: ignore[method-assign]
+        try:
+            aceptado = tarjeta._confirm_irreversible(["recycle"])  # noqa: SLF001
+        finally:
+            QMessageBox.exec = original_exec  # type: ignore[method-assign]
+        check(
+            "Vaciar la papelera desde una tarea programada se pregunta antes",
+            aceptado is False
+            and bool(preguntas)
+            and "no se puede deshacer" in preguntas[0]
+            and "Papelera" in preguntas[0],
+            preguntas[0][:90] if preguntas else "no se preguntó",
+        )
+    finally:
+        scheduler.create_cleanup_task = original_crear  # type: ignore[assignment]
+        scheduler.delete_cleanup_task = original_quitar  # type: ignore[assignment]
+        scheduler.cleanup_task_exists = original_existe  # type: ignore[assignment]
+        window.settings.cleanup_schedule = programada_antes
+        window.settings.sync()
+    dialog.close()
+
+    # --- Avisos de la portada -------------------------------------------
+    window.navigate("home")
+    window.dashboard.update_insights(
+        [
+            insights_core.Insight(
+                id="cpu-sostenida",
+                severity=insights_core.SEVERITY_WARN,
+                title="La CPU lleva 12 minutos al 88 %",
+                detail="Media de las muestras guardadas.",
+                action="monitor",
+                action_label="Ver el rendimiento",
+                fingerprint="cpu-8",
+            ),
+            insights_core.Insight(
+                id="temporales",
+                severity=insights_core.SEVERITY_INFO,
+                title="Se pueden liberar 1,2 GB",
+                detail="Temporales que se pueden borrar sin tocar tus documentos.",
+                action="limpieza",
+                action_label="Ver qué se puede liberar",
+                fingerprint="temp-2",
+            ),
+        ],
+        1,
+    )
+    _settle(app, 120)
+    check(
+        "La portada enseña los avisos con su acción y su descarte",
+        len(window.dashboard.insight_rows) == 2  # noqa: SLF001
+        and not window.dashboard.insights_empty.isVisible()
+        and window.dashboard.restore_insights_button.isVisible(),
+        window.dashboard.insights_footer.text(),
+    )
+    leidos = [_leida(fila) for fila in window.dashboard.insight_rows]  # noqa: SLF001
+    check(
+        "Cada aviso se anuncia como una fila de la lista con su título",
+        len(leidos) == 2
+        and all(rol == QAccessible.Role.ListItem and nombre for rol, nombre in leidos),
+        str(leidos),
+    )
+
+    # --- Resolverlo desde el propio aviso ---------------------------------
+    # El aviso trae dentro qué categorías marcar y la portada se las pasa a la ventana de
+    # limpieza: pulsar el botón no borra nada, solo abre con eso marcado (y de borrar se
+    # encarga la confirmación de la ventana).
+    window.dashboard.update_insights(
+        [
+            insights_core.Insight(
+                id="temporales",
+                severity=insights_core.SEVERITY_INFO,
+                title="Se pueden liberar 1,2 GB",
+                detail="Temporales que se pueden borrar sin tocar tus documentos.",
+                action="limpieza",
+                action_label="Ver qué se puede liberar",
+                targets=("temp", "thumbnails"),
+                fingerprint="temp-2",
+            ),
+            insights_core.Insight(
+                id="poco-espacio",
+                severity=insights_core.SEVERITY_BAD,
+                title="Quedan 4 GB libres en C:",
+                detail="Con muy poco espacio libre Windows va más lento.",
+                action="limpieza",
+                action_label="Liberar espacio ahora",
+                targets=("browsers",),
+                secondary_action="disco",
+                secondary_label="Analizar el disco",
+                fingerprint="libre-0",
+            ),
+        ]
+    )
+    _settle(app, 120)
+    recibido: dict = {}
+    original_abrir = window.tools_page.open_clean_dialog
+    window.tools_page.open_clean_dialog = lambda prechecked=(): recibido.update(
+        prechecked=tuple(prechecked)
+    )
+    try:
+        boton_limpieza = [
+            boton
+            for boton in window.dashboard.insight_rows[0].findChildren(QPushButton)  # noqa: SLF001
+            if boton.text() == "Ver qué se puede liberar"
+        ]
+        check(
+            "El aviso de limpieza trae su propio botón",
+            len(boton_limpieza) == 1,
+            f"{len(boton_limpieza)} botones con ese nombre",
+        )
+        boton_limpieza[0].click()
+    finally:
+        window.tools_page.open_clean_dialog = original_abrir
+    check(
+        "El botón del aviso abre la limpieza con las categorías que señala ya marcadas",
+        window.stack.currentWidget() is window.tools_page
+        and recibido.get("prechecked") == ("temp", "thumbnails"),
+        f"{recibido} · {window.stack.currentWidget().__class__.__name__}",
+    )
+    botones_disco = window.dashboard.insight_rows[1].findChildren(QPushButton)  # noqa: SLF001
+    check(
+        "El de disco casi lleno ofrece liberar espacio y, al lado, analizar el disco",
+        any(boton.text() == "Liberar espacio ahora" for boton in botones_disco)
+        and any(boton.text() == "Analizar el disco" for boton in botones_disco),
+        " · ".join(boton.text() for boton in botones_disco),
+    )
+    [boton for boton in botones_disco if boton.text() == "Analizar el disco"][0].click()
+    check(
+        "Su segunda salida lleva al analizador de disco",
+        window.stack.currentWidget() is window.disk_page,
+        window.stack.currentWidget().__class__.__name__,
+    )
+
+    # --- Los avisos de memoria y de inicio también actúan ------------------
+    # Los dos cambian cosas del equipo, así que preguntan antes y, si se cancela, no se toca
+    # nada. La memoria se libera de verdad (nada se cierra) y las entradas de inicio se
+    # desactivan como desde su página: mismo apunte de deshacer, marcado «desde un aviso».
+    from pctoolkit.core import startup as startup_mod
+    from pctoolkit.core import undo as undo_mod
+
+    window.navigate("home")
+    window.dashboard.update_insights(
+        [
+            insights_core.Insight(
+                id="memoria-alta",
+                severity=insights_core.SEVERITY_BAD,
+                title="La memoria está al 93 %",
+                detail="Por encima del umbral configurado.",
+                action="liberar-memoria",
+                action_label="Liberar memoria ahora",
+                secondary_action="memoria",
+                secondary_label="Ver el reparto",
+                fingerprint="ram-18",
+            ),
+            insights_core.Insight(
+                id="inicio-pesado",
+                severity=insights_core.SEVERITY_WARN,
+                title="Tienes 6 programas de inicio pesados",
+                detail="Desactivar las que no uses acorta el arranque.",
+                action="inicio-pesado",
+                action_label="Desactivar las más pesadas",
+                secondary_action="inicio",
+                secondary_label="Revisar el inicio",
+                fingerprint="inicio-2",
+            ),
+        ]
+    )
+    _settle(app, 120)
+
+    def botones_del_aviso(fila: int) -> list[QPushButton]:
+        """Los botones de un aviso, buscados en el momento de pulsarlos.
+
+        La tarjeta de avisos se rehace entera cada vez que se evalúan (y eso pasa solo con el
+        reloj de las métricas), así que los botones de una lista guardada antes pueden estar ya
+        destruidos: se piden justo antes de pulsar, que es cuando hacen falta.
+        """
+        return list(window.dashboard.insight_rows[fila].findChildren(QPushButton))  # noqa: SLF001
+
+    def pulsar(fila: int, texto: str) -> None:
+        [boton for boton in botones_del_aviso(fila) if boton.text() == texto][0].click()
+
+    check(
+        "El aviso de memoria ofrece liberar ya y, al lado, ver el reparto",
+        {boton.text() for boton in botones_del_aviso(0)}
+        >= {"Liberar memoria ahora", "Ver el reparto"},
+        " · ".join(boton.text() for boton in botones_del_aviso(0)),
+    )
+
+    liberadas: list[str] = []
+    original_liberar = window.release_memory_now
+    window.release_memory_now = lambda trigger="manual": liberadas.append(trigger)
+    original_exec = QMessageBox.exec
+    preguntas: list[str] = []
+    etiquetas: list[str] = []
+    respuesta = [QMessageBox.No]
+    QMessageBox.exec = lambda cuadro: (  # type: ignore[method-assign]
+        preguntas.append(cuadro.text()),
+        etiquetas.append(cuadro.button(QMessageBox.Yes).text()),
+        respuesta[0],
+    )[2]
+    try:
+        pulsar(0, "Liberar memoria ahora")
+        check(
+            "Liberar desde el aviso pregunta antes y, si se cancela, no toca la memoria",
+            bool(preguntas)
+            and "no se cierra ninguna aplicación" in preguntas[0]
+            and not liberadas
+            and "No se liberó nada" in window.status_message.text(),
+            f"{preguntas[0][:60] if preguntas else 'no se preguntó'} · liberadas={liberadas}",
+        )
+        check(
+            "El cuadro de liberar dice «Liberar» y no un «Sí» a secas",
+            etiquetas == ["Liberar"],
+            " · ".join(etiquetas),
+        )
+        respuesta[0] = QMessageBox.Yes
+        pulsar(0, "Liberar memoria ahora")
+        check(
+            "Y si se acepta, la libera, quedando dicho que viene de un aviso",
+            liberadas == ["aviso"],
+            str(liberadas),
+        )
+
+        # El de inicio pesado: la lista de lo que va a cambiar va en la pregunta y las entradas
+        # se desactivan con el mismo apunte de deshacer que las de su página.
+        pesada = startup_mod.StartupEntry(
+            id="tarea|Prueba pesada",
+            name="Prueba pesada",
+            command="",
+            source=startup_mod.SOURCE_TAREA,
+            location="Programador de tareas",
+            kind=startup_mod.KIND_TAREA,
+            enabled=True,
+        )
+        original_leer = startup_mod.read_entries
+        original_mover = startup_mod.move
+        original_entradas = window.startup_page._entries  # noqa: SLF001
+        movidas: list[tuple[str, bool, str]] = []
+        startup_mod.read_entries = lambda *a, **k: []  # type: ignore[assignment]
+        startup_mod.move = lambda entrada, enabled, store=None, origin="manual": (  # type: ignore[assignment]
+            movidas.append((entrada.name, enabled, origin)),
+            (True, f"«{entrada.name}» {'activada' if enabled else 'desactivada'}."),
+        )[1]
+        try:
+            window.startup_page._entries = [pesada]  # noqa: SLF001
+            preguntas.clear()
+            etiquetas.clear()
+            respuesta[0] = QMessageBox.No
+            check(
+                "El aviso de inicio ofrece desactivar las pesadas y, al lado, revisarlas",
+                {boton.text() for boton in botones_del_aviso(1)}
+                >= {"Desactivar las más pesadas", "Revisar el inicio"},
+                " · ".join(boton.text() for boton in botones_del_aviso(1)),
+            )
+            pulsar(1, "Desactivar las más pesadas")
+            check(
+                "Desactivar entradas pregunta antes, con la lista delante, y no cambia nada si se cancela",
+                bool(preguntas)
+                and "Prueba pesada" in preguntas[0]
+                and "no se borra nada" in preguntas[0].lower()
+                and not movidas
+                and "No se cambió nada" in window.status_message.text(),
+                f"{preguntas[0][:70] if preguntas else 'no se preguntó'} · movidas={movidas}",
+            )
+            check(
+                "El cuadro de las entradas de inicio dice «Desactivar»",
+                etiquetas == ["Desactivar"],
+                " · ".join(etiquetas),
+            )
+            respuesta[0] = QMessageBox.Yes
+            pulsar(1, "Desactivar las más pesadas")
+            for _ in range(160):
+                workers_ui.pump_events(50)
+                if movidas and not window._startup_busy:  # noqa: SLF001
+                    break
+            check(
+                "Y si se acepta, desactiva solo las pesadas, apuntándolo para deshacer",
+                movidas == [("Prueba pesada", False, undo_mod.ORIGIN_AVISO)]
+                and undo_mod.ORIGIN_LABELS.get(undo_mod.ORIGIN_AVISO)
+                and "desactivado" in window.status_message.text(),
+                f"{movidas} · {window.status_message.text()[:60]}",
+            )
+        finally:
+            startup_mod.read_entries = original_leer  # type: ignore[assignment]
+            startup_mod.move = original_mover  # type: ignore[assignment]
+            window.startup_page._entries = original_entradas  # noqa: SLF001
+    finally:
+        window.release_memory_now = original_liberar
+        QMessageBox.exec = original_exec  # type: ignore[method-assign]
+    window.navigate("home")
+    _settle(app, 120)
+
+    window.dashboard.update_insights([], 0)
+    check(
+        "Sin avisos la tarjeta lo dice en vez de quedarse vacía",
+        not window.dashboard.insight_rows  # noqa: SLF001
+        and window.dashboard.insights_empty.isVisible()
+        and "atención" in window.dashboard.insights_empty.text(),
+        window.dashboard.insights_empty.text()[:60],
+    )
+    # Descartar de verdad: pasa por el controlador y queda apuntado en el disco.
+    aviso = insights_core.Insight(
+        id="poco-espacio",
+        severity=insights_core.SEVERITY_BAD,
+        title="Quedan 4 GB libres en C:",
+        detail="Con muy poco espacio libre Windows va más lento.",
+        action="limpieza",
+        action_label="Ver qué se puede liberar",
+        fingerprint="libre-0",
+    )
+    window.insights.dismiss(aviso)
+    check(
+        "Un aviso descartado desde la ventana queda apuntado",
+        window.insights.store.dismissed().get(aviso.id) == aviso.fingerprint,
+        str(window.insights.store.dismissed()),
+    )
+    window.insights.restore_dismissed()
+    check(
+        "Volver a mostrar los descartados los olvida todos",
+        window.insights.store.dismissed() == {},
+        str(window.insights.store.dismissed()),
+    )
+    window.insights.set_enabled(False)
+    check(
+        "Con los avisos apagados no se evalúa nada",
+        window.insights.active == [] and not window.settings.insights_enabled,
+        str(window.insights.active),
+    )
+    window.insights.set_enabled(True)
+    check(
+        "Y al encenderlos vuelven a evaluarse",
+        window.settings.insights_enabled and window.insights.enabled,
+    )
+
     window.navigate("tasks")
     check("Estadísticas de tareas visibles", window.tasks_page.stats_layout.count() == 4)  # noqa: SLF001
     window.navigate("reports")
@@ -4980,6 +6455,8 @@ def test_interface() -> None:
 
     from pctoolkit.ui.alert_settings import AlertSettingsDialog
     from pctoolkit.ui.chart import HistoryChart
+    from pctoolkit.ui.clean import TargetRow as FilaDeObjetivo
+    from pctoolkit.ui.dashboard import InsightRow as FilaDeAviso
     from pctoolkit.ui.tools_page import ToolTile
     from pctoolkit.ui.windows_settings_page import SettingRow as FilaDeAjuste
     from pctoolkit.ui.widgets import (
@@ -5015,6 +6492,10 @@ def test_interface() -> None:
         # Cada fila del catálogo de ajustes de Windows es un elemento de la lista (lleva
         # dentro la casilla, el estado y el riesgo), aunque por dentro sea una tarjeta.
         (FilaDeAjuste, QAccessible.Role.ListItem),
+        # Igual para las filas de la ventana de limpieza (tamaño, motivo y casilla) y las
+        # de la lista de avisos de la portada (gravedad, explicación y sus botones).
+        (FilaDeObjetivo, QAccessible.Role.ListItem),
+        (FilaDeAviso, QAccessible.Role.ListItem),
         (Tarjeta, QAccessible.Role.Grouping),
         (TituloSeccion, QAccessible.Role.Heading),
         (Indicador, QAccessible.Role.Chart),
@@ -5058,10 +6539,15 @@ def test_interface() -> None:
         ", ".join(sin_nombre) or "todos con nombre",
     )
     # No basta con que existan: cada tipo tiene que estar presente en la ventana.
+    # Se libran los que dependen de lo que haya en el equipo en ese momento (una tarjeta
+    # pulsable solo aparece si hay accesos, la lista de avisos está vacía mientras el equipo
+    # esté sano y las filas de la ventana de limpieza viven en una ventana que se abre y se
+    # cierra), no de que el widget esté bien hecho: el rol de esas filas se comprueba en su
+    # momento, con la ventana abierta (arriba, junto a cada tarjeta).
     ausentes = [
         clase.__name__
         for clase, _rol in reglas
-        if clase not in (TarjetaPulsable, FilaDisco)
+        if clase not in (TarjetaPulsable, FilaDisco, FilaDeAviso, FilaDeObjetivo)
         and not encontrados[clase]
     ]
     check("Hay tarjetas, títulos, medidores, barras y gráfica en la ventana", not ausentes, ", ".join(ausentes))
@@ -6739,8 +8225,10 @@ def main(argv: list[str] | None = None) -> int:
         test_disk,
         test_tasks,
         test_tools,
+        test_cleaner,
         test_reports,
         test_alerts,
+        test_insights,
         test_history,
         test_memory,
         test_scheduler,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import psutil
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QAccessible
 from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
@@ -19,8 +20,8 @@ from PySide6.QtWidgets import (
 from ..core.alerts import METRIC_CPU, METRIC_DISK, METRIC_RAM, AlertConfig
 from ..core.config import COLORS, format_bytes, format_integer
 from ..core.history import HistoryStore
-from ..core import gpu
-from . import icons, theme
+from ..core import gpu, insights as insights_core
+from . import accessibility, icons, theme
 from .chart import SERIES, HistoryChart
 from .widgets import (
     ActionCard,
@@ -36,6 +37,25 @@ from .widgets import (
 )
 
 
+class InsightRow(Card):
+    """Una fila de aviso de la portada.
+
+    Por dentro es una tarjeta (mismo aspecto que el resto de la ventana), pero para un lector
+    de pantalla es un **elemento de lista**: lleva dentro la gravedad, el título, la
+    explicación y sus botones, y se lee como una fila más de la lista de avisos. Es el mismo
+    criterio que siguen las filas del catálogo de ajustes de Windows.
+    """
+
+    def __init__(self, insight, parent: QWidget | None = None) -> None:
+        super().__init__(parent, soft=True, name=insight.title)
+        accessibility.mark(
+            self,
+            QAccessible.Role.ListItem,
+            insight.title,
+            f"{insight.severity_label}. {insight.detail}",
+        )
+
+
 def _speed(value: float) -> str:
     return f"{format_bytes(value)}/s" if value else "0 B/s"
 
@@ -46,6 +66,11 @@ class DashboardPage(QWidget):
     navigate = Signal(str)
     status = Signal(str)
     export_requested = Signal()
+    # Avisos propios de la portada: ver algo, descartarlo o volver a mostrar los descartados.
+    # La acción y, cuando la tiene, las categorías de limpieza que señala el aviso.
+    insight_action = Signal(str, object)
+    insight_dismiss = Signal(object)
+    insights_restore = Signal()
 
     def __init__(
         self,
@@ -67,6 +92,7 @@ class DashboardPage(QWidget):
         self._net_peak = 0.0
         self.chips: dict[str, QLabel] = {}
         self.gpu_rows: dict[str, QLabel] = {}
+        self.insight_rows: list[QWidget] = []
         self._build()
         self.reload_history()
         self._sync_threshold_marks()
@@ -150,6 +176,10 @@ class DashboardPage(QWidget):
         layout.addLayout(top)
 
         layout.addWidget(self._history_card())
+
+        # Los avisos van justo debajo del historial: son la lectura de todo lo de arriba
+        # (y de lo que la aplicación sabe por otras páginas) en una frase.
+        layout.addWidget(self._insights_card())
 
         # --- Fila inferior: acciones + detalles -----------------------------
         bottom = QHBoxLayout()
@@ -415,6 +445,141 @@ class DashboardPage(QWidget):
             self.history_stats[key].setText(
                 f"{label}: media {sum(values) / len(values):.0f}% · máx {max(values):.0f}%"
             )
+
+    # ------------------------------------------------------------------
+    def _insights_card(self) -> Card:
+        """Avisos propios: lo que la aplicación ya mide, unido y dicho en una frase."""
+        card = Card(name="Qué conviene mirar")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(18, 16, 18, 18)
+        layout.setSpacing(10)
+
+        head = QHBoxLayout()
+        head.setSpacing(10)
+        head.addWidget(IconBadge("warn", 30, 16, COLORS["text_muted"]))
+        textos = QVBoxLayout()
+        textos.setSpacing(1)
+        textos.addWidget(SectionTitle("Qué conviene mirar"))
+        subtitulo = Muted(
+            "Avisos sacados de lo que la aplicación ya mide (métricas, historial, programas de "
+            "inicio y limpieza). Cada uno se puede descartar y no vuelve a molestar."
+        )
+        subtitulo.setWordWrap(True)
+        textos.addWidget(subtitulo)
+        head.addLayout(textos, 1)
+        # El botón lleva nombre propio («restore_insights_button») para no tapar la señal
+        # `insights_restore` de esta misma clase: una señal y un atributo con el mismo
+        # nombre en el mismo objeto es un error que solo aparece al conectarla.
+        self.restore_insights_button = QPushButton("Volver a mostrar los descartados")
+        self.restore_insights_button.setObjectName("Ghost")
+        self.restore_insights_button.setToolTip(
+            "Olvida los avisos que has descartado y los evalúa otra vez"
+        )
+        self.restore_insights_button.setVisible(False)
+        self.restore_insights_button.clicked.connect(self.insights_restore.emit)
+        head.addWidget(self.restore_insights_button)
+        layout.addLayout(head)
+
+        self.insights_container = QWidget()
+        self.insights_layout = QVBoxLayout(self.insights_container)
+        self.insights_layout.setContentsMargins(0, 0, 0, 0)
+        self.insights_layout.setSpacing(8)
+        layout.addWidget(self.insights_container)
+
+        self.insights_empty = Muted("Nada que requiera tu atención ahora mismo.")
+        self.insights_empty.setWordWrap(True)
+        layout.addWidget(self.insights_empty)
+        self.insights_footer = Muted("")
+        self.insights_footer.setWordWrap(True)
+        self.insights_footer.setVisible(False)
+        layout.addWidget(self.insights_footer)
+        return card
+
+    @staticmethod
+    def _insight_color(severity: str) -> str:
+        return {
+            insights_core.SEVERITY_BAD: COLORS["bad"],
+            insights_core.SEVERITY_WARN: COLORS["warn"],
+        }.get(severity, COLORS["text_muted"])
+
+    def _insight_row(self, insight) -> QWidget:
+        """Una fila de aviso: gravedad, qué pasa, por qué y qué se puede hacer."""
+        row = InsightRow(insight)
+        layout = QVBoxLayout(row)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(6)
+
+        color = self._insight_color(insight.severity)
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        # La gravedad va en texto además de en color: el color solo no basta para quien no
+        # lo distingue, y el nombre del aviso ya lo lleva el lector de pantalla.
+        etiqueta = QLabel(insight.severity_label)
+        etiqueta.setStyleSheet(f"color: {color}; font-size: 11.5px; font-weight: 600;")
+        top.addWidget(etiqueta)
+        titulo = QLabel(insight.title)
+        titulo.setStyleSheet("font-size: 13px; font-weight: 600;")
+        titulo.setWordWrap(True)
+        top.addWidget(titulo, 1)
+        if insight.action_label:
+            accion = QPushButton(insight.action_label)
+            accion.setObjectName("Ghost")
+            # Se lleva consigo las categorías que señala el aviso: la limpieza se abre con
+            # ellas marcadas y sigue sin borrar nada hasta que se confirme.
+            accion.clicked.connect(
+                lambda _=False, clave=insight.action, objetivos=insight.targets: (
+                    self.insight_action.emit(clave, tuple(objetivos))
+                )
+            )
+            top.addWidget(accion)
+        if insight.secondary_label:
+            # Una segunda salida para el mismo aviso (mirar qué ocupa el disco, por ejemplo):
+            # no libera nada, así que no marca ninguna categoría.
+            segunda = QPushButton(insight.secondary_label)
+            segunda.setObjectName("Ghost")
+            segunda.clicked.connect(
+                lambda _=False, clave=insight.secondary_action: self.insight_action.emit(clave, ())
+            )
+            top.addWidget(segunda)
+        descartar = QPushButton("Descartar")
+        descartar.setObjectName("Ghost")
+        descartar.setToolTip("No volver a mostrar este aviso mientras la situación siga igual")
+        descartar.clicked.connect(lambda _=False, aviso=insight: self.insight_dismiss.emit(aviso))
+        top.addWidget(descartar)
+        layout.addLayout(top)
+
+        detalle = Muted(insight.detail)
+        detalle.setWordWrap(True)
+        layout.addWidget(detalle)
+        return row
+
+    def update_insights(self, activos, descartados: int = 0) -> None:
+        """Pinta los avisos vigentes (y cuántos quedan por descartes)."""
+        for fila in self.insight_rows:
+            fila.setParent(None)
+            fila.deleteLater()
+        self.insight_rows = []
+
+        visibles, ocultos = insights_core.visible(list(activos or []))
+        for aviso in visibles:
+            fila = self._insight_row(aviso)
+            self.insight_rows.append(fila)
+            self.insights_layout.addWidget(fila)
+
+        self.insights_empty.setVisible(not visibles)
+        if not visibles:
+            self.insights_empty.setText(
+                "Nada que requiera tu atención ahora mismo. "
+                + (f"Tienes {descartados} aviso(s) descartado(s)." if descartados else "")
+            )
+        partes = []
+        if ocultos:
+            partes.append(f"Y {ocultos} aviso(s) más esperando.")
+        if descartados:
+            partes.append(f"{descartados} descartado(s) por ti.")
+        self.insights_footer.setText(" ".join(partes))
+        self.insights_footer.setVisible(bool(partes))
+        self.restore_insights_button.setVisible(descartados > 0)
 
     def _actions_card(self) -> Card:
         card = Card(name="Acciones rápidas")

@@ -18,8 +18,10 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.config import COLORS, format_bytes, format_integer
+from ..core import cleaner
 from ..core import tools as tool_core
-from . import accessibility, icons
+from . import accessibility, icons, workers
+from .clean import CleanDialog
 from .widgets import Card, IconBadge, Muted, PageHeader, SectionTitle
 
 
@@ -70,11 +72,23 @@ class ToolsPage(QWidget):
 
     status = Signal(str)
 
-    def __init__(self, launcher, task_logger=None, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        launcher,
+        task_logger=None,
+        settings=None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.launch_tool = launcher
         self.task_logger = task_logger
+        # Las preferencias son para la ventana de limpieza: es la que guarda qué categorías
+        # limpia el mantenimiento automático. Sin ellas (pruebas sueltas) todo funciona
+        # igual, solo que esa casilla no se enseña.
+        self.settings = settings
         self._tiles: list[ToolTile] = []
+        self._space_scan: cleaner.CleanScan | None = None
+        self._space_running = False
         self._build()
 
     # ------------------------------------------------------------------
@@ -121,7 +135,7 @@ class ToolsPage(QWidget):
         self._populate()
 
     def _maintenance_card(self) -> Card:
-        card = Card(name="Mantenimiento rápido")
+        card = Card(name="Liberar espacio")
         layout = QHBoxLayout(card)
         layout.setContentsMargins(18, 16, 18, 16)
         layout.setSpacing(14)
@@ -129,26 +143,33 @@ class ToolsPage(QWidget):
         layout.addWidget(IconBadge("broom", 40, 20, COLORS["accent_glow"]))
         texts = QVBoxLayout()
         texts.setSpacing(2)
-        title = QLabel("Mantenimiento rápido")
+        title = QLabel("Liberar espacio")
         title.setObjectName("CardTitle")
-        self.temp_info = QLabel("Calcula cuánto espacio ocupan los archivos temporales del usuario.")
-        self.temp_info.setObjectName("Muted")
-        self.temp_info.setWordWrap(True)
+        self.space_info = QLabel(
+            "Mira cuánto se puede liberar antes de borrar nada: temporales del usuario y de "
+            "Windows, cachés de los navegadores, miniaturas, volcados de error y la papelera."
+        )
+        self.space_info.setObjectName("Muted")
+        self.space_info.setWordWrap(True)
         texts.addWidget(title)
-        texts.addWidget(self.temp_info)
+        texts.addWidget(self.space_info)
         layout.addLayout(texts, 1)
 
-        self.scan_temp_button = QPushButton("Calcular temporales")
-        self.scan_temp_button.setObjectName("Ghost")
-        self.scan_temp_button.clicked.connect(self._scan_temp)
-        layout.addWidget(self.scan_temp_button)
+        self.analyze_space_button = QPushButton("Analizar")
+        self.analyze_space_button.setObjectName("Primary")
+        self.analyze_space_button.setIcon(icons.icon("analyze", 15, COLORS["on_accent"]))
+        self.analyze_space_button.setToolTip(
+            "Mide todas las categorías sin borrar nada (tarda unos segundos)"
+        )
+        self.analyze_space_button.clicked.connect(self.analyze_space)
+        layout.addWidget(self.analyze_space_button)
 
-        self.clean_temp_button = QPushButton("Liberar espacio")
-        self.clean_temp_button.setObjectName("Primary")
-        self.clean_temp_button.setIcon(icons.icon("broom", 15, COLORS["on_accent"]))
-        self.clean_temp_button.setEnabled(False)
-        self.clean_temp_button.clicked.connect(self._clean_temp)
-        layout.addWidget(self.clean_temp_button)
+        self.space_detail_button = QPushButton("Ver detalle…")
+        self.space_detail_button.setObjectName("Ghost")
+        self.space_detail_button.setEnabled(False)
+        self.space_detail_button.setToolTip("Abre la vista previa, categoría por categoría")
+        self.space_detail_button.clicked.connect(self.open_clean_dialog)
+        layout.addWidget(self.space_detail_button)
         return card
 
     def _populate(self) -> None:
@@ -214,48 +235,68 @@ class ToolsPage(QWidget):
         elif self.task_logger is not None:
             self.task_logger(tool)
 
-    # --- Temporales -------------------------------------------------------
-    def _scan_temp(self) -> None:
-        report = tool_core.scan_temp_folder()
-        if report.rejected:
-            # La carpeta no es una temporal de verdad: se dice el motivo en vez de
-            # dar a entender que simplemente no había nada que borrar.
-            self.temp_info.setText(report.rejected)
-            self.clean_temp_button.setEnabled(False)
-        elif report.file_count == 0:
-            self.temp_info.setText("No hay archivos temporales antiguos que se puedan borrar.")
-            self.clean_temp_button.setEnabled(False)
-        else:
-            self.temp_info.setText(
-                f"{format_bytes(report.total_size)} en {format_integer(report.file_count)} archivos temporales "
-                f"(más de 1 hora de antigüedad) en {report.folders[0] if report.folders else ''}"
-            )
-            self.clean_temp_button.setEnabled(True)
-        self._temp_report = report
-        self.status.emit("Cálculo de archivos temporales completado.")
+    # --- Liberar espacio --------------------------------------------------
+    def analyze_space(self) -> None:
+        """Mide todas las categorías en segundo plano (no borra nada)."""
+        if self._space_running:
+            return
+        self._space_running = True
+        self.analyze_space_button.setEnabled(False)
+        self.space_info.setText("Analizando qué se puede liberar…")
+        self.status.emit("Analizando el espacio que se puede liberar…")
+        workers.run_in_background(
+            self, lambda: cleaner.scan(cleaner.target_keys()), self._space_scanned
+        )
 
-    def _clean_temp(self) -> None:
-        report = getattr(self, "_temp_report", None) or tool_core.scan_temp_folder()
-        if not report.file_count:
+    def _space_scanned(self, resultado) -> None:
+        self._space_running = False
+        self.analyze_space_button.setEnabled(True)
+        if isinstance(resultado, Exception):
+            self.space_info.setText(f"No se pudo analizar el espacio: {resultado}")
             return
-        answer = QMessageBox.question(
-            self,
-            "Liberar espacio",
-            "Se eliminarán los archivos temporales con más de una hora de antigüedad:\n\n"
-            f"{format_bytes(report.total_size)} en {format_integer(report.file_count)} archivos\n"
-            f"Carpeta: {report.folders[0] if report.folders else ''}\n\n"
-            "Los archivos en uso se omitirán automáticamente. ¿Continuar?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+        self._space_scan = resultado
+        self.space_detail_button.setEnabled(True)
+        self.space_info.setText(self.space_text())
+        self.status.emit(self.space_text())
+
+    def space_text(self) -> str:
+        """Frase con lo que se liberaría, o la explicación de por qué no hay nada."""
+        plan = self._space_scan
+        if plan is None:
+            return (
+                "Mira cuánto se puede liberar antes de borrar nada: temporales del usuario y de "
+                "Windows, cachés de los navegadores, miniaturas, volcados de error y la papelera."
+            )
+        disponibles = plan.available_items
+        if not disponibles:
+            return "Ahora mismo no hay nada que se pueda liberar de forma segura."
+        texto = (
+            f"Se pueden liberar {format_bytes(plan.total_size)} en "
+            f"{format_integer(plan.total_files)} elemento(s), en {len(disponibles)} categoría(s). "
+            "Abre el detalle para ver qué es cada cosa y borrar solo lo que quieras."
         )
-        if answer != QMessageBox.Yes:
-            return
-        result = tool_core.clean_temp_folder()
-        self.temp_info.setText(
-            f"Se liberaron {format_bytes(result.freed)} "
-            f"({format_integer(result.deleted)} archivos borrados, {format_integer(result.skipped)} omitidos)."
-        )
-        self.clean_temp_button.setEnabled(False)
-        self.status.emit(f"Espacio liberado: {format_bytes(result.freed)}")
+        if plan.total_locked:
+            texto += (
+                f" Otros {format_integer(plan.total_locked)} archivo(s) están en uso y se "
+                "omitirán."
+            )
+        return texto
+
+    def open_clean_dialog(self, prechecked=()) -> None:
+        """Abre la vista previa (reutiliza el último análisis si lo hay).
+
+        `prechecked` son las categorías que llegan marcadas ya: las usa la portada cuando se
+        pulsa la acción de un aviso («se pueden liberar 2 GB»), para no tener que buscarlas.
+        """
+        dialog = CleanDialog(self.settings, self._space_scan, self, prechecked=prechecked)
+        dialog.done_changes.connect(self._space_cleaned)
+        dialog.exec()
+        # El análisis de la ventana es el más reciente: se queda para la tarjeta.
+        self._space_scan = dialog.scan
+        self.space_detail_button.setEnabled(True)
+        self.space_info.setText(self.space_text())
+
+    def _space_cleaned(self, mensaje: str) -> None:
+        self.status.emit(mensaje)
         if self.task_logger is not None:
-            self.task_logger("temp_cleanup", f"Liberados {format_bytes(result.freed)}")
+            self.task_logger("limpieza", mensaje)

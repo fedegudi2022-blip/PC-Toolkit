@@ -172,10 +172,7 @@ def verificar_documentacion(*, comprobar_recuentos: bool = True) -> None:
         for texto in guias.values()
         for numero in re.findall(r"(\d+)\s+comprobaciones", texto) + re.findall(r"salen (\d+)", texto)
     ]
-    # Sin bandeja, sin signtool o sin `dist\\` compilado se omiten unas cuantas, así que en un
-    # equipo incompleto la guía puede pedir un número mayor. En uno completo tiene que ser el
-    # mismo: si no, alguien añadió pruebas (o quitó) sin actualizar la documentación.
-    # Sin bandeja, sin signtool, sin `dist` compilado o sin los contadores de la GPU se
+    # Sin bandeja, sin signtool, sin `dist\` compilado o sin los contadores de la GPU se
     # omiten unas cuantas, así que en un equipo incompleto la guía puede pedir un número
     # mayor. En uno completo tiene que ser el mismo: si no, alguien añadió pruebas (o quitó)
     # sin actualizar la documentación.

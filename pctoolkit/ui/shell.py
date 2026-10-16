@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
     QVBoxLayout,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from ..core import maintenance as maintenance_core
 from ..core import memory as memory_core
+from ..core import startup as startup_core
 from ..core import tools as tool_core
 from ..core.alerts import AlertConfig, AlertEngine
 from ..core.config import (
@@ -35,13 +37,14 @@ from ..core.memory import MemoryGuard
 from ..core.metrics import PROFILE_ECO, PROFILE_FULL, MetricsService
 from ..core.settings import AppSettings
 from ..core.tasks import TaskStore
-from ..core.undo import UndoStore
+from ..core.undo import ORIGIN_AVISO, UndoStore
 from . import accessibility, icons
 from .actualizaciones import UpdateController
 from .alert_settings import AlertSettingsDialog
 from .dashboard import DashboardPage
 from .disk_page import DiskAnalyzerPage
 from .gpu_monitor import GpuMonitor
+from .insights import InsightController
 from .optimize_page import OptimizeMemoryPage
 from .reports_page import ReportsPage
 from .schedule_page import MaintenanceSchedulePage
@@ -114,6 +117,10 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         self.alerts = AlertEngine(self.settings.alert_config)
+        # Los avisos propios de la portada: juntan las métricas, el historial, los programas
+        # de inicio y los temporales. El controlador se encarga de cuándo recalcular (los
+        # programas de inicio cuestan segundos y van aparte, en segundo plano).
+        self.insights = InsightController(self.settings, self.history, parent=self)
         self.memory_guard = MemoryGuard(self.settings.memory_options)
         self.tray = TrayController(self.settings, parent=self)
         # Actualizaciones: el controlador comprueba si hay versión nueva (lo pide `app.py`
@@ -127,6 +134,7 @@ class MainWindow(QMainWindow):
         self._system_info: dict = {}
         self._memory_busy = False
         self._maintenance_busy = False
+        self._startup_busy = False
         self._replacement = None  # ventana nueva al cambiar de tema (evita que se recoja)
         self._pages: dict[str, QWidget] = {}
         self._nav_buttons: dict[str, SidebarButton] = {}
@@ -165,7 +173,7 @@ class MainWindow(QMainWindow):
         self.startup_page = StartupPage(self.undo_store, self._launch_tool)
         self.schedule_page = MaintenanceSchedulePage(self.settings)
         self.disk_page = DiskAnalyzerPage()
-        self.tools_page = ToolsPage(self._launch_tool, self._log_tool)
+        self.tools_page = ToolsPage(self._launch_tool, self._log_tool, self.settings)
         self.tasks_page = TasksPage(self.task_store)
         self.reports_page = ReportsPage(self.metrics, self.task_store, self.disk_page)
         # Los ajustes recomendados de Windows: catálogo propio, con análisis previo y
@@ -312,6 +320,12 @@ class MainWindow(QMainWindow):
         self.dashboard.navigate.connect(self.navigate)
         self.dashboard.export_requested.connect(lambda: self.navigate("reports"))
         self.dashboard.status.connect(self.set_status)
+        # Avisos de la portada: se pintan cuando el controlador termina de evaluarlos, y sus
+        # botones vuelven aquí (descartar, ver el detalle o recuperar los descartados).
+        self.insights.updated.connect(self._on_insights)
+        self.dashboard.insight_action.connect(self._on_insight_action)
+        self.dashboard.insight_dismiss.connect(self.insights.dismiss)
+        self.dashboard.insights_restore.connect(self.insights.restore_dismissed)
         self.optimize_page.status.connect(self.set_status)
         self.startup_page.status.connect(self.set_status)
         self.windows_page.status.connect(self.set_status)
@@ -379,6 +393,9 @@ class MainWindow(QMainWindow):
             # Los medidores de la portada marcan el mismo umbral y avisan con él: si el
             # usuario lo cambia, tienen que enterarse sin reiniciar nada.
             self.dashboard.set_alert_config(config)
+            # El interruptor de los avisos propios vive en ese mismo diálogo: se aplica aquí,
+            # que es donde ya se sabe que se guardó de verdad.
+            self.insights.set_enabled(self.settings.insights_enabled)
             self.recorder.interval_seconds = max(5, self.settings.history_interval_seconds)
             self._apply_power_profile(refresh=True)
             resumen = _describe_alert_config(config)
@@ -418,6 +435,143 @@ class MainWindow(QMainWindow):
     def _on_history_sample(self, sample) -> None:
         self.dashboard.append_history_sample(sample)
 
+    def _on_insights(self, activos) -> None:
+        """Pinta los avisos vigentes (con cuántos hay descartados por quien usa el programa)."""
+        self.dashboard.update_insights(activos, self.insights.dismissed_count())
+
+    def _on_insight_action(self, clave: str, targets=None) -> None:
+        """Hace lo que pide un aviso, o lleva a donde se puede hacer.
+
+        Para la limpieza, el aviso trae las categorías que señala (`targets`) y la ventana se
+        abre con ellas **marcadas**: se ve lo que se liberaría y hay que confirmar el borrado,
+        igual que si se hubieran marcado a mano. Para la memoria y los programas de inicio el
+        aviso **cambia cosas**, así que pregunta antes (y la segunda salida de cada uno —«ver el
+        reparto», «revisar el inicio»— sigue llevando a su página para mirarlo con calma).
+        """
+        if clave == "disco":
+            self.navigate("disk")
+        elif clave == "inicio":
+            self.navigate("startup")
+        elif clave == "memoria":
+            self.navigate("memory")
+        elif clave == "limpieza":
+            self.navigate("tools")
+            self.tools_page.open_clean_dialog(tuple(targets or ()))
+        elif clave == "liberar-memoria":
+            self._offer_release_memory()
+        elif clave == "inicio-pesado":
+            self._offer_disable_heavy()
+        elif clave == "monitor":
+            self._launch_tool("resmon")
+
+    def _offer_release_memory(self) -> None:
+        """Libera memoria desde el aviso, preguntando antes (no se cierra ni se pierde nada)."""
+        options = self.settings.memory_options
+        extra = (
+            "\n\nTambién se vaciará la caché del sistema, tal como lo tienes configurado."
+            if options.empty_system_cache
+            else ""
+        )
+        if not self._confirmar(
+            "Liberar memoria",
+            "Se recortará la memoria reservada de los procesos; la vuelven a pedir cuando la "
+            f"necesiten, así que no se cierra ninguna aplicación.{extra}\n\n¿Liberarla ahora?",
+            "Liberar",
+            por_defecto=QMessageBox.Yes,
+        ):
+            self.set_status("No se liberó nada.")
+            return
+        self.release_memory_now("aviso")
+
+    def _confirmar(
+        self,
+        titulo: str,
+        texto: str,
+        etiqueta: str,
+        *,
+        por_defecto=QMessageBox.No,
+    ) -> bool:
+        """Pregunta con el texto delante y el botón diciendo lo que va a pasar.
+
+        Se construye el cuadro a mano (en vez de `QMessageBox.question`) por lo mismo que el de
+        la limpieza: así el botón de aceptar lleva el verbo de la acción —«Liberar»,
+        «Desactivar»— y no un «Sí» que no dice nada, y la respuesta se puede leer sin depender
+        de qué botón venga marcado por defecto.
+        """
+        pregunta = QMessageBox(self)
+        pregunta.setWindowTitle(titulo)
+        pregunta.setIcon(QMessageBox.Question)
+        pregunta.setText(texto)
+        pregunta.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        pregunta.button(QMessageBox.Yes).setText(etiqueta)
+        pregunta.button(QMessageBox.No).setText("Cancelar")
+        pregunta.setDefaultButton(por_defecto)
+        return pregunta.exec() == QMessageBox.Yes
+
+    def _offer_disable_heavy(self) -> None:
+        """Desactiva los programas de inicio pesados que señala el aviso, con la lista delante.
+
+        No se borra nada: se cambia el mismo estado que cambia la página de programas de inicio,
+        con el mismo apunte de deshacer (marcado como «desde un aviso»), así que la vuelta atrás
+        está donde siempre.
+        """
+        if self._startup_busy:
+            return
+        entradas = startup_core.read_entries()
+        # Las tareas de inicio de sesión las busca la página en segundo plano: si ya están
+        # cargadas cuentan también, y si no, la lista de la confirmación dice exactamente lo que
+        # se va a cambiar (que es lo que importa).
+        conocidas = {entrada.id for entrada in entradas}
+        entradas += [
+            entrada for entrada in self.startup_page.entries if entrada.id not in conocidas
+        ]
+        pesadas = startup_core.heavy_entries(entradas)
+        if not pesadas:
+            self.set_status(
+                "No hay ninguna entrada de inicio pesada que se pueda desactivar desde aquí."
+            )
+            self.navigate("startup")
+            return
+        lista = "\n".join(f"• {entrada.name}" for entrada in pesadas)
+        if not self._confirmar(
+            "Desactivar programas de inicio",
+            f"Se desactivarán {len(pesadas)} entrada(s) de inicio:\n\n{lista}\n\n"
+            "No se borra nada: cada entrada se queda donde está y se puede volver a activar desde "
+            "la página de programas de inicio o con «Deshacer».\n\n¿Desactivarlas ahora?",
+            "Desactivar",
+        ):
+            self.set_status("No se cambió nada.")
+            return
+        self._startup_busy = True
+        self.set_status(f"Desactivando {len(pesadas)} entrada(s) de inicio…")
+        run_in_background(
+            self,
+            lambda: [
+                startup_core.move(entrada, False, self.undo_store, origin=ORIGIN_AVISO)
+                for entrada in pesadas
+            ],
+            self._after_disable_heavy,
+        )
+
+    def _after_disable_heavy(self, resultado) -> None:
+        """Cuenta lo que se cambió y lo que no, y deja la página de inicio al día."""
+        self._startup_busy = False
+        if isinstance(resultado, Exception):
+            self.set_status(f"No se pudieron cambiar los programas de inicio: {resultado}")
+            return
+        hechas = [mensaje for ok, mensaje in resultado if ok]
+        fallos = [mensaje for ok, mensaje in resultado if not ok]
+        if hechas and not fallos:
+            self.set_status(f"{len(hechas)} programa(s) de inicio desactivado(s). Se puede deshacer.")
+        elif hechas:
+            self.set_status(
+                f"Desactivados {len(hechas)} de {len(hechas) + len(fallos)}: {fallos[0]}"
+            )
+        else:
+            self.set_status(f"No se cambió ninguno: {fallos[0] if fallos else 'sin respuesta'}")
+        self.startup_page.refresh(with_tasks=False)
+        self.insights.refresh()
+
     def _update_current_page(self, snap) -> None:
         """Pinta la página visible con una muestra (solo la que se está viendo)."""
         current = self.stack.currentWidget()
@@ -434,6 +588,9 @@ class MainWindow(QMainWindow):
         # consumo cuando la aplicación solo vive en la bandeja.
         if self.isVisible():
             self._update_current_page(snap)
+        # Los avisos se alimentan de la muestra actual; el controlador decide cada cuánto
+        # recalcular (leer el historial en cada muestreo sería gastar sin motivo).
+        self.insights.on_snapshot(snap)
         self.status_metrics.setText(
             f"CPU {snap.cpu_percent:.0f}%  ·  RAM {snap.ram_percent:.0f}%  ·  "
             f"Salud {snap.health_score:.0f}/100  ·  ↓ {format_bytes(snap.net_down_rate)}/s"
@@ -569,6 +726,14 @@ class MainWindow(QMainWindow):
             # El estado real de la tarea se consulta la primera vez que se abre
             # la página (así el arranque no lanza PowerShell sin necesidad).
             self.schedule_page.ensure_status()
+        if key == "home":
+            # Al volver a la portada se revisan los avisos: es barato (métricas e historial) y
+            # así lo que se enseña es de este momento, no de hace medio minuto. Los datos
+            # caros (programas de inicio) solo se piden con la ventana a la vista: al
+            # arrancar no se consulta nada en segundo plano.
+            self.insights.refresh()
+            if self.isVisible():
+                self.insights.refresh_slow()
         if key == "windows" and not self.windows_page.analysed:
             # El primer vistazo a los ajustes se analiza solo: leer el registro es
             # inmediato y así la página nunca aparece «sin analizar».
@@ -673,6 +838,7 @@ class MainWindow(QMainWindow):
             return
         self.metrics.stop()
         self.gpu_monitor.stop()
+        self.insights.stop()
         # Se deja terminar la limpieza de memoria, la consulta de tareas o lo que
         # haya en marcha. `shutdown_background` las encuentra todas (no depende de
         # una lista de páginas) y espera cediendo el bucle de eventos, así que

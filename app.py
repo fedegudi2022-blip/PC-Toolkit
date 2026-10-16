@@ -8,6 +8,9 @@ Uso:
                                       sin tocar las preferencias guardadas.
     python app.py --mantenimiento     Mantenimiento desatendido (sin ventana);
                                       es lo que ejecuta la tarea programada.
+    python app.py --limpieza          Limpieza desatendida de las categorías que se
+                                      indiquen (o de las programadas desde la ventana de
+                                      limpieza), con --categorias y --antiguedad.
     python app.py --comprobar-https   Comprueba que esta copia puede usar https (sin red).
     python app.py --comprobar-actualizaciones
                                       Cuenta si hay una versión nueva y sale.
@@ -182,6 +185,49 @@ def _run_maintenance(args) -> int:
     return 0 if report.ok else 1
 
 
+def _run_cleanup(args) -> int:
+    """Limpieza desatendida: solo las categorías pedidas, sin el resto del mantenimiento.
+
+    Es lo que ejecuta la tarea «Limpieza PC Toolkit» que crea la ventana de «Liberar
+    espacio»: sin memoria ni informe, y con el mismo registro que el mantenimiento (así el
+    histórico cuenta también lo que se limpia solo).
+    """
+    from pctoolkit.core import cleaner as cleaner_core
+    from pctoolkit.core import maintenance, tools as tools_core
+
+    app = QCoreApplication(sys.argv[:1])
+    app.setApplicationName(APP_NAME)
+    app.setOrganizationName("PCToolkit")
+    settings = AppSettings()
+    pedidas = [parte.strip() for parte in (args.categorias or "").split(",") if parte.strip()]
+    if not pedidas:
+        # Sin `--categorias` mandan las que se programaron desde la ventana; y si tampoco hay,
+        # los temporales del usuario, que es lo que la aplicación limpiaba siempre.
+        pedidas = list(settings.cleanup_schedule.targets) or list(cleaner_core.DEFAULT_TARGETS)
+    claves = cleaner_core.normalize_keys(pedidas)
+    desconocidas = sorted(set(pedidas) - set(claves))
+    if desconocidas:
+        print(f"Aviso: no se reconoce(n) {', '.join(desconocidas)}; se omiten.")
+    antiguedad = tools_core.min_temp_age_hours(args.antiguedad)
+    if antiguedad != float(args.antiguedad):
+        print(
+            f"Aviso: la antigüedad mínima es de {tools_core.MIN_TEMP_AGE_HOURS:g} hora(s); "
+            f"se usan {antiguedad:g} en vez de {args.antiguedad:g}."
+        )
+    print(f"Limpieza programada: {cleaner_core.keys_label(claves)}.")
+    report = maintenance.run_cleanup(
+        claves,
+        min_age_hours=antiguedad,
+        dry_run=args.simular,
+    )
+    print(report.summary())
+    for item in report.items:
+        estado = "OK " if item.ok else "AVISO"
+        print(f"  [{estado}] {item.title}: {item.detail}")
+    print(f"Registro: {report.log_path}")
+    return 0 if report.ok else 1
+
+
 def _run_https_check() -> int:
     """Comprueba que esta copia puede usar `https` (lo que necesita la actualización).
 
@@ -269,6 +315,22 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Ejecuta el mantenimiento desatendido (limpieza, memoria e informe) y sale",
     )
+    parser.add_argument(
+        "--limpieza",
+        action="store_true",
+        help=(
+            "Ejecuta solo la limpieza de las categorías indicadas en --categorias (o de las "
+            "programadas en la ventana de limpieza) y sale"
+        ),
+    )
+    parser.add_argument(
+        "--categorias",
+        metavar="CLAVES",
+        help=(
+            "Categorías de limpieza separadas por comas: temp, browsers, thumbnails, dumps, "
+            "recycle, wintemp, update_cache"
+        ),
+    )
     parser.add_argument("--sin-limpieza", action="store_true", help="Omite la limpieza de temporales")
     parser.add_argument("--sin-informe", action="store_true", help="Omite la generación del informe")
     parser.add_argument("--liberar-memoria", action="store_true", help="Libera memoria RAM en esta ejecución")
@@ -304,6 +366,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_update_check()
     if args.mantenimiento:
         return _run_maintenance(args)
+    if args.limpieza:
+        return _run_cleanup(args)
 
     app = QApplication(sys.argv[:1])
     app.setApplicationName(APP_NAME)

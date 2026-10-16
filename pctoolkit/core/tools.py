@@ -254,6 +254,14 @@ def _is_reparse_dir(entry: os.DirEntry) -> bool:
     return bool(getattr(stat, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT)
 
 
+def is_reparse_dir(entry: os.DirEntry) -> bool:
+    """Igual que `_is_reparse_dir`, con nombre público: lo usan las limpiezas que no son
+    la de `%TEMP%` (el catálogo de `pctoolkit.core.cleaner`), y la regla de no seguir
+    enlaces tiene que ser **la misma** en todas: dos copias de esta comprobación es la
+    forma de que una se quede atrás y la otra no."""
+    return _is_reparse_dir(entry)
+
+
 def _prepare(folder: str | None, min_age_hours: float) -> tuple[str, float, TempReport]:
     """Valida la carpeta y devuelve (carpeta, antigüedad efectiva, informe)."""
     folder = folder or default_temp_folder()

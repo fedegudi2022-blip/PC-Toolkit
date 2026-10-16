@@ -27,8 +27,8 @@ Windows 10 u 11 (x64). No hace falta instalar Python ni nada más.
 
 | Archivo | Qué es |
 | --- | --- |
-| [`PC-Toolkit-1.4.0-Setup.exe`](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/download/v1.4.0/PC-Toolkit-1.4.0-Setup.exe) | **Recomendado** (84,0 MB). Asistente con la aplicación dentro: accesos directos, arranque automático opcional y desinstalador. Por usuario, sin avisos de Windows. |
-| [`PC-Toolkit-1.4.0-portable.exe`](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/download/v1.4.0/PC-Toolkit-1.4.0-portable.exe) | Versión portátil (47,5 MB). Doble clic y funciona, sin instalar ni dejar rastro. |
+| [`PC-Toolkit-1.4.1-Setup.exe`](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/download/v1.4.1/PC-Toolkit-1.4.1-Setup.exe) | **Recomendado** (85,3 MB). Asistente con la aplicación dentro: accesos directos, arranque automático opcional y desinstalador. Por usuario, sin avisos de Windows. |
+| [`PC-Toolkit-1.4.1-portable.exe`](https://github.com/fedegudi2022-blip/PC-Toolkit/releases/download/v1.4.1/PC-Toolkit-1.4.1-portable.exe) | Versión portátil (47,6 MB). Doble clic y funciona, sin instalar ni dejar rastro. |
 
 Datos y preferencias se guardan en `%APPDATA%\PCToolkit` (véase [Dónde se guardan los datos](#dónde-se-guardan-los-datos)).
 
@@ -41,14 +41,14 @@ Datos y preferencias se guardan en `%APPDATA%\PCToolkit` (véase [Dónde se guar
 
 | Módulo | Qué hace |
 | --- | --- |
-| **Inicio** | Medidores de CPU, memoria, disco y red, salud del equipo, gráfica de las últimas 24 h y procesos que más consumen. |
+| **Inicio** | Medidores de CPU, memoria, disco y red, salud del equipo, gráfica de las últimas 24 h, procesos que más consumen y **avisos propios** («la CPU lleva 12 minutos al 88 %», «quedan 4 GB libres», «tienes 12 programas de inicio pesados») que se pueden descartar y **resolver desde el propio aviso**: el de espacio abre la limpieza con lo que señala ya marcado (sin borrar nada hasta confirmarlo), el de memoria la libera al momento, el de programas de inicio pesados los desactiva —los dos **preguntando antes** y con vuelta atrás en «Deshacer»— y el de disco ofrece además el analizador. |
 | **Optimizar memoria** | Libera RAM recortando conjuntos de trabajo y cachés, a mano o al pasar un umbral; mide lo liberado de verdad. |
 | **Programas de inicio** | Lo que abre Windows al encender: desactiva sin borrar, avisa de entradas muertas y todo se puede deshacer. |
 | **Ajustes de Windows** | Catálogo de ajustes de anuncios, privacidad, telemetría, interfaz y rendimiento: **analiza** sin tocar nada, enseña qué está recomendado y con qué riesgo, y aplica solo lo que se marca y se confirma. Con ayuda por ajuste (`F1`), respaldo `.reg`, gestor de **aplicaciones preinstaladas** y **plugins** en JSON. |
 | **Mantenimiento** | Tarea propia en el Programador de Windows (limpieza, memoria e informes) con estado real leído del sistema. |
 | **Alertas y bandeja** | Icono en la bandeja, umbrales de CPU, memoria y disco, y aviso por notificación. |
 | **Analizar disco** | Escaneo por carpetas con barras proporcionales, uso por categoría y archivos grandes. |
-| **Herramientas** | 28 accesos directos a las utilidades de Windows, con buscador y limpieza rápida de temporales. |
+| **Herramientas** | 28 accesos directos a las utilidades de Windows, con buscador y **liberador de espacio** propio: mide (temporales del usuario y de Windows, cachés de los navegadores, miniaturas, volcados de error y papelera), enseña cuánto liberaría **antes de borrar nada** y puede **programar la limpieza de lo marcado** en su propia tarea de Windows, sin activar el mantenimiento completo. |
 | **Tareas** | Registro de mantenimiento con estados, prioridades, fechas límite y estadísticas. |
 | **Informes** | Exportación a HTML (visual), CSV y JSON, con selección de contenido y destino, incluidos los cambios de los ajustes de Windows. |
 | **Actualizaciones** | Al arrancar comprueba si hay una versión nueva (como mucho una vez al día), enseña qué cambia y la instala **verificando antes su SHA-256**. Se puede desactivar o pedir a mano desde Ajustes. |
@@ -189,10 +189,12 @@ python app.py --analizar C:\Datos           Abre analizando esa carpeta
 python app.py --tema claro                  Fuerza el tema en esa ejecución
 python app.py --screenshot salida           Guarda una captura de cada página y sale
 python app.py --mantenimiento               Mantenimiento desatendido y sale (lo usa la tarea)
+python app.py --limpieza --categorias temp  Limpieza desatendida de esas categorías y sale
 ```
 
-> Purgar la caché del sistema (la limpieza que más memoria libera) necesita permisos de
-> administrador; la aplicación lo avisa y ofrece reiniciarse elevada. El resto funciona sin permisos.
+> Purgar la caché del sistema (la limpieza que más memoria libera) y las categorías de limpieza de
+> `C:\Windows` necesitan permisos de administrador; la aplicación lo avisa, las enseña como no
+> disponibles y ofrece reiniciarse elevada. El resto funciona sin permisos.
 
 ## Compilar
 
@@ -204,9 +206,9 @@ build_installer.bat                      Instalador de Windows (un solo archivo,
 
 | Resultado | Tamaño | Arranque |
 | --- | --- | --- |
-| `dist\PC Toolkit\` (carpeta, 165 archivos) | 77,7 MB (85,0 con el desinstalador) | 0,30 s |
-| `dist\PC Toolkit.exe` (`--onefile`) | 47,5 MB | 1,66 s |
-| `dist\PC Toolkit Setup.exe` | 84,0 MB | instala 166 archivos / 85,0 MB en 10,6 s |
+| `dist\PC Toolkit\` (carpeta, 165 archivos) | 77,8 MB (85,7 con el desinstalador) | 0,32 s |
+| `dist\PC Toolkit.exe` (`--onefile`) | 47,6 MB | 1,88 s |
+| `dist\PC Toolkit Setup.exe` | 85,3 MB | instala 167 archivos / 85,7 MB en 8,9 s |
 
 `build_exe.py` recorta del paquete 41,7 MB de librerías de Qt que la aplicación no usa —las de `ssl`
 se quedan a propósito, que son las de **https**— y comprueba el resultado **ejecutando el propio
@@ -262,13 +264,13 @@ Para quien mantiene el proyecto, publicar una versión son tres pasos:
 
 ```bat
 git push origin main
-git push origin v1.4.0
+git push origin v1.4.1
 ```
 
 Antes del día del estreno se puede **ensayar la publicación** con una etiqueta de prueba: en
 «Actions → Publicar la versión (Windows) → Run workflow» se lanza el mismo trabajo a mano, que
 recorre el camino completo (compilar, suite, instalación real, hashes y publicación) y lo deja todo
-en una publicación **en borrador y preliminar**, con etiqueta `v1.4.0-ensayo`. No sale en
+en una publicación **en borrador y preliminar**, con etiqueta `v1.4.1-ensayo`. No sale en
 `/releases/latest` —lo que mira el actualizador— y no gasta ningún número de versión.
 
 La etiqueta dispara [.github/workflows/publicar.yml](.github/workflows/publicar.yml), que compila en
@@ -302,7 +304,13 @@ Desinstalar conserva estos datos salvo que se pidan borrar desde el asistente.
 .venv\Scripts\python.exe tests\smoke_test.py
 ```
 
-**851 comprobaciones** sin marco externo: métricas y disco reales, persistencia, alertas,
+**981 comprobaciones** sin marco externo: métricas y disco reales, persistencia, alertas,
+los **avisos propios** (umbrales, orden, descarte que caduca y vuelve si la cosa empeora, y qué
+categorías marca cada uno al abrir la limpieza desde él) y el
+**catálogo de limpieza** (vista previa que no borra, archivos en uso que no se prometen, carpetas
+peligrosas rechazadas, enlaces que no se siguen, categorías que sobreviven al guardar, papelera
+medida sin administrador, la ventana abierta ya marcada desde un aviso —que sigue preguntando antes
+de borrar— y la **limpieza programada** con su tarea propia, sus argumentos y su histórico),
 historial (con la serie de la GPU, sus huecos y su color neutro), informes en los tres formatos, las
 páginas construidas y navegadas, programas de
 inicio y cambios reversibles sobre claves propias de la prueba, el ciclo del instalador en carpetas
@@ -352,12 +360,13 @@ tools/                       Icono, medición de consumo, capturas (y su regener
 capturas/                    Imágenes de esta documentación
 pctoolkit/
   core/                      Lógica sin interfaz: config, métricas, tarjeta gráfica, memoria, disco,
-                             tareas, informes, historial, alertas, arranque, mantenimiento,
-                             programador, ajustes de Windows, aplicaciones y plugins
+                             tareas, informes, historial, alertas, avisos, limpieza, arranque,
+                             mantenimiento, programador, ajustes de Windows, aplicaciones y plugins
   ui/                        Interfaz PySide6: tema, accesibilidad, iconos, widgets, gráfica,
                              vigía de la GPU, bandeja, diálogos y una página por sección
-tests/smoke_test.py          851 comprobaciones (núcleo, interfaz, instalador, firma, dependencias,
-                             logotipo, actualizaciones, ajustes de Windows, aplicaciones y plugins)
+tests/smoke_test.py          981 comprobaciones (núcleo, interfaz, instalador, firma, dependencias,
+                             logotipo, actualizaciones, ajustes de Windows, aplicaciones, plugins,
+                             limpieza, limpieza programada y avisos)
 tests/documentacion.py       Guardas de capturas, informe y recuentos (van aparte)
 dist/                        Todo lo compilado; se regenera con los scripts
 ```
@@ -393,8 +402,15 @@ Qué hace cada módulo, con detalle: [DOCUMENTACION.md](DOCUMENTACION.md).
   registro permita escribir. Por eso se validan campo por campo, sus ajustes no se aplican hasta
   aceptarlo, y la aceptación caduca si el archivo cambia. PC Toolkit no ejecuta código de un plugin:
   solo lee su JSON.
-- **Limpieza de temporales:** solo la carpeta `%TEMP%` del usuario, ignora lo reciente y omite lo
-  que está en uso.
+- **Limpieza:** el catálogo mide siete categorías y limpia las que se marquen. Lo reciente no se
+  toca (una hora como mínimo) y lo que está en uso se omite y se dice. Las **cachés de navegador**
+  solo se limpian con ese navegador cerrado (y nunca tocan el perfil: contraseñas, cookies y
+  marcadores quedan donde están); los **temporales de Windows** y la **caché de Windows Update**
+  necesitan administrador, y por eso se ofrecen como no disponibles con su motivo cuando no lo hay (la
+  caché de Windows Update, además, no se marca sola: Windows la administra y borrarla con una
+  actualización a medias puede dejarla a medio instalar). La **papelera** no se puede deshacer: viene
+  sin marcar y lo avisa antes de vaciarla. El mantenimiento automático limpia solo lo que se elija en
+  esa ventana (de fábrica, los temporales del usuario, como antes).
 - **Bandeja:** si el sistema no la tiene, todo funciona igual salvo el segundo plano, y se avisa.
 - **Actualizaciones:** necesitan conexión con GitHub. La versión portátil no se instala sola (no hay
   instalación que reemplazar): la aplicación ofrece abrir la página de la versión para descargarla.

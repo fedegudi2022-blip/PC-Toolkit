@@ -9,6 +9,7 @@ ejecución, último resultado…) y se puede lanzar o eliminar en un clic.
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 
 from PySide6.QtCore import QTime, Qt, Signal
 from PySide6.QtWidgets import (
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..core import cleaner as cleaner_core
 from ..core import maintenance as maintenance_core
 from ..core import scheduler as scheduler_core
 from ..core.config import COLORS, format_bytes
@@ -157,12 +159,31 @@ class MaintenanceSchedulePage(QWidget):
         grid.addWidget(QLabel("Antigüedad mínima"), 3, 0)
         grid.addWidget(self.age_spin, 3, 1)
 
-        self.clean_check = QCheckBox("Limpiar archivos temporales")
+        self.clean_check = QCheckBox("Limpiar archivos")
         self.memory_check = QCheckBox("Liberar memoria RAM")
         self.report_check = QCheckBox("Generar un informe del equipo")
         self.log_check = QCheckBox("Anotar la ejecución en el registro de tareas")
         for row, widget in enumerate((self.clean_check, self.memory_check, self.report_check, self.log_check)):
             grid.addWidget(widget, 4 + row, 0, 1, 2)
+
+        # Qué categorías limpia la tarea: es la misma lista que la ventana de limpieza, y por
+        # defecto solo los temporales del usuario (lo que hacía antes de existir el catálogo).
+        categorias = QHBoxLayout()
+        categorias.setSpacing(8)
+        categorias.addWidget(QLabel("Categorías"))
+        self.targets_label = QLabel("")
+        self.targets_label.setObjectName("Muted")
+        self.targets_label.setWordWrap(True)
+        categorias.addWidget(self.targets_label, 1)
+        self.targets_button = QPushButton("Elegir…")
+        self.targets_button.setObjectName("Ghost")
+        self.targets_button.setToolTip(
+            "Abre la vista previa de la limpieza: marca las categorías y activa «El mantenimiento "
+            "automático limpia lo que marque aquí»."
+        )
+        self.targets_button.clicked.connect(self.choose_targets)
+        categorias.addWidget(self.targets_button)
+        grid.addLayout(categorias, 8, 0, 1, 2)
         layout.addLayout(grid)
 
         self.preview_label = QLabel("")
@@ -274,6 +295,10 @@ class MaintenanceSchedulePage(QWidget):
             "Si el equipo estaba apagado a la hora prevista, Windows la ejecuta al encenderlo.",
             "Cada ejecución queda anotada en el histórico y, si quieres, en el registro de tareas.",
             "Puedes ver el informe generado en la carpeta «Informes» de tus documentos.",
+            # La limpieza programada de la ventana de limpieza es otra tarea: se dice aquí para
+            # que nadie busque en esta página algo que se configura en la otra.
+            "La limpieza que programas desde «Liberar espacio» es otra tarea aparte: solo borra "
+            "las categorías que marques allí, sin memoria ni informes.",
         ):
             item = QHBoxLayout()
             item.setSpacing(8)
@@ -300,7 +325,35 @@ class MaintenanceSchedulePage(QWidget):
         self.memory_check.setChecked(schedule.release_memory)
         self.report_check.setChecked(schedule.export_report)
         self.log_check.setChecked(schedule.auto_log_task)
+        self._update_targets_label()
         self._update_enabled_widgets()
+
+    def choose_targets(self) -> None:
+        """Abre la vista previa de la limpieza para elegir qué categorías limpia la tarea.
+
+        La selección se guarda en las preferencias (lo hace el propio diálogo) y se trae
+        aquí para que este formulario **no la borre** al guardar: la programación que se
+        escribe en Windows sale de `self.schedule`, y si no se copiara, el formulario
+        volvería a dejar los temporales de siempre.
+        """
+        from .clean import CleanDialog
+
+        dialog = CleanDialog(self.settings, None, self)
+        dialog.exec()
+        self.schedule = replace(
+            self.schedule,
+            clean_targets=tuple(self.settings.schedule_config.clean_targets),
+        )
+        self._update_targets_label()
+        self.status.emit("Categorías de limpieza actualizadas.")
+
+    def _update_targets_label(self) -> None:
+        """Qué se limpia, en nombres legibles."""
+        if not hasattr(self, "targets_label"):
+            return
+        from ..core import cleaner
+
+        self.targets_label.setText(cleaner.keys_label(self.schedule.clean_targets))
 
     def _collect_schedule(self) -> scheduler_core.MaintenanceSchedule:
         return scheduler_core.MaintenanceSchedule(
@@ -310,6 +363,9 @@ class MaintenanceSchedulePage(QWidget):
             weekday=self.weekday_combo.currentText(),
             clean_temp=self.clean_check.isChecked(),
             temp_min_age_hours=float(self.age_spin.value()),
+            # Las categorías no se editan en este formulario (se eligen en la ventana de
+            # limpieza), así que se conservan tal y como están guardadas.
+            clean_targets=tuple(self.schedule.clean_targets),
             release_memory=self.memory_check.isChecked(),
             export_report=self.report_check.isChecked(),
             auto_log_task=self.log_check.isChecked(),
@@ -538,7 +594,26 @@ class MaintenanceSchedulePage(QWidget):
                 label,
             )
             steps = " · ".join(step.get("titulo", "") for step in entry.get("pasos", []))
-            item.setToolTip(f"{detail}\n{steps}\n{format_bytes(freed)}")
+            # El histórico es común al mantenimiento y a la limpieza programada, así que en
+            # el detalle se dice **qué categorías** se limpiaron: es lo que distingue la
+            # limpieza de las 21:00 de un mantenimiento completo.
+            categorias = [
+                clave
+                for step in entry.get("pasos", [])
+                for clave in (step.get("categorias") or {})
+            ]
+            detalle_categorias = (
+                f"Categorías limpiadas: {cleaner_core.keys_label(categorias)}"
+                if categorias
+                else ""
+            )
+            item.setToolTip(
+                "\n".join(
+                    parte
+                    for parte in (detail, steps, format_bytes(freed), detalle_categorias)
+                    if parte
+                )
+            )
             self.history_list.addItem(item)
 
     def _open_windows_scheduler(self) -> None:

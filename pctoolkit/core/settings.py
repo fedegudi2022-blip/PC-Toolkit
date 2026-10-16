@@ -10,7 +10,7 @@ from .alerts import AlertConfig
 from .appearance import MODE_DARK, normalize_mode
 from .history import DEFAULT_INTERVAL_SECONDS
 from .memory import MemoryOptions
-from .scheduler import MaintenanceSchedule
+from .scheduler import CleanupSchedule, MaintenanceSchedule
 
 ORG = "PCToolkit"
 APP = "PC Toolkit"
@@ -173,6 +173,43 @@ class AppSettings:
     @schedule_config.setter
     def schedule_config(self, schedule: MaintenanceSchedule) -> None:
         self.set("mantenimiento", json.dumps(schedule.to_dict(), ensure_ascii=False))
+
+    # --- Limpieza programada ------------------------------------------------
+    @property
+    def cleanup_schedule(self) -> CleanupSchedule:
+        """Cuándo se limpian las categorías marcadas, sin el mantenimiento completo.
+
+        Va en su propia clave porque es otra tarea de Windows: se puede tener una limpieza
+        diaria de temporales y un mantenimiento semanal con informe, y quitar una no toca la
+        otra. Sin categorías no hay nada programado.
+        """
+        raw = self._settings.value("limpieza_programada", "", type=str)
+        if raw:
+            try:
+                return CleanupSchedule.from_dict(json.loads(raw))
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return CleanupSchedule()
+
+    @cleanup_schedule.setter
+    def cleanup_schedule(self, schedule: CleanupSchedule) -> None:
+        self.set("limpieza_programada", json.dumps(schedule.to_dict(), ensure_ascii=False))
+
+    # --- Avisos inteligentes ----------------------------------------------
+    @property
+    def insights_enabled(self) -> bool:
+        """Si la portada saca avisos propios (CPU sostenida, disco lleno…).
+
+        Son los que unen lo que ya mide la aplicación (métricas, historial, programas de
+        inicio y análisis del disco) en frases útiles. Traen su propio descarte —cada aviso
+        se puede quitar sin volver a verlo— porque un aviso que no se puede descartar es
+        ruido, y el ruido hace que se dejen de leer todos los demás.
+        """
+        return self._bool("avisos_inteligentes", True)
+
+    @insights_enabled.setter
+    def insights_enabled(self, value: bool) -> None:
+        self.set("avisos_inteligentes", "true" if value else "false")
 
     # --- Actualizaciones --------------------------------------------------
     # Tres claves y todas caben en las preferencias de siempre

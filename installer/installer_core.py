@@ -756,14 +756,24 @@ def autostart_command(value_name: str = RUN_VALUE) -> str:
 
 
 def remove_scheduled_task() -> str:
-    """Quita la tarea del Programador de Windows si el usuario la había creado."""
+    """Quita las tareas del Programador de Windows que creó la aplicación.
+
+    Son dos: el mantenimiento y la limpieza programada desde la ventana de limpieza. Las dos se
+    van con la aplicación, porque una tarea que apunta a un ejecutable ya desinstalado fallaría
+    todos los días (o cada vez que se limpiara) sin que nadie supiera por qué.
+    """
     try:
         from pctoolkit.core import scheduler
 
-        if not scheduler.task_exists():
-            return ""
-        result = scheduler.delete_task()
-        return result.message
+        mensajes: list[str] = []
+        for existe, borrar in (
+            (scheduler.task_exists, scheduler.delete_task),
+            (scheduler.cleanup_task_exists, scheduler.delete_cleanup_task),
+        ):
+            if not existe():
+                continue
+            mensajes.append(borrar().message)
+        return " ".join(mensajes)
     except Exception:  # noqa: BLE001 - la desinstalación no debe fallar por esto
         return ""
 

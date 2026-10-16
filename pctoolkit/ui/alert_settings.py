@@ -225,6 +225,21 @@ class AlertSettingsDialog(QDialog):
         )
         self.enabled_check = QCheckBox("Avisar cuando se supere un umbral")
         self._row(card_layout, "alertas", self.enabled_check, "activar desactivar avisos alertas umbral")
+        # Los avisos propios de la portada: unen lo que la aplicación ya mide (CPU sostenida,
+        # disco, programas de inicio y limpieza) en frases concretas que se pueden descartar.
+        self.insights_check = QCheckBox("Mostrar avisos propios en la portada")
+        self.insights_check.setToolTip(
+            "Recomendaciones sacadas de tus propios datos («este programa consume el 40 % de "
+            "CPU», «quedan 4 GB libres», «tienes 12 programas de inicio pesados»). Cada una se "
+            "puede descartar desde la portada."
+        )
+        self.insights_check.setChecked(self.settings.insights_enabled)
+        self._row(
+            card_layout,
+            "alertas",
+            self.insights_check,
+            "avisos inteligentes recomendaciones portada consejos descartar",
+        )
         self.spins: dict[str, QSpinBox] = {}
         for metric, label, help_text in (
             (METRIC_CPU, "Umbral de CPU", "Porcentaje de uso del procesador a partir del cual se avisa."),
@@ -486,6 +501,7 @@ class AlertSettingsDialog(QDialog):
         self.settings.close_to_tray = self.close_check.isChecked() and self.tray_check.isChecked()
         self.settings.eco_mode = self.eco_check.isChecked()
         self.settings.eco_when_hidden = self.eco_hidden_check.isChecked()
+        self.settings.insights_enabled = self.insights_check.isChecked()
         self.settings.history_enabled = self.history_check.isChecked()
         self.settings.history_interval_seconds = self.history_spin.value()
         self.settings.check_updates = self.updates_check.isChecked()

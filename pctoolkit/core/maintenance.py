@@ -5,6 +5,11 @@ Es lo que ejecuta la tarea programada: limpiar temporales, liberar memoria
 puede lanzar a mano desde la aplicación, y siempre se puede pedir una
 simulación (`dry_run`) que no modifica nada.
 
+El mismo módulo atiende la **limpieza programada** (`--limpieza`, la tarea que crea la ventana
+de «Liberar espacio»): un solo paso, con las categorías del catálogo que se elijan, sin
+memoria ni informe. Comparte la limpieza (`_step_clean`) y el registro para que el histórico
+tenga una sola forma, venga de donde venga.
+
 Cada ejecución se anota como una línea JSON en
 `%APPDATA%\\PCToolkit\\mantenimiento.jsonl` (igual que el historial de métricas)
 para que sobreviva a cierres inesperados y se pueda leer el histórico.
@@ -16,12 +21,12 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Sequence
 
+from . import cleaner as cleaner_core
 from . import logs
 from . import memory as memory_core
 from . import reports as reports_core
-from . import tools as tools_core
 from .config import data_dir, format_bytes, reports_dir
 from .disk import list_drives
 from .metrics import MetricsService
@@ -41,7 +46,16 @@ class MaintenanceItem:
     data: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"paso": self.key, "titulo": self.title, "correcto": self.ok, "detalle": self.detail}
+        return {
+            "paso": self.key,
+            "titulo": self.title,
+            "correcto": self.ok,
+            "detalle": self.detail,
+            # Las categorías limpiadas (clave → bytes liberados). Sin esto el histórico
+            # diría que hubo una limpieza pero no de qué, y una limpieza programada de unas
+            # categorías concretas no se podría distinguir de un paso cualquiera.
+            "categorias": dict(self.data.get("categorias") or {}),
+        }
 
 
 @dataclass
@@ -52,6 +66,10 @@ class MaintenanceReport:
     duration: float = 0.0
     dry_run: bool = False
     trigger: str = "manual"
+    # Cómo se llama lo que se ha ejecutado. La limpieza programada comparte histórico con el
+    # mantenimiento, así que su entrada tiene que decir «Limpieza»: si las dos dijeran
+    # «Mantenimiento», en la lista no se sabría cuál de las dos tareas se ejecutó.
+    label: str = "Mantenimiento"
     items: list[MaintenanceItem] = field(default_factory=list)
     freed_bytes: int = 0
     removed_files: int = 0
@@ -79,7 +97,7 @@ class MaintenanceReport:
             parts.append(f"memoria {format_bytes(self.memory_freed_bytes)}")
         if self.report_path:
             parts.append("informe generado")
-        head = "Simulación" if self.dry_run else "Mantenimiento"
+        head = "Simulación" if self.dry_run else self.label
         return f"{head}: " + (" · ".join(parts) if parts else "sin cambios que aplicar") + "."
 
     def to_dict(self) -> dict[str, Any]:
@@ -148,28 +166,76 @@ def recent_runs(limit: int = 8) -> list[dict[str, Any]]:
     return entries
 
 
-def _step_clean_temp(min_age_hours: float, dry_run: bool, folder: str | None = None) -> MaintenanceItem:
-    folder = folder or tools_core.default_temp_folder()
-    if not folder:
-        return MaintenanceItem("limpieza", "Limpiar archivos temporales", False, "No se encontró la carpeta temporal.")
-    if dry_run:
-        scan = tools_core.scan_temp_folder(folder, min_age_hours=min_age_hours)
+def _step_clean(
+    targets: Sequence[str] | None,
+    min_age_hours: float,
+    dry_run: bool,
+    folder: str | None = None,
+) -> MaintenanceItem:
+    """Limpia las categorías pedidas con el catálogo de `pctoolkit.core.cleaner`.
+
+    El paso usa el mismo catálogo que la ventana de limpieza (con su vista previa), así que
+    lo que se limpia solo y lo que se limpia a mano son **las mismas cosas**: la
+    programación guarda qué categorías quiere cada uno (`MaintenanceSchedule.clean_targets`).
+    """
+    claves = cleaner_core.normalize_keys(targets)
+    if not claves:
         return MaintenanceItem(
             "limpieza",
-            "Limpiar archivos temporales",
+            "Limpiar archivos",
             True,
-            f"Se borrarían {scan.file_count} archivos ({format_bytes(scan.total_size)}).",
-            # Mismas claves que en la limpieza real para que el resumen cuadre.
-            {"archivos": scan.file_count, "bytes": scan.total_size, "omitidos": scan.skipped},
+            "No hay ninguna categoría de limpieza seleccionada.",
+            {"archivos": 0, "bytes": 0, "omitidos": 0, "categorias": {}},
         )
-    report = tools_core.clean_temp_folder(folder, min_age_hours=min_age_hours)
+    if dry_run:
+        plan = cleaner_core.scan(claves, min_age_hours=min_age_hours, temp_folder=folder)
+        detalle = plan.summary()
+        if plan.total_files:
+            detalle = (
+                f"Se borrarían {plan.total_files} archivos ({format_bytes(plan.total_size)}) "
+                f"en {len(plan.available_items)} categoría(s)."
+            )
+        return MaintenanceItem(
+            "limpieza",
+            "Limpiar archivos",
+            True,
+            detalle,
+            # Mismas claves que en la limpieza real para que el resumen cuadre.
+            {
+                "archivos": plan.total_files,
+                "bytes": plan.total_size,
+                "omitidos": sum(item.skipped + item.locked for item in plan.items),
+                "categorias": {item.key: item.size for item in plan.available_items},
+            },
+        )
+    result = cleaner_core.clean(claves, min_age_hours=min_age_hours, temp_folder=folder)
+    disponibles = [item for item in result.items if not item.blocked]
+    if not disponibles:
+        motivo = next((item.blocked for item in result.items if item.blocked), "")
+        return MaintenanceItem(
+            "limpieza",
+            "Limpiar archivos",
+            True,
+            motivo or "No había nada que limpiar en las categorías elegidas.",
+            {"archivos": 0, "bytes": 0, "omitidos": 0, "categorias": {}},
+        )
+    detalle = (
+        f"{result.deleted} elemento(s) eliminado(s) ({format_bytes(result.freed)}); "
+        f"{result.skipped} sin permisos o en uso."
+    )
+    if len(disponibles) > 1:
+        detalle += f" Categorías: {cleaner_core.keys_label([item.key for item in disponibles])}."
     return MaintenanceItem(
         "limpieza",
-        "Limpiar archivos temporales",
+        "Limpiar archivos",
         True,
-        f"{report.deleted} archivos eliminados ({format_bytes(report.freed)}); "
-        f"{report.skipped} sin permisos o en uso.",
-        {"archivos": report.deleted, "bytes": report.freed, "omitidos": report.skipped},
+        detalle,
+        {
+            "archivos": result.deleted,
+            "bytes": result.freed,
+            "omitidos": result.skipped,
+            "categorias": {item.key: item.freed for item in disponibles},
+        },
     )
 
 
@@ -215,6 +281,47 @@ def _step_report(metrics: MetricsService, tasks, dry_run: bool) -> MaintenanceIt
         return MaintenanceItem("informe", "Generar informe", False, f"No se pudo generar el informe: {exc}")
 
 
+def run_cleanup(
+    targets: Sequence[str] | None = None,
+    *,
+    min_age_hours: float = 24.0,
+    dry_run: bool = False,
+    trigger: str = "programado",
+    register: bool = True,
+    temp_folder: str | None = None,
+    progress: Callable[[str], None] | None = None,
+) -> MaintenanceReport:
+    """Limpia solo las categorías pedidas, sin los demás pasos del mantenimiento.
+
+    Es lo que ejecuta la tarea de limpieza programada (`--limpieza`): usa la **misma** limpieza
+    del catálogo y el **mismo** registro que el mantenimiento, pero sin liberar memoria ni
+    generar informe. Así se puede tener una limpieza diaria de temporales y un mantenimiento
+    semanal con informe sin que una ejecución arrastre lo de la otra.
+
+    Devuelve un informe con la misma forma que el del mantenimiento (un solo paso), para que
+    el histórico y la interfaz lo lean igual y se pueda comparar con lo que se limpia a mano.
+    """
+    claves = cleaner_core.normalize_keys(targets)
+    report = MaintenanceReport(
+        dry_run=dry_run, trigger=trigger, label="Limpieza", log_path=str(maintenance_log_path())
+    )
+    started = time.perf_counter()
+    if progress:
+        progress(f"Limpiando {cleaner_core.keys_label(claves)}…")
+    item = _step_clean(claves, min_age_hours, dry_run, temp_folder)
+    report.items.append(item)
+    report.removed_files = int(item.data.get("archivos", 0))
+    report.freed_bytes = int(item.data.get("bytes", 0))
+    report.duration = time.perf_counter() - started
+
+    if register and not dry_run:
+        entry = report.to_dict()
+        entry["nombre_equipo"] = __import__("platform").node()
+        _append_log(entry)
+    report.log_path = str(maintenance_log_path())
+    return report
+
+
 def run_maintenance(
     schedule: MaintenanceSchedule | None = None,
     *,
@@ -229,6 +336,7 @@ def run_maintenance(
     min_age_hours: float | None = None,
     register: bool = True,
     temp_folder: str | None = None,
+    clean_targets: Sequence[str] | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> MaintenanceReport:
     """Ejecuta un ciclo completo de mantenimiento y devuelve el informe.
@@ -242,6 +350,14 @@ def run_maintenance(
     do_report = schedule.export_report if export is None else export
     do_memory = schedule.release_memory if release_memory is None else release_memory
     age = schedule.temp_min_age_hours if min_age_hours is None else min_age_hours
+    # Sin categorías explícitas manda la programación; y si tampoco dice ninguna (una
+    # programación construida a mano, o una guardada antes de que existiera el catálogo), el
+    # catálogo se queda con la de siempre: los temporales del usuario. Es lo que hacía el
+    # mantenimiento antes de que hubiera categorías, y no limpiar nada sería un cambio
+    # silencioso de comportamiento.
+    categorias = schedule.clean_targets if clean_targets is None else clean_targets
+    if not cleaner_core.normalize_keys(categorias):
+        categorias = cleaner_core.DEFAULT_TARGETS
 
     report = MaintenanceReport(dry_run=dry_run, trigger=trigger, log_path=str(maintenance_log_path()))
     started = time.perf_counter()
@@ -259,8 +375,8 @@ def run_maintenance(
 
     try:
         if do_clean:
-            note("Limpiando archivos temporales…")
-            item = _step_clean_temp(age, dry_run, temp_folder)
+            note(f"Limpiando archivos ({cleaner_core.keys_label(categorias)})…")
+            item = _step_clean(categorias, age, dry_run, temp_folder)
             report.items.append(item)
             report.removed_files += int(item.data.get("archivos", 0))
             report.freed_bytes += int(item.data.get("bytes", 0))

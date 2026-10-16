@@ -1140,6 +1140,28 @@ def summary(entries: Sequence[StartupEntry]) -> dict[str, Any]:
     }
 
 
+def heavy_entries(entries: Sequence[StartupEntry]) -> list[StartupEntry]:
+    """Entradas que trabajan de verdad al arrancar y se pueden desactivar sin borrar nada.
+
+    Es la misma selección que sostiene el aviso de la portada («tienes N programas de inicio
+    pesados»): las que ya están activas, cuyo coste estimado es medio (las tareas de inicio de
+    sesión y las aplicaciones de la Store, que Windows lanza aparte) y que además se pueden
+    cambiar desde aquí —lo que pide administrador se queda fuera, porque intentarlo solo serviría
+    para fallar delante de quien lo pidió—. Se devuelven en el orden de la página para que el
+    aviso y la lista digan lo mismo y en el mismo orden.
+    """
+    return sort_entries(
+        [
+            entry
+            for entry in entries
+            if entry.enabled
+            and entry.can_toggle
+            and not entry.needs_admin
+            and entry.cost[0] == COST_MEDIO
+        ]
+    )
+
+
 def by_source(entries: Sequence[StartupEntry]) -> dict[str, list[StartupEntry]]:
     """Agrupa las entradas por su origen, en el orden natural de la página."""
     grouped: dict[str, list[StartupEntry]] = {origen: [] for origen in SOURCES_ORDER}

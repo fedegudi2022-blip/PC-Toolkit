@@ -44,10 +44,15 @@ KIND_ARRANQUE = "arranque"
 
 ORIGIN_MANUAL = "manual"
 ORIGIN_AUTOMATICO = "automatico"
+# Desde un aviso de la portada: el mismo cambio que se haría a mano en su página, pero pedido
+# desde la tarjeta de «Qué conviene mirar». Se apunta aparte para que el registro de deshacer
+# diga de dónde salió cada cambio.
+ORIGIN_AVISO = "aviso"
 
 ORIGIN_LABELS = {
     ORIGIN_MANUAL: "a mano",
     ORIGIN_AUTOMATICO: "automático",
+    ORIGIN_AVISO: "desde un aviso",
 }
 
 
