@@ -324,7 +324,7 @@ Desinstalar conserva estos datos salvo que se pidan borrar desde el asistente.
 .venv\Scripts\python.exe tests\smoke_test.py
 ```
 
-**1046 comprobaciones** sin marco externo: métricas y disco reales, persistencia, alertas,
+**1048 comprobaciones** sin marco externo: métricas y disco reales, persistencia, alertas,
 los **avisos propios** (umbrales, orden, descarte que caduca y vuelve si la cosa empeora, y qué
 categorías marca cada uno al abrir la limpieza desde él) y el
 **catálogo de limpieza** (vista previa que no borra, archivos en uso que no se prometen, carpetas
@@ -391,7 +391,8 @@ assets/                      Logotipo original, icono del ejecutable y propiedad
 nativo/                      Módulo opcional en C++ (escáner de disco y listado de aplicaciones),
                              con su script de compilación; si no está, todo tira por Python
 installer/                   Asistente, desinstalador y lógica de instalación por usuario
-tools/                       Icono, medición de consumo, capturas (y su regeneración) y verificación
+tools/                       Icono, medición de consumo, capturas (y su regeneración), verificación de
+                             la instalación y de una publicación ya subida (descargándola)
 capturas/                    Imágenes de esta documentación
 pctoolkit/
   core/                      Lógica sin interfaz: config, métricas, tarjeta gráfica, memoria, disco,
@@ -400,7 +401,7 @@ pctoolkit/
                              el módulo nativo opcional de C++ (`native.py`) y los perfiles
   ui/                        Interfaz PySide6: tema, accesibilidad, iconos, widgets, gráfica,
                              vigía de la GPU, bandeja, diálogos y una página por sección
-tests/smoke_test.py          1046 comprobaciones (núcleo, interfaz, instalador, firma, dependencias,
+tests/smoke_test.py          1048 comprobaciones (núcleo, interfaz, instalador, firma, dependencias,
                              logotipo, actualizaciones, ajustes de Windows, perfiles, módulo nativo,
                              aplicaciones, plugins, limpieza, limpieza programada y avisos)
 tests/documentacion.py       Guardas de capturas, informe y recuentos (van aparte)

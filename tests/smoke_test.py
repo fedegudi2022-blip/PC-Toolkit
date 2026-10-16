@@ -9272,6 +9272,32 @@ def test_publicacion() -> None:
         and "-portable.exe" in publicar,
         "instalador, portátil y sus sumas",
     )
+    # Publicar no acaba en subir los archivos: el último paso descarga la publicación **como
+    # la descarga cualquiera** y comprueba las sumas en los cuatro sitios donde aparecen.
+    # Antes esto se miraba a mano, publicación a publicación, y un archivo cambiado después de
+    # subirlo —o unas notas que dijeran otra suma— se descubría por casualidad.
+    herramienta = (ROOT / "tools" / "verificar_publicacion.py").read_text(encoding="utf-8")
+    check(
+        "La publicación se comprueba a sí misma después de subir los archivos",
+        "tools/verificar_publicacion.py" in publicar
+        and (ROOT / "tools" / "verificar_publicacion.py").exists()
+        and publicar.index("gh release upload") < publicar.index("tools/verificar_publicacion.py")
+        and "--entrega" in publicar
+        and "no cuadra con lo que se pretendía publicar" in publicar,
+        "descarga lo subido y deja el trabajo en rojo si no cuadra",
+    )
+    check(
+        "La comprobación descarga sin credencial ninguna y mira las sumas en los cuatro sitios",
+        # El token solo se usa para un ensayo, que es un borrador y GitHub no lo sirve sin
+        # sesión: todo lo demás se pide como lo pediría un desconocido.
+        'token if es_borrador else ""' in herramienta
+        and "releases/download/" in herramienta
+        and "_bloque_de_sumas" in herramienta
+        and "actualizador.SUMS_ASSET" in herramienta
+        and '"digest"' in herramienta
+        and "actualizador.fetch_latest" in herramienta,
+        "el .sha256 de cada ejecutable, SHA256SUMS.txt, las notas y el digest de la API",
+    )
     check(
         "La publicación comprueba el paquete antes de publicarlo",
         # La suite no se pasa aquí a mano: la pasa el lanzador compartido, que además repite

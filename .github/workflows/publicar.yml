@@ -7,7 +7,9 @@ name: Publicar la versión (Windows)
 #
 # y este flujo compila el programa y el instalador en un servidor de Windows, pasa las
 # comprobaciones, calcula los SHA-256, firma la procedencia y crea la publicación con sus
-# archivos adjuntos y sus notas.
+# archivos adjuntos y sus notas, y termina **descargando lo publicado** como lo descarga
+# cualquiera (sin credencial ninguna) para comprobar que las sumas coinciden en los cuatro sitios
+# donde aparecen y que la aplicación ve esta versión.
 #
 # **Ensayo de publicación.** El mismo flujo se puede lanzar a mano (Actions → «Publicar la
 # versión (Windows)» → Run workflow) para recorrer todo el camino antes del día del
@@ -356,3 +358,33 @@ jobs:
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
           Get-Content -LiteralPath (Join-Path $entrega 'SHA256SUMS.txt') |
             ForEach-Object { "- $_" } | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
+
+      # --- Comprobar lo publicado -----------------------------------------------
+      # La publicación no se da por buena porque GitHub conteste que se subió: se **descarga
+      # sin credencial ninguna** —la misma dirección que abre el navegador de quien pincha el
+      # enlace— y se miran las sumas en los cuatro sitios donde aparecen (el `.sha256` de cada
+      # ejecutable, `SHA256SUMS.txt`, el bloque de las notas y el `digest` que calcula GitHub al
+      # subir cada adjunto), además de preguntarle a la propia aplicación qué versión ve quien
+      # tenga instalada una anterior. Es lo que se miraba a mano después de publicar; ahora lo
+      # dice el flujo, y si no cuadra la ejecución acaba en rojo aunque los archivos ya estén
+      # subidos (que es justo lo que hay que saber).
+      #
+      # En un ensayo la publicación es un borrador y GitHub no lo sirve sin sesión (a
+      # propósito: no lo ve nadie), así que ahí —y solo ahí— la descarga va con el token del
+      # flujo, diciéndolo en el informe.
+      - name: Comprobar la publicación descargándola como cualquiera
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python tools/verificar_publicacion.py --etiqueta $env:ETIQUETA --version $env:VERSION --entrega 'dist\entrega'
+          if ($LASTEXITCODE -ne 0) {
+            throw "La publicación $($env:ETIQUETA) no cuadra con lo que se pretendía publicar: mirar el informe de este paso."
+          }
+          $como = if ($env:MODO -eq 'ensayo') { 'con el token del flujo (un borrador no se sirve sin sesión)' } else { 'sin sesión, como cualquiera' }
+          # El `${como}` va con llaves a propósito: un `$como:` suelto hace que PowerShell lea
+          # ahí dos puntos de nombre de unidad y el paso ni llega a ejecutarse (lo comprueba la
+          # suite, que lee estos guiones con el analizador de PowerShell antes de publicar).
+          "Comprobada descargándola ${como}: los adjuntos son los construidos y las sumas coinciden en los cuatro sitios (el archivo .sha256 de cada ejecutable, SHA256SUMS.txt, el bloque de las notas y el digest que calcula GitHub)." |
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8

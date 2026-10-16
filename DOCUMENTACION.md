@@ -1072,7 +1072,7 @@ pctoolkit/
                                 GPU (`gpu_monitor.py`), controlador de los avisos (`insights.py`),
                                 ventana de limpieza (`clean.py`), bandeja, ventana principal y una
                                 página por módulo
-tests/smoke_test.py             1046 comprobaciones automáticas (núcleo, interfaz, instalador,
+tests/smoke_test.py             1048 comprobaciones automáticas (núcleo, interfaz, instalador,
                                 firma, dependencias, logotipo, actualizaciones, ajustes de Windows,
                                 perfiles, módulo nativo, aplicaciones preinstaladas, plugins,
                                 limpieza, limpieza programada y avisos)
@@ -1086,6 +1086,7 @@ tools/
   capturar_instalador.py        Capturas del asistente y del desinstalador
   capturas.py                   Anota con qué versión se generó cada captura
   verificar_instalacion.py      Instala de verdad con tus rutas y desinstala al terminar
+  verificar_publicacion.py      Descarga una publicación ya subida y comprueba sus sumas
 capturas/                       Imágenes de la documentación (con estado.json de versiones)
 
 Al compilar aparecen tres artefactos en `dist\`:
@@ -1175,7 +1176,7 @@ de instalar, ejecutar y desinstalar.
 Pruebas:
 
 ```bat
-.venv\Scripts\python.exe tests\smoke_test.py            1046 comprobaciones
+.venv\Scripts\python.exe tests\smoke_test.py            1048 comprobaciones
 .venv\Scripts\python.exe tools\verificar_instalacion.py  Instala de verdad y desinstala al terminar
 .venv\Scripts\python.exe tests\documentacion.py         Solo las guardas de documentación
 .venv\Scripts\python.exe tests\smoke_test.py --sin-documentacion   Sin las guardas de documentación
@@ -1190,7 +1191,7 @@ comprueba únicamente cuando se ejecutan como última parte de la suite.
 
 El total depende del equipo: unas pocas comprobaciones solo se hacen si el sistema tiene bandeja,
 si hay `signtool` disponible, si `dist\` ya está compilado o si el módulo nativo está compilado (y
-comprobado con la DLL en su sitio). Con la plataforma real de Qt salen 1046;
+comprobado con la DLL en su sitio). Con la plataforma real de Qt salen 1048;
 en modo sin pantalla son unas cuantas menos, porque las que necesitan una bandeja de verdad no se
 ejecutan (la comprobación de que la bandeja solo se usa si el sistema la tiene sí se hace siempre).
 
@@ -1269,6 +1270,29 @@ procedencia con `actions/attest-build-provenance` y crea la publicación con sus
 los dos ejecutables, su `.sha256` y `SHA256SUMS.txt`. No usa ningún secreto (solo el token del propio
 flujo, con permiso para escribir en «Releases»), así que publica **sin firmar**: para firmar con
 Azure Artifact Signing está el apartado 8.10.
+
+Publicar no termina en subir los archivos: el **último paso** del flujo descarga la publicación como la
+descarga cualquiera —**sin credencial ninguna**, por la misma dirección que abre el navegador y con el
+`User-Agent` de la propia aplicación— y comprueba que las sumas coincidan en los **cuatro sitios** donde
+aparecen: el archivo `<nombre>.sha256` de cada ejecutable (el primero que mira la comprobación de
+actualizaciones), `SHA256SUMS.txt`, el bloque de hashes de las notas y el `digest` que calcula GitHub al
+subir cada adjunto. Con que uno se quede atrás ya hay dos verdades distintas sobre el mismo archivo.
+Además compara lo descargado con lo construido (los mismos bytes) y le pregunta a la **propia
+aplicación** qué versión ve quien tenga instalada una anterior, con qué archivo y con qué hash, y que no
+se ofrezca a quien ya tiene esta. Si algo no cuadra, el trabajo acaba **en rojo aunque los archivos ya
+estén subidos**, que es justo lo que hay que saber. En un ensayo la publicación es un borrador y GitHub
+no lo sirve sin sesión (a propósito: no lo ve nadie), así que ahí —y solo ahí— la descarga va con el
+token del flujo y el informe lo dice.
+
+Se puede lanzar a mano contra cualquier etiqueta, sin tocar nada (la última, una vieja o la de un
+ensayo). Para mirar un ensayo hace falta además `GITHUB_TOKEN`, que es el único que puede ver un
+borrador; sin él, todo lo demás se pide como lo pediría un desconocido:
+
+```bat
+.venv\Scripts\python.exe tools\verificar_publicacion.py --etiqueta v1.5.0 --entrega dist\entrega
+.venv\Scripts\python.exe tools\verificar_publicacion.py --etiqueta v1.4.1
+set GITHUB_TOKEN=…
+```
 
 Las notas de la publicación llevan los hashes y una sección **«Qué cambia»**: ese texto es el que
 enseña el diálogo de actualización, así que se escribe (o se edita desde GitHub) pensando en quien va
